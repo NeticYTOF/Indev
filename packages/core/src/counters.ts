@@ -15,6 +15,7 @@ export interface CountersState {
 
 export class CountersStore {
   private readonly filePath: string;
+  private writeQueue: Promise<unknown> = Promise.resolve();
 
   constructor(opts: { filePath: string }) {
     this.filePath = opts.filePath;
@@ -31,13 +32,20 @@ export class CountersStore {
   }
 
   /** Add this run's unique-seen count and persist atomically. */
-  async addChargersSeen(count: number): Promise<CountersState> {
-    const state = await this.load();
-    state.chargersSeen += Math.max(0, Math.trunc(count));
-    await mkdir(dirname(this.filePath), { recursive: true });
-    const tmp = join(dirname(this.filePath), `.tmp-${randomUUID()}.json`);
-    await writeFile(tmp, JSON.stringify(state, null, 2), 'utf8');
-    await rename(tmp, this.filePath);
-    return state;
+  addChargersSeen(count: number): Promise<CountersState> {
+    // Atomic rename alone does not protect a read-modify-write: overlapping
+    // completed runs could read the same old count and lose increments.
+    const update = async (): Promise<CountersState> => {
+      const state = await this.load();
+      state.chargersSeen += Math.max(0, Math.trunc(count));
+      await mkdir(dirname(this.filePath), { recursive: true });
+      const tmp = join(dirname(this.filePath), `.tmp-${randomUUID()}.json`);
+      await writeFile(tmp, JSON.stringify(state, null, 2), 'utf8');
+      await rename(tmp, this.filePath);
+      return state;
+    };
+    const next = this.writeQueue.then(update, update);
+    this.writeQueue = next.catch(() => {});
+    return next;
   }
 }
