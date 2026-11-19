@@ -757,7 +757,7 @@ export function finalize(
       );
     }
     let leaveSoc = Math.max(arriveSocPct, Math.min(opts.maxSocPerStopPct, neededSoc));
-    if (neededSoc > opts.maxSocPerStopPct) {
+    if (neededSoc > opts.maxSocPerStopPct && neededSoc > arriveSocPct) {
       leaveSoc = Math.min(opts.absoluteMaxSocPct, neededSoc);
       warnings.push(
         `Charging "${cur.cand.view.name}" to ${Math.round(leaveSoc)}% (above the usual ${opts.maxSocPerStopPct}%) to cover a long leg.`,
