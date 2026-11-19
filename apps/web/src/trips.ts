@@ -104,7 +104,9 @@ function renderTripRow(trip: SavedTrip, map: maplibregl.Map, drawer: HTMLElement
         // The refresh below replaces the drawer's DOM wholesale - the
         // clicked button dies with it. Land focus on the stable owner
         // control before that, instead of letting it fall to <body>.
-        document.getElementById('trips-button')?.focus();
+        if (document.activeElement === document.body || drawer.contains(document.activeElement)) {
+          document.getElementById('trips-button')?.focus();
+        }
         renderTripsDrawer(drawer, map); // refresh list
         toast('Trip deleted.');
       } else {
