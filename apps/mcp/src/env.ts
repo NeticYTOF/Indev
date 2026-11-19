@@ -20,23 +20,26 @@ export function mcpRootDir(): string {
   return join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 }
 
-export function loadMcpEnv(): McpEnv {
-  const root = mcpRootDir();
+export function loadMcpEnv(
+  root = mcpRootDir(),
+  source: NodeJS.ProcessEnv = process.env,
+): McpEnv {
+  const merged = { ...source };
   const envPath = join(root, '.env');
-  if (existsSync(envPath)) {
+  if (merged.INDEV_SKIP_DOTENV !== '1' && existsSync(envPath)) {
     for (const line of readFileSync(envPath, 'utf8').split(/\r?\n/)) {
       const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line.trim());
       if (!m) continue;
       const key = m[1] as string;
       const value = (m[2] ?? '').trim().replace(/^["']|["']$/g, '');
-      if (!(key in process.env)) {
-        process.env[key] = value;
+      if (!(key in merged)) {
+        merged[key] = value;
       }
     }
   }
   return {
-    statiqToken: process.env.STATIQ_API_TOKEN || undefined,
-    dataDir: process.env.DATA_DIR || join(root, 'data'),
-    mock: /^(1|true|yes)$/i.test(process.env.INDEV_MOCK ?? ''),
+    statiqToken: merged.STATIQ_API_TOKEN || undefined,
+    dataDir: merged.DATA_DIR || join(root, 'data'),
+    mock: /^(1|true|yes)$/i.test(merged.INDEV_MOCK ?? ''),
   };
 }
