@@ -1,0 +1,15 @@
+{
+  "name": "@indeev/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@indeev/core": "*",
+    "hono": "^4.6.0",
+    "@hono/node-server": "^2.1.9"
+  }
+}

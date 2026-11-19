@@ -1,0 +1,30 @@
+{
+  "name": "indeev",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "IndEV - EV route planner for India (Tata Harrier EV 75 kWh) on live Statiq data",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,green \"npm:dev -w apps/server\" \"npm:dev -w apps/web\"",
+    "server": "npm run dev -w apps/server",
+    "web": "npm run dev -w apps/web",
+    "mcp": "npm run dev -w apps/mcp",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p packages/core --noEmit && tsc -p apps/server --noEmit && tsc -p apps/mcp --noEmit && tsc -p apps/web --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "concurrently": "^9.1.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.0",
+    "vitest": "^5.1.1"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  }
+}

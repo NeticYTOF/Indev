@@ -7,6 +7,9 @@ node_modules/
 # Build output
 dist/
 
+# Runtime state (saved trips, counters)
+data/
+
 # Dev probe outputs
 scripts/probe-out.json
 scripts/probe-vocab-out.json
