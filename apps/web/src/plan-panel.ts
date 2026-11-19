@@ -120,16 +120,17 @@ function wirePlanActions(actions: HTMLElement, plan: TripPlan): void {
 }
 
 async function revalidateStop(btn: HTMLElement, plan: TripPlan): Promise<void> {
+  if (btn.hasAttribute('disabled')) return;
   const stationId = Number(btn.dataset.refresh);
   const card = btn.closest('.stop-card') as HTMLElement | null;
   if (!card) return;
   const index = Number(card.dataset.stopIndex);
   const stop = plan.stops[index];
   if (!stop || stop.station.stationId !== stationId) return;
-  const box = document.createElement('div');
+  const box = card.querySelector<HTMLElement>('.revalidate-box') ?? document.createElement('div');
   box.className = 'revalidate-box';
   box.textContent = 'Fetching station status…';
-  card.querySelector('.stop-body')?.appendChild(box);
+  if (!box.isConnected) card.querySelector('.stop-body')?.appendChild(box);
   btn.setAttribute('disabled', 'true');
   try {
     const res = await fetch(`/api/stations/${stationId}`);
@@ -165,6 +166,11 @@ async function revalidateStop(btn: HTMLElement, plan: TripPlan): Promise<void> {
       </div>`;
   } catch {
     box.textContent = 'Station details unavailable right now.';
+  } finally {
+    // Manual refresh can be used again after either outcome, never retried
+    // automatically. Reuse one status box rather than accumulating panels.
+    btn.removeAttribute('disabled');
+    if (document.activeElement === document.body) btn.focus({ preventScroll: true });
   }
 }
 
