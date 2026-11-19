@@ -12,6 +12,7 @@
     "dev": "concurrently -n server,web -c blue,green \"npm:dev -w apps/server\" \"npm:dev -w apps/web\"",
     "server": "npm run dev -w apps/server",
     "web": "npm run dev -w apps/web",
+    "ui:verify": "node scripts/ui-verify.mjs",
     "mcp": "npm run dev -w apps/mcp",
     "test": "vitest run",
     "test:watch": "vitest",
