@@ -110,6 +110,20 @@ describe('plan_trip handler', () => {
 });
 
 describe('get_station handler (AI-safe)', () => {
+  it.each([
+    [['31/10/2026', '01/11/2026'], '01/11/2026'],
+    [['31/12/2025', '01/01/2026'], '01/01/2026'],
+    [['31/02/2026', '28/02/2026'], '28/02/2026'],
+    [[null, null], null],
+    [['unknown', 'not recorded'], 'unknown'],
+    [['unknown', '29/02/2024', '01/03/2024'], '01/03/2024'],
+  ])('uses calendar chronology for last-used values %j', async (dates, expected) => {
+    const station = { stationId: 42, name: 'Fixture', chargers: dates.map(lastUsedOn => ({ type: 'DC', connectors: [], lastUsedOn })) };
+    const statiq = { detailsWithMeta: async () => ({ response: { ok: true, station }, fetchedAt: new Date() }) } as unknown as StatiqClient;
+    const result = await getStationHandler(await makeDeps({ createStatiq: () => statiq }), 42);
+    expect(result.station.lastUsedOn).toBe(expected);
+  });
+
   it.each(['wrong-id', 'not-ok', 'missing-chargers', 'null-chargers', 'missing-connectors', 'null-connectors'] as const)('rejects %s station evidence rather than reporting live availability', async (kind) => {
     let calls = 0;
     const station = { stationId: kind === 'wrong-id' ? 43 : 42, name: 'Fixture', chargers: [{ type: 'DC', connectors: [] }] };
