@@ -141,6 +141,25 @@ const O = { label: 'Origin', lat: 0, lon: 0 };
 const D = (km: number) => ({ label: 'Destination', lat: km / KM_PER_DEG, lon: 0 });
 
 describe('planTrip', () => {
+  it('does not bypass the 300 km hard gap when starting energy could cover 350 km', async () => {
+    const plan = await planTrip({ router: fakeRouter(350), statiq: fakeStatiq([
+      { id: 1, name: 'Statiq 200', chainageKm: 200 },
+    ]) }, O, D(350));
+    expect(plan.stops).toHaveLength(1);
+    expect(plan.stops[0]!.legKm).toBeLessThanOrEqual(300);
+    expect(plan.routeDistanceKm - plan.stops[0]!.chainageKm).toBeLessThanOrEqual(300);
+  });
+
+  it('adds a stop when an energy-reachable final hop still exceeds 300 km', async () => {
+    const plan = await planTrip({ router: fakeRouter(640), statiq: fakeStatiq([
+      { id: 1, name: 'Statiq 300', chainageKm: 300 },
+      { id: 2, name: 'Statiq 550', chainageKm: 550 },
+    ]) }, O, D(640));
+    expect(plan.stops).toHaveLength(2);
+    const last = plan.stops.at(-1)!;
+    expect(plan.routeDistanceKm - last.chainageKm + last.detourKm).toBeLessThanOrEqual(300);
+  });
+
   it('a ~285 km trip from 100% needs no stops (Delhi->Jaipur profile)', async () => {
     const statiq = fakeStatiq([]);
     const plan = await planTrip({ router: fakeRouter(284.9), statiq }, O, D(284.9));
