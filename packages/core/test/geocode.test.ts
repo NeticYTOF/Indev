@@ -20,6 +20,20 @@ const photonResponse = {
 };
 
 describe('PhotonGeocoder', () => {
+  it.each([
+    { features: {} }, { features: [null] },
+    { features: [{ geometry: { coordinates: [77, 91] }, properties: { name: 'Invalid' } }] },
+    { features: [{ geometry: { coordinates: ['77', 28] }, properties: { name: 'Invalid' } }] },
+    { features: [{ geometry: { coordinates: [77] }, properties: { name: 'Invalid' } }] },
+    { features: [{ geometry: { coordinates: [77, 28] }, properties: { name: 42 } }] },
+  ])('rejects malformed place responses without retrying: %j', async (payload) => {
+    let calls = 0;
+    const impl = (async () => { calls++; return new Response(JSON.stringify(payload), { status: 200 }); }) as typeof fetch;
+    const geocoder = new PhotonGeocoder({ fetchImpl: impl, retries: 0 });
+    await expect(geocoder.search('Town')).rejects.toThrow('Invalid geocoding response');
+    expect(calls).toBe(1);
+  });
+
   it('searches with India bias and parses hits', async () => {
     const calls: string[] = [];
     const impl = (async (url: unknown) => {
