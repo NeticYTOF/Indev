@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -119,6 +119,30 @@ describe('toSavedTrip', () => {
 });
 
 describe('TripsStore', () => {
+  it.each(['{"incomplete":', '{"unexpected":"object"}', 'null'])('preserves unreadable existing trip data: %s', async (original) => {
+    const dir = await tempDir();
+    const filePath = join(dir, 'trips.json');
+    await writeFile(filePath, original);
+    const store = new TripsStore({ filePath });
+    const outcomes = await Promise.allSettled([store.list(), store.save(fakePlan()), store.remove('plan-1')]);
+    expect(outcomes.map((outcome) => outcome.status)).toEqual(['rejected', 'rejected', 'rejected']);
+    expect(await readFile(filePath, 'utf8')).toBe(original);
+    // Explicit repair unblocks the same instance's serialized write queue.
+    await writeFile(filePath, '[]');
+    await store.save(fakePlan());
+    expect(await store.list()).toHaveLength(1);
+  });
+
+  it('does not interpret a filesystem read error as an empty store', async () => {
+    const dir = await tempDir();
+    const filePath = join(dir, 'trips.json');
+    await mkdir(filePath);
+    const store = new TripsStore({ filePath });
+    await expect(store.list()).rejects.toThrow();
+    await expect(store.save(fakePlan())).rejects.toThrow();
+    await expect(store.remove('plan-1')).rejects.toThrow();
+  });
+
   it('saves, lists, gets and removes trips in an isolated store', async () => {
     const dir = await tempDir();
     const store = new TripsStore({ filePath: join(dir, 'trips.json') });
