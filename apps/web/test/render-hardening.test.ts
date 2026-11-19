@@ -20,3 +20,20 @@ describe('station page link: upstream urls pass a scheme allowlist', () => {
     expect(planPanelSrc).not.toContain('href="${escapeHtml(s.stationUrl)}"');
   });
 });
+
+describe('last-used fallback: upstream strings are escaped at the render boundary', () => {
+  it('the meta line escapes the label output (raw passthrough made safe)', () => {
+    // Old defect: lastUsedLabel returns a NON-canonical lastUsedOn value
+    // RAW, and the template rendered it straight into innerHTML:
+    //   ${lastUsedLabel(s.chargers)}
+    // The fix escapes at the render boundary; the pure function still
+    // passes the literal datum through (data preserved, see
+    // last-used-label.test.ts).
+    expect(planPanelSrc).toContain(
+      '<span class="meta">Last used ${escapeHtml(lastUsedLabel(s.chargers))}</span>',
+    );
+    expect(planPanelSrc).not.toContain(
+      '<span class="meta">Last used ${lastUsedLabel(s.chargers)}</span>',
+    );
+  });
+});

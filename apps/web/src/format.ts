@@ -38,6 +38,28 @@ export function formatKwh(kwh: number | null | undefined): string {
   return `${Math.round(kwh * 10) / 10} kWh`;
 }
 
+/**
+ * Human label for a station's last-used date. Canonical dd/mm/yyyy
+ * charger values format to the MOST RECENT date; a non-canonical value
+ * passes through RAW (callers must escape it at the render boundary -
+ * upstream strings are untrusted and one flowed into innerHTML).
+ * Empty input yields 'unknown'.
+ */
+export function lastUsedLabel(chargers: Array<{ lastUsedOn: string | null }>): string {
+  const dates = chargers.map((c) => c.lastUsedOn).filter((d): d is string => Boolean(d));
+  if (dates.length === 0) return 'unknown';
+  // dd/mm/yyyy; pick the most recent
+  const parsed = dates
+    .map((d) => {
+      const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(d);
+      return m ? new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1])) : null;
+    })
+    .filter((d): d is Date => d != null);
+  if (parsed.length === 0) return dates[0] as string;
+  const latest = parsed.sort((a, b) => b.getTime() - a.getTime())[0] as Date;
+  return `${latest.getDate()}/${latest.getMonth() + 1}/${latest.getFullYear()}`;
+}
+
 /** "26%" battery. */
 export function formatSoc(soc: number | null | undefined): string {
   if (soc == null) return '—';

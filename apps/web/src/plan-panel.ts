@@ -11,7 +11,7 @@ import { el, escapeHtml } from './planner.js';
 import { api } from './api.js';
 import { downloadAnimatedExport } from './export.js';
 import { toast } from './toast.js';
-import { formatDuration, formatEta, formatInr } from './format.js';
+import { formatDuration, formatEta, formatInr, lastUsedLabel } from './format.js';
 import { safeHttpUrl } from './safe-url.js';
 
 export function renderPlanPanel(
@@ -204,7 +204,7 @@ function renderStopCard(stop: PlanStop, index: number): HTMLElement {
           </div>
           <div class="stop-meta">
             <span class="meta">${s.rating != null ? `★ ${Math.round(s.rating * 10) / 10} (${(s.reviewCount ?? 0).toLocaleString('en-IN')} reviews)` : 'No rating'}</span>
-            <span class="meta">Last used ${lastUsedLabel(s.chargers)}</span>
+            <span class="meta">Last used ${escapeHtml(lastUsedLabel(s.chargers))}</span>
             <span class="meta">Reliability: unavailable</span>
             <span class="meta fetched">Status fetched ${fetchedAgo(s.fetchedAt)}</span>
           </div>
@@ -234,21 +234,6 @@ function socBar(labelText: string, soc: number): string {
       </div>
       <span class="soc-value">${Math.round(soc)}%</span>
     </div>`;
-}
-
-function lastUsedLabel(chargers: Array<{ lastUsedOn: string | null }>): string {
-  const dates = chargers.map((c) => c.lastUsedOn).filter((d): d is string => Boolean(d));
-  if (dates.length === 0) return 'unknown';
-  // dd/mm/yyyy; pick the most recent
-  const parsed = dates
-    .map((d) => {
-      const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(d);
-      return m ? new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1])) : null;
-    })
-    .filter((d): d is Date => d != null);
-  if (parsed.length === 0) return dates[0] as string;
-  const latest = parsed.sort((a, b) => b.getTime() - a.getTime())[0] as Date;
-  return `${latest.getDate()}/${latest.getMonth() + 1}/${latest.getFullYear()}`;
 }
 
 function fetchedAgo(iso: string): string {
