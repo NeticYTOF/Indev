@@ -1,27 +1,33 @@
 /**
  * Shared upstream attempt budget for ONE planning run.
  *
- * BY-CONSTRUCTION invariants (coordinator reliability batch):
- * - ONE budget object per planning run is shared by the planner and the
- *   StatiqClient. Every ACTUAL transport attempt - including in-client 5xx
- *   retries - reserves against it; a logical-dispatch fallback covers
- *   duck-typed statiq doubles that cannot count retries themselves.
- * - The budget is a HARD cap: when the cap is reached the run fails with
- *   'budget-exhausted'. The planner maps that to an honest
- *   not_determined outcome (coverage undetermined - NEVER a verdict that
- *   the route is impossible, never silent confidence).
- * - The first 429 (throttle) or 401/403 (auth) STOPS the run: no further
- *   upstream traffic, no sleep-then-retry, no bypassing the server's
- *   limit. Concurrent workers fail fast at their next reserve - without
- *   touching the network.
+ * DISPATCH-ACCOUNTING INVARIANTS (reservation-race fix):
+ * - A transport attempt is reserved ATOMICALLY IMMEDIATELY BEFORE its
+ *   dispatch (no await between a successful reserve and the fetch), so
+ *   reserved == dispatched: the counters always match real network work.
+ * - Waiting for the paced permit (limiter/backoff) happens BEFORE the
+ *   reservation: no up-front reservation can be cancelled by another
+ *   waiter's exhaustion.
+ * - CAP EXHAUSTION IS PER-CALLER, never run-fatal: a caller that finds no
+ *   room is refused without dispatching, and work ALREADY reserved by
+ *   other callers proceeds - exhaustion never poisons shared state
+ *   (the historical bug: N>cap concurrent callers reported attempts and
+ *   globally stopped the run before anyone dispatched - actual 0).
+ * - FATAL STOPS (first 429 throttle / 401-403 auth) ARE run-global: every
+ *   caller fails fast at the next reservation recheck, with zero NEW
+ *   dispatch after the stop (in-flight responses are not "new").
  * - A parsed Retry-After (delay-seconds or HTTP-date) is recorded on the
- *   budget so the failure evidence can report the server-demanded wait
- *   for any FUTURE request honestly.
+ *   budget so failure evidence can report the server-demanded wait for
+ *   any FUTURE request.
  */
 
+/** Cause carried by the reservation/stop control-flow error. */
 export type UpstreamStopCause = 'throttled' | 'auth' | 'budget-exhausted';
 
-/** Severity message for run-stop control flow (never a sample failure). */
+/** Run-fatal causes only (observed on the wire: throttle/auth responses). */
+export type UpstreamFatalCause = 'throttled' | 'auth';
+
+/** Control-flow error for a refused reservation or a fatal stop. */
 export class UpstreamRunStoppedError extends Error {
   constructor(
     readonly cause: UpstreamStopCause,
@@ -30,7 +36,8 @@ export class UpstreamRunStoppedError extends Error {
     readonly retryAfterMs?: number,
   ) {
     super(
-      `Upstream run stopped (${cause}) after ${attemptsMade} of ${maxAttempts} attempts` +
+      `Upstream run ${cause === 'budget-exhausted' ? 'hit its attempt cap' : `stopped (${cause})`}` +
+        ` after ${attemptsMade} of ${maxAttempts} attempts` +
         (retryAfterMs != null ? `; server Retry-After ${Math.ceil(retryAfterMs / 1000)}s` : ''),
     );
     this.name = 'UpstreamRunStoppedError';
@@ -41,8 +48,10 @@ export class UpstreamRunStoppedError extends Error {
 export class UpstreamBudget {
   readonly maxAttempts: number;
   private attempts = 0;
-  private stoppedCause: UpstreamStopCause | null = null;
-  private stoppedRetryAfterMs: number | undefined;
+  /** RUN-FATAL cause only (throttle/auth). Cap exhaustion is NEVER stored
+   *  here: it refuses only the caller that finds no room. */
+  private fatalCause: UpstreamFatalCause | null = null;
+  private fatalRetryAfterMs: number | undefined;
 
   constructor(maxAttempts: number) {
     if (!Number.isFinite(maxAttempts) || maxAttempts < 1) {
@@ -51,55 +60,62 @@ export class UpstreamBudget {
     this.maxAttempts = Math.floor(maxAttempts);
   }
 
-  /** Attempts reserved so far (dispatched or in flight). Never decreased. */
+  /** Attempts reserved so far (== dispatched; reserves precede fetches). */
   get attemptsMade(): number {
     return this.attempts;
   }
 
-  /** Why the run stopped, or null while it may continue. */
-  get stopped(): UpstreamStopCause | null {
-    return this.stoppedCause;
+  /** Run-fatal stop (first 429 / 401-403) or null while the run may continue. */
+  get stopped(): UpstreamFatalCause | null {
+    return this.fatalCause;
   }
 
-  /** Server-demanded wait parsed from the stopping response, if present. */
+  /** Server-demanded wait parsed from the fatal response, if present. */
   get retryAfterMs(): number | undefined {
-    return this.stoppedRetryAfterMs;
+    return this.fatalRetryAfterMs;
+  }
+
+  /** True when the attempt cap is reached (per-caller refusal, not fatal). */
+  get exhausted(): boolean {
+    return this.attempts >= this.maxAttempts;
   }
 
   /**
-   * Reserve one upstream attempt (each transport try, retries included -
-   * or one logical dispatch for duck-typed fakes). Throws when the run is
-   * already stopped, or when the hard cap is reached (stopping the run as
-   * 'budget-exhausted'). Throws BEFORE any traffic: the caller may not
-   * dispatch after this fails.
+   * Reserve one upstream attempt. Call this ATOMICALLY immediately before
+   * dispatch (NO await between a successful reserve and the fetch), after
+   * the paced permit has been awaited. Throws - before any traffic - when:
+   *  - the run is fatally stopped (throttle/auth): no caller may dispatch;
+   *  - the cap is reached: THIS caller is refused; already-reserved work
+   *    elsewhere proceeds untouched (exhaustion never poisons shared state).
    */
   reserveAttempt(): void {
-    // Fast-fail without transport: a already-stopped run never talks upstream.
-    if (this.stoppedCause !== null) {
+    if (this.fatalCause !== null) {
       throw new UpstreamRunStoppedError(
-        this.stoppedCause,
+        this.fatalCause,
         this.attempts,
         this.maxAttempts,
-        this.stoppedRetryAfterMs,
+        this.fatalRetryAfterMs,
       );
     }
     if (this.attempts >= this.maxAttempts) {
-      this.stoppedCause = 'budget-exhausted';
+      // PER-CALLER refusal: no shared state changes, so waiters holding
+      // valid reservations still dispatch (reserved == dispatched).
       throw new UpstreamRunStoppedError('budget-exhausted', this.attempts, this.maxAttempts);
     }
     this.attempts += 1;
   }
 
   /**
-   * Stop the whole run (first 429 / 401 / 403). Idempotent: the first
-   * cause wins. `retryAfterMs` records the server-demanded wait for
-   * honest reporting - it is honored by NOT making the request at all.
+   * Stop the whole run (first 429 / 401 / 403 observed on the wire).
+   * Idempotent: the first fatal cause wins. `retryAfterMs` records the
+   * server-demanded wait for honest reporting - it is honored by NOT
+   * dispatching at all, never by sleeping through it in this run.
    */
-  stop(cause: UpstreamStopCause, retryAfterMs?: number): void {
-    if (this.stoppedCause === null) {
-      this.stoppedCause = cause;
+  stop(cause: UpstreamFatalCause, retryAfterMs?: number): void {
+    if (this.fatalCause === null) {
+      this.fatalCause = cause;
       if (retryAfterMs != null && Number.isFinite(retryAfterMs)) {
-        this.stoppedRetryAfterMs = Math.max(0, retryAfterMs);
+        this.fatalRetryAfterMs = Math.max(0, retryAfterMs);
       }
     }
   }

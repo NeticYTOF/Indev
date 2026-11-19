@@ -82,7 +82,9 @@ describe('UpstreamBudget enforcement in the client (mocked transport + clock)', 
     expect((err as UpstreamRunStoppedError).cause).toBe('budget-exhausted');
     expect(transportTimes).toHaveLength(2); // initial + 1 retry dispatched; 3rd refused
     expect(budget.attemptsMade).toBe(2);
-    expect(budget.stopped).toBe('budget-exhausted');
+    // exhaustion is PER-CALLER: it never poisons shared (fatal) state
+    expect(budget.exhausted).toBe(true);
+    expect(budget.stopped).toBeNull();
   });
 
   it('retries that fit inside the budget still succeed', async () => {
@@ -98,13 +100,15 @@ describe('UpstreamBudget enforcement in the client (mocked transport + clock)', 
   });
 
   it('refuses further dispatch the moment the cap is reached', async () => {
-    const { client, transportTimes } = budgetedClient({ maxAttempts: 1 });
+    const { client, budget, transportTimes } = budgetedClient({ maxAttempts: 1 });
     await client.markers(1, 1); // consumes the only attempt
     expect(transportTimes).toHaveLength(1);
     const err = await client.markers(2, 2).catch((e) => e);
     expect(err).toBeInstanceOf(UpstreamRunStoppedError);
     expect((err as UpstreamRunStoppedError).cause).toBe('budget-exhausted');
     expect(transportTimes).toHaveLength(1); // NO second transport departed
+    expect(budget.attemptsMade).toBe(1); // counters match real dispatch
+    expect(budget.stopped).toBeNull(); // the refusal was per-caller, not fatal
   });
 
   it('stops the whole run on the first 429: no sleep-retry, no further traffic', async () => {
@@ -233,5 +237,112 @@ describe('UpstreamBudget enforcement in the client (mocked transport + clock)', 
     await client.markers(1, 1); // retries once, honoring the 1s Retry-After
     expect(transportTimes).toHaveLength(2);
     expect((transportTimes[1] as number) - (transportTimes[0] as number)).toBeGreaterThanOrEqual(1_000);
+  });
+});
+
+/**
+ * RESERVATION-RACE REGRESSIONS (dispatch-accounting correctness).
+ *
+ * Historical bug (found by the Linux verifier's repro at 2356a09):
+ * reservations happened BEFORE the paced permit (backoff/acquireSlot),
+ * and cap exhaustion was stored as a run-fatal stop - so N>cap concurrent
+ * callers globally stopped the run BEFORE anyone dispatched: actual
+ * network 0 while attemptsMade reported reserved-but-undelivered work,
+ * and every caller rejected (valid reserved work retroactively cancelled).
+ *
+ * Required invariants (no independent auth/throttle/deadline involved):
+ * - exactly `cap` dispatches happen; reserved counters match REAL dispatch;
+ * - callers holding reservations complete their work (fulfilled), only
+ *   the callers finding no room reject with budget-exhausted;
+ * - exhaustion never poisons shared state (stopped stays null).
+ */
+describe('reservation race: concurrent callers vs the attempt cap', () => {
+  it('N>cap: exactly cap dispatch, counters match, reserved work is NOT cancelled', async () => {
+    // coordinator repro shape: 4 concurrent callers, budget 2
+    const { client, budget, transportTimes } = budgetedClient({ maxAttempts: 2 });
+    const results = await Promise.allSettled([
+      client.markers(1, 1),
+      client.markers(2, 2),
+      client.markers(3, 3),
+      client.markers(4, 4),
+    ]);
+    // dispatch-accounting: exactly the cap reached the wire, and the
+    // budget counters count REAL dispatches (reserved == dispatched)
+    expect(transportTimes).toHaveLength(2);
+    expect(budget.attemptsMade).toBe(2);
+    expect(budget.exhausted).toBe(true);
+    // exhaustion is per-caller: the shared state stays non-fatal
+    expect(budget.stopped).toBeNull();
+    // two callers fulfilled - their reserved work was NOT retroactively
+    // cancelled by the other two finding the cap exhausted (old bug: 0)
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(2);
+    expect(rejected).toHaveLength(2);
+    for (const r of rejected) {
+      const reason = (r as PromiseRejectedResult).reason as UpstreamRunStoppedError;
+      expect(reason).toBeInstanceOf(UpstreamRunStoppedError);
+      expect(reason.cause).toBe('budget-exhausted');
+    }
+  });
+
+  it('budget 1 with 3 concurrent callers: exactly 1 dispatch, 1 fulfilled', async () => {
+    // the budget-1 shape of the repro (old behavior: actual 0, reported 1)
+    const { client, budget, transportTimes } = budgetedClient({ maxAttempts: 1 });
+    const results = await Promise.allSettled([
+      client.markers(1, 1),
+      client.markers(2, 2),
+      client.markers(3, 3),
+    ]);
+    expect(transportTimes).toHaveLength(1);
+    expect(budget.attemptsMade).toBe(1); // counters match real dispatch
+    expect(budget.exhausted).toBe(true);
+    expect(budget.stopped).toBeNull();
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((r) => r.status === 'rejected')).toHaveLength(2);
+  });
+
+  it('N == cap: every caller dispatches and fulfills', async () => {
+    const { client, budget, transportTimes } = budgetedClient({ maxAttempts: 3 });
+    const results = await Promise.allSettled([
+      client.markers(1, 1),
+      client.markers(2, 2),
+      client.markers(3, 3),
+    ]);
+    expect(transportTimes).toHaveLength(3);
+    expect(budget.attemptsMade).toBe(3);
+    expect(budget.exhausted).toBe(true);
+    expect(budget.stopped).toBeNull();
+    expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
+  });
+
+  it('fatal stops remain global: zero new dispatch after a concurrent 429', async () => {
+    // the reservation split must NOT weaken the fatal-stop invariant:
+    // after a throttle response, concurrent waiters fail fast at the
+    // reservation recheck without touching the network
+    const { client, budget, transportTimes } = budgetedClient({
+      maxAttempts: 10,
+      minCallGapMs: 2_000,
+      respond: ({ n }) =>
+        n === 0
+          ? { status: 429, body: '{"error":"wait"}', headers: { 'Retry-After': '1' } }
+          : { status: 200 },
+    });
+    const results = await Promise.allSettled([
+      client.markers(1, 1),
+      client.markers(2, 2),
+      client.markers(3, 3),
+      client.markers(4, 4),
+    ]);
+    expect(transportTimes).toHaveLength(1); // only the throttled dispatch
+    expect(budget.stopped).toBe('throttled');
+    expect(budget.attemptsMade).toBe(1); // reserved == dispatched here too
+    for (const r of results) {
+      expect(r.status).toBe('rejected');
+      const reason = (r as PromiseRejectedResult).reason as Error;
+      expect(
+        reason instanceof StatiqRunFatalError || reason instanceof UpstreamRunStoppedError,
+      ).toBe(true);
+    }
   });
 });

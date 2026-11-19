@@ -322,10 +322,6 @@ export class StatiqClient {
     let lastRetryAfterMs: number | undefined;
     // 1 initial attempt + `retries` retries; aborts are never retried
     for (let attempt = 0; attempt <= this.retries; attempt++) {
-      // Run budget gate: reserves every TRANSPORT try (retries included)
-      // against the shared hard cap and fails closed the moment the run
-      // is stopped. Nothing after this point may dispatch if it throws.
-      this.runBudget?.reserveAttempt();
       if (attempt > 0) {
         const override = lastRetryAfterMs;
         lastRetryAfterMs = undefined;
@@ -342,17 +338,20 @@ export class StatiqClient {
         }
         await this.backoffMs(attempt, override, signal);
       }
+      // 1) Paced permit FIRST: the limiter (and any backoff above) is fully
+      // awaited BEFORE any reservation - no up-front reservation can be
+      // cancelled by another waiter finding the cap exhausted.
       await this.acquireSlot(signal);
-      // A stop that fired while this worker waited at the limiter must
-      // never reach the network: fail fast before dispatch.
-      if (this.runBudget?.stopped) {
-        throw new UpstreamRunStoppedError(
-          this.runBudget.stopped,
-          this.runBudget.attemptsMade,
-          this.runBudget.maxAttempts,
-          this.runBudget.retryAfterMs,
-        );
-      }
+      // 2) Atomic reserve immediately before fetch, with NO await between a
+      // successful reserve and the dispatch (reservation-race invariant):
+      //  - fatal stop (first 429/401/403): this caller fails fast, zero NEW
+      //    dispatch after the stop site-wide;
+      //  - cap exhausted: ONLY this caller is refused (its earlier-paced
+      //    permit is wasted, no traffic) - work already reserved by other
+      //    callers proceeds; exhaustion never poisons shared state;
+      //  - success: reserved == dispatched, so the shared counters always
+      //    match real network work.
+      this.runBudget?.reserveAttempt();
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.timeoutMs);
       const onOuterAbort = () => controller.abort();

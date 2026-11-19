@@ -211,7 +211,9 @@ export async function planTripDetailed(
   return bundle;
   } catch (err) {
   if (err instanceof PlanningError) throw err;
-  // Run-fatal upstream stops (first throttle/auth, exhausted attempt cap)
+  // Run-fatal upstream stops (first throttle/auth) and per-caller cap
+  // refusals (budget-exhausted; never retroactively cancelling reserved
+  // work) both unwind the run as an honest not_determined
   if (err instanceof UpstreamRunStoppedError || err instanceof StatiqRunFatalError) {
     throw notDeterminedFromStop(runBudget, stats);
   }
@@ -269,7 +271,12 @@ function coverageEvidence(stats: RunProgressStats): string {
   return bits.length > 0 ? ` ${bits.join('; ')}.` : '';
 }
 
-/** Map a stopped budget (throttle/auth/exhausted) to an honest not_determined. */
+/**
+ * Map an upstream stop to an honest not_determined. Fatal stops
+ * (throttle/auth) are read from the budget; a null fatal cause means the
+ * unwinding error was a per-caller cap refusal (budget-exhausted -
+ * reserved work was never cancelled, the run simply found no room).
+ */
 function notDeterminedFromStop(budget: UpstreamBudget, stats: RunProgressStats): PlanningError {
   const coverage = coverageEvidence(stats);
   const attempts = `after ${budget.attemptsMade} of ${budget.maxAttempts} upstream attempts`;
