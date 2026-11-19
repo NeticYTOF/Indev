@@ -148,7 +148,7 @@ async function revalidateStop(btn: HTMLElement, plan: TripPlan): Promise<void> {
         chargers: Array<{ lastUsedOn: string | null }>;
       };
     };
-    const lastUsed = station.chargers.map((c) => c.lastUsedOn).filter(Boolean).sort().pop() ?? 'unknown';
+    const lastUsed = lastUsedLabel(station.chargers);
     box.innerHTML = `
       ${station.synthetic ? '<div class="banner banner-synthetic">Synthetic station (mock mode) — a fixed sample, not live charger data.</div>' : ''}
       <div class="stop-meta">
