@@ -33,8 +33,10 @@
  */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import http from 'node:http';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -58,6 +60,93 @@ export function fetchWallMs(planDeadlineMs, defaultMs = DEFAULT_FETCH_WALL_MS) {
     return planDeadlineMs + 30_000;
   }
   return defaultMs;
+}
+
+/**
+ * Durable, sanitized transport failure: the cause is CAPTURED (phase +
+ * code + both elapsed clocks), never lost in a generic catch. Fields are
+ * sanitized by construction: endpoint phase, a short code, timings and a
+ * message - never a token, header, body or route data.
+ */
+export class PlanRequestError extends Error {
+  constructor(phase, code, message, wallElapsedMs, monotonicElapsedMs) {
+    super(
+      `plan request failed at ${phase} (${code}) after ` +
+        `${Math.round(wallElapsedMs)}ms wall / ${Math.round(monotonicElapsedMs)}ms monotonic: ${message}`,
+    );
+    this.name = 'PlanRequestError';
+    this.phase = phase;
+    this.code = code;
+    this.wallElapsedMs = Math.round(wallElapsedMs);
+    this.monotonicElapsedMs = Math.round(monotonicElapsedMs);
+  }
+}
+
+/**
+ * The runner's plan request: an EXPLICIT bounded local transport over
+ * node:http. The configured wall (derived from the server's EFFECTIVE
+ * health budget + slack, see fetchWallMs) is the ONLY deadline.
+ *
+ * Why not fetch: Node's bundled undici applies DEFAULT headers/body
+ * timeouts (300s on the 6.29-series) INDEPENDENT of any AbortSignal - a
+ * coordinated wall beyond 300s would be silently truncated at 5 minutes
+ * (the probable cause of the observed 5-min active failure; the old catch
+ * lost the cause, so never provable from its artifacts). node:http client
+ * requests carry no such hidden defaults: the wall below is the only
+ * bound. On failure the error carries BOTH elapsed clocks - wall and
+ * monotonic - so a runtime suspension (wall >> monotonic) is never
+ * mislabeled as provider latency.
+ */
+export function planRequest(port, wallMs, body) {
+  return new Promise((resolve, reject) => {
+    const wallStart = Date.now();
+    const monoStart = performance.now();
+    const fail = (phase, code, message) => {
+      clearTimeout(deadlineTimer);
+      reject(
+        new PlanRequestError(phase, code, message, Date.now() - wallStart, performance.now() - monoStart),
+      );
+    };
+    const req = http.request(
+      {
+        host: 'localhost',
+        port,
+        path: '/api/plan',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        agent: false, // one-shot runner request: no keep-alive, no hidden defaults
+      },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('error', (err) => fail('body', err.code ?? 'BODY_ERROR', err.message));
+        res.on('aborted', () => fail('body', 'RESPONSE_ABORTED', 'response aborted mid-body'));
+        res.on('end', () => {
+          clearTimeout(deadlineTimer);
+          resolve({
+            httpStatus: status,
+            ok: status >= 200 && status < 300,
+            text: Buffer.concat(chunks).toString('utf8'),
+            ms: Date.now() - wallStart,
+            monotonicMs: performance.now() - monoStart,
+          });
+        });
+      },
+    );
+    // THE configured wall is the only bound: a local timer destroys the
+    // request with a labeled cause (durable, never lost)
+    const deadlineTimer = setTimeout(() => {
+      const err = new Error(`runner wall (${wallMs}ms) exceeded`);
+      err.code = 'RUNNER_WALL';
+      req.destroy(err);
+    }, wallMs);
+    req.on('error', (err) => {
+      const phase = err && err.code === 'RUNNER_WALL' ? 'deadline' : 'connect';
+      fail(phase, err?.code ?? 'REQUEST_ERROR', err?.message ?? 'request failed');
+    });
+    req.end(body);
+  });
 }
 
 /**
@@ -266,25 +355,21 @@ async function main() {
     }
   }
 
-  /** ONE request; explicit http status + wall time; no retries ever. The
-   *  wall is DERIVED from the server's effective budget (see below) - the
-   *  runner's parent env can diverge from the server's dotenv-merged
-   *  config, so the server's OWN sanitized health budget is authoritative. */
+  /** ONE request; explicit http status + BOTH elapsed clocks; no retries
+   *  ever. The wall is DERIVED from the server's effective health budget
+   *  (above) - the server's parent env can diverge from its dotenv-merged
+   *  config, so the server's OWN sanitized health budget is authoritative.
+   *  The request goes through planRequest (node:http): the configured wall
+   *  is the ONLY deadline - undici's default fetch headers/body timeouts
+   *  (300s) can no longer silently truncate a long coordinated wall. */
   async function runOnce(wallMs) {
-    const started = Date.now();
     const body = JSON.stringify({
       origin: { label: 'Delhi', lat: 28.6139, lon: 77.209 },
       destination: { label: 'Jaipur', lat: 26.9124, lon: 75.7873 },
       startSocPct: 100,
     });
-    const res = await fetch(`http://localhost:${PORT}/api/plan`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-      signal: AbortSignal.timeout(wallMs),
-    });
-    const text = await res.text();
-    return { httpStatus: res.status, ok: res.ok, text, ms: Date.now() - started };
+    const { httpStatus, ok, text, ms, monotonicMs } = await planRequest(PORT, wallMs, body);
+    return { httpStatus, ok, text, ms, monotonicMs };
   }
 
   function parsePlan(text) {
@@ -377,6 +462,7 @@ async function main() {
         expectedSource,
         sourceMatch,
         ms: result.ms,
+        monotonicMs: result.monotonicMs,
       };
     } else {
       outcome = {
@@ -387,11 +473,28 @@ async function main() {
         expectedSource,
         sourceMatch,
         ms: result.ms,
+        monotonicMs: result.monotonicMs,
       };
     }
   } catch (err) {
     if (err instanceof RunnerFail) {
       outcome = { outcome: err.outcome, error: `${err.name}: ${err.message}` };
+    } else if (err instanceof PlanRequestError) {
+      // DURABLE SANITIZED TRANSPORT CAUSE (the old catch lost it): phase +
+      // code + BOTH clocks travel with the outcome, so a runner wall hit
+      // or a socket failure is never a generic 'runner-error' again, and a
+      // runtime suspension (wall >> monotonic) is not mislabeled as
+      // provider latency
+      outcome = {
+        outcome: 'runner-error',
+        error: err.message,
+        transport: {
+          phase: err.phase,
+          code: err.code,
+          wallElapsedMs: err.wallElapsedMs,
+          monotonicElapsedMs: err.monotonicElapsedMs,
+        },
+      };
     } else {
       outcome = {
         outcome: 'runner-error',
