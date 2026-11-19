@@ -10,4 +10,6 @@ export * from './vehicle-catalog.js';
 export * from './corridor.js';
 export * from './plan-types.js';
 export * from './planner.js';
+export * from './trips.js';
+export * from './counters.js';
 export * from './utils.js';
