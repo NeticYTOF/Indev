@@ -1,7 +1,8 @@
 /**
- * Planner panel: origin/destination search with autocomplete, vehicle
- * selection (claimed vs user real-world range strictly separated),
- * start charge, and the plan action with honest error states.
+ * Planner compose card: route fields with a connected A→B motif, vehicle
+ * selection (claimed vs user real-world range strictly separated), start
+ * charge stepper, and the plan action with honest error states.
+ * Night Drive markup; all validation logic unchanged.
  */
 import * as maplibregl from 'maplibre-gl';
 import type { GeocodeHit, VehicleCatalogEntry } from '@indeev/core';
@@ -14,6 +15,11 @@ import { toast } from './toast.js';
 interface PlaceInput {
   hit: GeocodeHit | null;
 }
+
+/** Start-charge stepper state (single source of truth for this card). */
+const MIN_SOC = 10;
+const MAX_SOC = 100;
+const SOC_STEP = 5;
 
 export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
   root.innerHTML = '';
@@ -42,37 +48,33 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
   const form = el(`<form class="planner-form" autocomplete="off" novalidate></form>`) as HTMLFormElement;
   section.appendChild(form);
 
-  const intro = el(`<p class="planner-intro">Fastest route with the fewest charging stops, planned over live Statiq chargers.</p>`);
+  // ---- brand header: the product identity lives in the card ----
+  const head = el(`
+    <div class="planner-head">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">IndEV</span>
+      <span class="brand-tag">EV route planner · India</span>
+    </div>
+  `);
+  form.appendChild(head);
+
+  const intro = el(`<p class="planner-intro">Fastest route, fewest charging stops, planned over live Statiq chargers.</p>`);
   form.appendChild(intro);
 
-  const originField = makeSearchField('From', 'Delhi', (hit) => {
+  const originField = makeSearchField('From', 'Delhi', 'origin', (hit) => {
     origin.hit = hit;
   });
-  const destField = makeSearchField('To', 'Jaipur', (hit) => {
+  const destField = makeSearchField('To', 'Jaipur', 'destination', (hit) => {
     destination.hit = hit;
   });
-  form.append(originField.wrap, destField.wrap);
 
-  const errorBox = el(`<div class="error-box hidden" role="alert"></div>`);
+  const routeFields = el(`<div class="route-fields"></div>`);
+  routeFields.append(originField.wrap);
+  const swap = el(`<button type="button" class="planner-swap" aria-label="Swap origin and destination">⇅</button>`) as HTMLButtonElement;
+  routeFields.appendChild(swap);
+  routeFields.appendChild(destField.wrap);
+  form.appendChild(routeFields);
 
-  // Mode provenance: the pending label must reflect the server mode from
-  // /api/health - never assume live.
-  let serverIsMock = false;
-  void api.health().then((h) => {
-    serverIsMock = h.mock;
-    if (h.ai) {
-      aiBox.classList.remove('hidden');
-    }
-  });
-
-  // clearing stale validation: picking a suggestion (or typing anew) resolves
-  // the "pick both places" error immediately, not only on the next submit
-  for (const field of [originField, destField]) {
-    field.input.addEventListener('picked', () => hideError(errorBox));
-    field.input.addEventListener('input', () => hideError(errorBox));
-  }
-
-  const swap = el(`<button type="button" class="btn btn-ghost planner-swap" aria-label="Swap origin and destination">⇅</button>`) as HTMLButtonElement;
   swap.addEventListener('click', () => {
     const tmp = origin.hit;
     origin.hit = destination.hit;
@@ -80,7 +82,39 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
     originField.input.value = origin.hit?.label ?? '';
     destField.input.value = destination.hit?.label ?? '';
   });
-  form.appendChild(swap);
+
+  const errorBox = el(`<div class="error-box hidden" role="alert"></div>`);
+
+  // inline offline state: shown only while the server is unreachable
+  const offline = el(`
+    <div class="server-offline hidden" role="status">
+      <span aria-hidden="true">●</span>
+      <span>Server offline — start it with <strong>npm run dev</strong>, then try again.</span>
+    </div>
+  `);
+
+  // Mode provenance: the pending label must reflect the server mode from
+  // /api/health - never assume live.
+  let serverIsMock = false;
+  void api
+    .health()
+    .then((h) => {
+      serverIsMock = h.mock;
+      offline.classList.add('hidden');
+      if (h.ai) {
+        aiBox.classList.remove('hidden');
+      }
+    })
+    .catch(() => {
+      offline.classList.remove('hidden');
+    });
+
+  // clearing stale validation: picking a suggestion (or typing anew) resolves
+  // the "pick both places" error immediately, not only on the next submit
+  for (const field of [originField, destField]) {
+    field.input.addEventListener('picked', () => hideError(errorBox));
+    field.input.addEventListener('input', () => hideError(errorBox));
+  }
 
   // vehicle selector
   const vehicleWrap = el(`<div class="field-row vehicle-row"></div>`);
@@ -98,15 +132,56 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
     vehicleRow.innerHTML = '<p class="hint">Vehicle catalog unavailable (server offline?).</p>';
   });
 
-  // start charge
-  const socRow = el(`<div class="field-row soc-row"><label for="start-soc">Current charge</label><div class="soc-input"><input id="start-soc" type="number" min="5" max="100" step="1" value="100" inputmode="numeric" /><span class="unit">%</span></div></div>`);
+  // ---- start charge stepper ----
+  let startSoc = 100;
+  const socRow = el(`
+    <div class="field-row soc-row">
+      <label id="soc-label">Current charge</label>
+      <div class="stepper" role="group" aria-labelledby="soc-label">
+        <button type="button" class="stepper-btn" data-step="-5" aria-label="Decrease charge">−</button>
+        <span class="stepper-value" aria-live="polite">100%</span>
+        <button type="button" class="stepper-btn" data-step="5" aria-label="Increase charge">＋</button>
+      </div>
+    </div>
+  `);
   form.appendChild(socRow);
+  const socValue = socRow.querySelector('.stepper-value') as HTMLElement;
+  const renderSoc = (): void => {
+    socValue.textContent = `${startSoc}%`;
+    socRow.querySelectorAll<HTMLButtonElement>('.stepper-btn').forEach((b) => {
+      const step = Number(b.dataset.step);
+      b.disabled = step < 0 ? startSoc - SOC_STEP < MIN_SOC : startSoc + SOC_STEP > MAX_SOC;
+    });
+  };
+  socRow.querySelectorAll<HTMLButtonElement>('.stepper-btn').forEach((b) => {
+    b.addEventListener('click', () => {
+      const step = Number(b.dataset.step);
+      startSoc = Math.min(MAX_SOC, Math.max(MIN_SOC, startSoc + step));
+      renderSoc();
+    });
+  });
+  renderSoc();
 
-  // action
+  form.appendChild(offline);
+
+  // ---- action ----
   const actions = el(`<div class="planner-actions"></div>`);
-  const planButton = el(`<button type="submit" class="btn btn-primary planner-go">Plan route</button>`) as HTMLButtonElement;
+  const planButton = el(`
+    <button type="submit" class="btn btn-primary planner-go">
+      <span class="spinner hidden" aria-hidden="true"></span>
+      <span class="go-label">Plan route</span>
+    </button>
+  `) as HTMLButtonElement;
   actions.appendChild(planButton);
   form.appendChild(actions);
+  const planLabel = planButton.querySelector('.go-label') as HTMLElement;
+  const planSpinner = planButton.querySelector('.spinner') as HTMLElement;
+
+  const setLoading = (loading: boolean, label: string): void => {
+    planButton.disabled = loading;
+    planLabel.textContent = label;
+    planSpinner.classList.toggle('hidden', !loading);
+  };
 
   // AI planning (hidden unless the server has an AI provider configured).
   const aiBox = el(`
@@ -131,7 +206,6 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
     }
     const aiRequestEl = document.getElementById('ai-request') as HTMLTextAreaElement | null;
     const customRequest = aiRequestEl?.value.trim() || undefined;
-    const startSoc = Number((document.getElementById('start-soc') as HTMLInputElement).value);
     const vehicleResult = readVehicleSelection(vehicleRow);
     if (vehicleResult.kind === 'invalid') {
       showError(errorBox, vehicleResult.reason);
@@ -144,7 +218,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
       const { plan, ai } = await api.aiPlan({
         origin: { label: origin.hit.label, lat: origin.hit.lat, lon: origin.hit.lon },
         destination: { label: destination.hit.label, lat: destination.hit.lat, lon: destination.hit.lon },
-        startSocPct: Number.isFinite(startSoc) ? startSoc : undefined,
+        startSocPct: startSoc,
         ...(vehicleResult.kind === 'ok' ? { vehicle: vehicleResult.vehicle } : {}),
         ...(customRequest ? { request: customRequest } : {}),
       });
@@ -168,7 +242,6 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
       showError(errorBox, 'Pick both a starting point and a destination from the suggestions.');
       return;
     }
-    const startSoc = Number((document.getElementById('start-soc') as HTMLInputElement).value);
     const vehicleResult = readVehicleSelection(vehicleRow);
     if (vehicleResult.kind === 'invalid') {
       // Inline validation naming the missing input; the resolved origin and
@@ -177,14 +250,13 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
       return;
     }
 
-    planButton.disabled = true;
-    planButton.textContent = serverIsMock ? 'Planning synthetic route...' : 'Planning live route...';
+    setLoading(true, serverIsMock ? 'Planning synthetic route…' : 'Planning live route…');
     hideError(errorBox);
     try {
       const req: PlanRequest = {
         origin: { label: origin.hit.label, lat: origin.hit.lat, lon: origin.hit.lon },
         destination: { label: destination.hit.label, lat: destination.hit.lat, lon: destination.hit.lon },
-        startSocPct: Number.isFinite(startSoc) ? startSoc : undefined,
+        startSocPct: startSoc,
       };
       if (vehicleResult.kind === 'ok') req.vehicle = vehicleResult.vehicle;
       const { plan } = await api.plan(req);
@@ -198,8 +270,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
         showError(errorBox, message);
       }
     } finally {
-      planButton.disabled = false;
-      planButton.textContent = 'Plan route';
+      setLoading(false, 'Plan route');
     }
   });
 }
@@ -330,12 +401,15 @@ function buildVehicleSelect(vehicleRow: HTMLElement, catalog: VehicleCatalogEntr
 function makeSearchField(
   labelText: string,
   placeholder: string,
+  field: 'origin' | 'destination',
   onPicked: (hit: GeocodeHit | null) => void,
 ): { wrap: HTMLElement; input: HTMLInputElement } {
+  const letter = field === 'origin' ? 'A' : 'B';
   const wrap = el(`
-    <div class="search-field">
+    <div class="search-field" data-field="${field}">
       <label class="search-label">${labelText}</label>
       <div class="search-box">
+        <span class="search-icon" aria-hidden="true">${letter}</span>
         <input type="search" placeholder="${placeholder}" aria-label="${labelText}" />
         <div class="suggestions hidden" role="listbox"></div>
       </div>
@@ -366,7 +440,6 @@ function makeSearchField(
           list.classList.remove('hidden');
           return;
         }
-        const pickedWrapper = wrap;
         const seen = new Set<string>();
         for (const h of hits) {
           // identity: name + rounded coords + admin context - Photon can
@@ -381,7 +454,6 @@ function makeSearchField(
             onPicked(h);
             list.classList.add('hidden');
             input.dispatchEvent(new Event('picked'));
-            void pickedWrapper;
           });
           item.addEventListener('mousemove', () => setActive(index));
           list.appendChild(item);
@@ -391,7 +463,6 @@ function makeSearchField(
           items.forEach((n, ni) => n.classList.toggle('active', ni === idx));
           activeIndex = idx;
         }
-        void setActive;
         list.classList.remove('hidden');
       } catch {
         list.classList.add('hidden');
