@@ -99,6 +99,14 @@ export interface StatiqStationDetail {
   } | null;
 }
 
+export interface StatiqDetailsResponse {
+  ok: boolean;
+  live: boolean;
+  retained: boolean;
+  source: string;
+  station: StatiqStationDetail | null;
+}
+
 // ---------- Domain vocabulary ----------
 
 /** Charger brands we prefer, best first. Derived from station/charger names. */
