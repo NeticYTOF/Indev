@@ -207,6 +207,9 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
   let busyStartedAt = 0;
   const startBusy = (): void => {
     if (serverIsMock) return; // synthetic plans are instant - no live claims
+    // Plan and AI runs can overlap (separately disabled buttons); never
+    // leak the previous run's interval - clear before starting another.
+    if (busyTimer !== null) window.clearInterval(busyTimer);
     busyStartedAt = Date.now();
     busyElapsed.textContent = '0s elapsed';
     liveBusy.classList.remove('hidden');
