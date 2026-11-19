@@ -103,6 +103,24 @@ export type PlanStatus = 'ok' | 'degraded';
 /** Where a plan came from: live upstream, or synthetic mock data. */
 export type PlanSource = 'live' | 'synthetic';
 
+/**
+ * AI-safe candidate summary (planner includeCandidates option).
+ * Deliberately carries NO plug-occupancy information: usable CCS2 plugs
+ * are offered to the AI without telling it which are occupied.
+ */
+export interface PlanCandidate {
+  stationId: number;
+  name: string;
+  brand: Brand;
+  chainageKm: number;
+  offRouteKm: number;
+  city: string | null;
+  rating: number | null;
+  reviewCount: number | null;
+  maxKw: number | null;
+  pricePerKwh: number | null;
+}
+
 export interface TripPlan {
   id: string;
   createdAt: string;
@@ -120,6 +138,8 @@ export interface TripPlan {
   /** Unique stations examined live during this planning run. */
   stationsSeen: number;
   warnings: string[];
+  /** Present when planned with includeCandidates (AI-safe, no occupancy). */
+  candidates?: PlanCandidate[];
 }
 
 export interface PlanRunBudget {
@@ -133,6 +153,8 @@ export interface PlanOptions {
   startSocPct?: number;
   /** Bounded-run controls: deadline + request budget with cancellation. */
   runBudget?: PlanRunBudget;
+  /** Attach AI-safe candidates (no occupancy) to the plan. */
+  includeCandidates?: boolean;
   /** Minimum SoC the plan promises on arrival anywhere. */
   minArrivalSocPct?: number;
   /** SoC ceiling per stop (past this the DC curve tapers hard). */
@@ -170,6 +192,7 @@ export const DEFAULT_PLAN_OPTIONS: Required<PlanOptions> = {
     deadlineMs: 5 * 60_000,
     maxUpstreamCalls: 220,
   },
+  includeCandidates: false,
 };
 /*
  * Only battery size (75 kWh) and the 300 km safe running range are

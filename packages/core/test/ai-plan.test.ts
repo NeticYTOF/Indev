@@ -1,0 +1,308 @@
+import { describe, expect, it } from 'vitest';
+import { planTripDetailed } from '../src/planner.js';
+import { assembleAiPlan, validateAiChoice } from '../src/ai-plan.js';
+import { HARIER_EV_75 } from '../src/vehicle.js';
+import type { OsrmRouter, RouteResult } from '../src/router.js';
+import type { StatiqClient } from '../src/statiq.js';
+import type { StatiqDetailsResponse, StatiqMarkersResponse, StatiqStationDetail, StatiqCharger } from '../src/types.js';
+import type { Coords } from '../src/geo.js';
+
+const KM_PER_DEG = 111.32;
+
+function makeRoute(totalKm: number): RouteResult {
+  const n = Math.max(2, Math.ceil(totalKm / 10));
+  const geometry: Coords[] = Array.from({ length: n + 1 }, (_, i) => ({
+    lat: (totalKm / KM_PER_DEG) * (i / n),
+    lon: 0,
+  }));
+  return { distanceKm: totalKm, durationMin: totalKm, geometry };
+}
+
+function fakeRouter(totalKm: number): OsrmRouter {
+  return { route: async () => makeRoute(totalKm) } as unknown as OsrmRouter;
+}
+
+interface StationSpec {
+  id: number;
+  name: string;
+  chainageKm: number;
+}
+
+function stationDetail(spec: StationSpec): StatiqStationDetail {
+  const chargers: StatiqCharger[] = [
+    {
+      chargerId: spec.id * 10 + 1,
+      name: `${spec.name} DC`,
+      type: 'DC',
+      kw: 60,
+      pricePerKwh: 20,
+      currency: 'INR',
+      lastUsedOn: '19/11/2026',
+      connectors: [
+        { displayId: 1, connectorId: spec.id * 100, type: 'CCS-2', status: 'available', available: true, note: null },
+      ],
+    },
+  ];
+  return {
+    stationId: spec.id,
+    name: spec.name,
+    lat: spec.chainageKm / KM_PER_DEG,
+    lon: 0,
+    address: null,
+    area: null,
+    city: null,
+    landmark: null,
+    hours: '00:00 To 23:59',
+    openText: 'Open Now',
+    rating: 4.0,
+    reviewCount: 100,
+    accessType: 'public',
+    navUrl: '',
+    stationUrl: '',
+    imageUrl: null,
+    amenities: [],
+    stepsToReach: null,
+    chargers,
+    summary: null,
+  };
+}
+
+function fakeStatiq(specs: StationSpec[]): StatiqClient {
+  const details = new Map<number, StatiqStationDetail>(specs.map((s) => [s.id, stationDetail(s)]));
+  return {
+    markers: async (lat: number): Promise<StatiqMarkersResponse> => {
+      const centerKm = lat * KM_PER_DEG;
+      const stations = specs
+        .filter((s) => Math.abs(s.chainageKm - centerKm) <= 13)
+        .map((s) => ({
+          stationId: s.id,
+          name: s.name,
+          lat: s.chainageKm / KM_PER_DEG,
+          lon: 0,
+          address: null,
+          accessType: 1,
+          isCommunityListed: false,
+          stationUrl: '',
+        }));
+      return { ok: true, live: true, retained: false, source: 'test', count: stations.length, stations };
+    },
+    detailsWithMeta: async (id: number) => ({
+      response: {
+        ok: true,
+        live: true,
+        retained: false,
+        source: 'test',
+        station: details.get(id) ?? null,
+      } as StatiqDetailsResponse,
+      fetchedAt: new Date(),
+    }),
+  } as unknown as StatiqClient;
+}
+
+const O = { label: 'Origin', lat: 0, lon: 0 };
+const D = (km: number) => ({ label: 'Destination', lat: km / KM_PER_DEG, lon: 0 });
+
+// Long route with stations every 50 km; the greedy plan picks ~300 km legs.
+const stations: StationSpec[] = Array.from({ length: 14 }, (_, i) => ({
+  id: 300 + i,
+  name: `Statiq ${i}`,
+  chainageKm: 50 * (i + 1),
+}));
+
+describe('validateAiChoice', () => {
+  it('accepts the AI choosing the same stops as the base plan', async () => {
+    const bundle = await planTripDetailed(
+      { router: fakeRouter(700), statiq: fakeStatiq(stations) },
+      O,
+      D(700),
+      { includeCandidates: true },
+    );
+    const ids = bundle.plan.stops.map((s) => s.station.stationId);
+    const v = validateAiChoice(bundle, { stationIds: ids }, {}, HARIER_EV_75);
+    expect(v.ok).toBe(true);
+  });
+
+  it('accepts a valid alternative sequence with coherent numbers', async () => {
+    const bundle = await planTripDetailed(
+      { router: fakeRouter(700), statiq: fakeStatiq(stations) },
+      O,
+      D(700),
+      { includeCandidates: true },
+    );
+    // choose 300 km + 300 km legs instead of the greedy ~300 + ~300 picks
+    const alt = [305, 311]; // chainages 300 km and 600 km
+    const v = validateAiChoice(bundle, { stationIds: alt }, {}, HARIER_EV_75);
+    expect(v.ok).toBe(true);
+    if (!v.ok) return;
+    const plan = assembleAiPlan(bundle, v.seq, { applied: true, notes: 'prefers even spacing' }, {}, HARIER_EV_75);
+    expect(plan.stops.map((s) => s.station.stationId)).toEqual(alt);
+    for (const s of plan.stops) {
+      expect(s.arriveSocPct).toBeGreaterThanOrEqual(10 - 0.5);
+      expect(s.leaveSocPct).toBeGreaterThanOrEqual(s.arriveSocPct);
+      expect(s.legKm).toBeLessThanOrEqual(300.5);
+    }
+    expect(plan.totals.finalSocPct).toBeGreaterThanOrEqual(10);
+    expect(plan.warnings.some((w) => w.includes('AI'))).toBe(true);
+  });
+
+  it('rejects unknown ids', async () => {
+    const bundle = await planTripDetailed(
+      { router: fakeRouter(700), statiq: fakeStatiq(stations) },
+      O,
+      D(700),
+      { includeCandidates: true },
+    );
+    const v = validateAiChoice(bundle, { stationIds: [999] }, {}, HARIER_EV_75);
+    expect(v.ok).toBe(false);
+    if (v.ok) return;
+    expect(v.reason).toContain('not among');
+  });
+
+  it('rejects out-of-order sequences', async () => {
+    const bundle = await planTripDetailed(
+      { router: fakeRouter(700), statiq: fakeStatiq(stations) },
+      O,
+      D(700),
+      { includeCandidates: true },
+    );
+    const v = validateAiChoice(bundle, { stationIds: [311, 301] }, {}, HARIER_EV_75);
+    expect(v.ok).toBe(false);
+    if (v.ok) return;
+    expect(v.reason).toContain('order');
+  });
+
+  it('rejects a leg beyond the 300 km safe range (hand-built candidates)', () => {
+    const bundle = handBuiltBundle([50, 200, 450, 650], 700);
+    const v = validateAiChoice(bundle, { stationIds: [idAt(50), idAt(450)] }, {}, HARIER_EV_75);
+    expect(v.ok).toBe(false);
+    if (v.ok) return;
+    expect(v.reason).toContain('safe running range');
+  });
+
+  it('rejects a first stop the starting charge cannot reach', () => {
+    const bundle = handBuiltBundle([65, 200, 450, 650], 700);
+    // 65 km from a 20% start leaves ~4.8% on arrival - below the 10% floor
+    const v = validateAiChoice(
+      bundle,
+      { stationIds: [idAt(65)] },
+      { startSocPct: 20 },
+      HARIER_EV_75,
+    );
+    expect(v.ok).toBe(false);
+    if (v.ok) return;
+    expect(v.reason.toLowerCase()).toContain('cannot reach');
+  });
+});
+
+const STATION_BASE_ID = 900;
+/** Deterministic per-chainage id so tests can reference bundle stations. */
+function idAt(chainage: number): number {
+  return STATION_BASE_ID + chainage;
+}
+
+/**
+ * Build a bundle-shaped object with candidates at the given chainages —
+ * for testing validation without the greedy planner needing to succeed.
+ */
+function handBuiltBundle(chainages: number[], totalKm: number) {
+  const route = makeRoute(totalKm);
+  const usableCandidates = chainages.map((ch) => {
+    const id = idAt(ch);
+    return {
+      candidate: {
+        stationId: id,
+        name: `Hand ${ch}`,
+        lat: ch / KM_PER_DEG,
+        lon: 0,
+        chainageKm: ch,
+        offRouteKm: 0,
+        marker: {
+          stationId: id,
+          name: `Hand ${ch}`,
+          lat: ch / KM_PER_DEG,
+          lon: 0,
+          address: null,
+          accessType: 1,
+          isCommunityListed: false,
+          stationUrl: '',
+        },
+      },
+      summary: { total: 1, usable: 1, free: 1, occupied: 0, uncertain: 0, faulted: 0, offline: 0, maxKw: 60, pricePerKwh: 20, hasContradiction: false, isUsable: true },
+      view: {
+        stationId: id,
+        name: `Hand ${ch}`,
+        brand: 'statiq' as const,
+        lat: ch / KM_PER_DEG,
+        lon: 0,
+        address: null,
+        city: null,
+        hours: null,
+        openText: null,
+        rating: 4,
+        reviewCount: 10,
+        reliability: null,
+        fetchedAt: new Date().toISOString(),
+        amenities: [],
+        stationUrl: null,
+        navUrl: null,
+        chargers: [],
+      },
+    };
+  });
+  return {
+    plan: { routeDistanceKm: route.distanceKm },
+    usableCandidates,
+    route,
+  };
+}
+
+describe('AI-safe candidates', () => {
+  it('carry no plug occupancy and no health detail', async () => {
+    const occupied: StationSpec[] = [
+      { id: 50, name: 'Busy Statiq', chainageKm: 100 },
+      ...Array.from({ length: 10 }, (_, i) => ({ id: 60 + i, name: `S ${i}`, chainageKm: 250 + i * 50 })),
+    ];
+    const statiq = fakeStatiq(occupied);
+    // make station 50's plugs occupied-but-working
+    const original = (statiq as unknown as { detailsWithMeta: (id: number) => Promise<{ response: StatiqDetailsResponse }> }).detailsWithMeta;
+    (statiq as unknown as Record<string, unknown>).detailsWithMeta = async (id: number) => {
+      const res = await original(id);
+      if (id === 50 && res.response.station?.chargers[0]) {
+        res.response.station.chargers[0] = {
+          ...res.response.station.chargers[0],
+          connectors: [
+            { displayId: 1, connectorId: 5001, type: 'CCS-2', status: 'charging', available: false, note: 'Charging' },
+          ],
+        } as never;
+      }
+      return res;
+    };
+    const bundle = await planTripDetailed(
+      { router: fakeRouter(700), statiq },
+      O,
+      D(700),
+      { includeCandidates: true },
+    );
+    const cands = bundle.plan.candidates ?? [];
+    expect(cands.length).toBeGreaterThan(0);
+    const json = JSON.stringify(cands);
+    // the AI must never see occupancy
+    expect(json).not.toContain('charging');
+    expect(json).not.toContain('occupied');
+    expect(json).not.toContain('available');
+    // fields it does get
+    const sample = cands[0] as unknown as Record<string, unknown>;
+    expect(Object.keys(sample).sort()).toEqual([
+      'brand',
+      'chainageKm',
+      'city',
+      'maxKw',
+      'name',
+      'offRouteKm',
+      'pricePerKwh',
+      'rating',
+      'reviewCount',
+      'stationId',
+    ]);
+  });
+});

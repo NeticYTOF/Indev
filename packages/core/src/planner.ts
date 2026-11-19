@@ -24,6 +24,7 @@ import type { StatiqStationDetail } from './types.js';
 import { resolveVehicle, type ResolvedVehicle } from './vehicle-catalog.js';
 import {
   DEFAULT_PLAN_OPTIONS,
+  type PlanCandidate,
   type PlanOptions,
   type PlanRunBudget,
   type PlanStatus,
@@ -48,6 +49,14 @@ interface Candidate {
   view: StationLiveView;
 }
 
+export type { Candidate as PlannerCandidate };
+export interface PlanBundle {
+  plan: TripPlan;
+  /** Rich usable candidates from this run (views incl. plug health). */
+  usableCandidates: Candidate[];
+  route: { distanceKm: number; durationMin: number; geometry: import('./geo.js').Coords[] };
+}
+
 interface Cursor {
   chainageKm: number;
   /** detour to rejoin the route from this point (0 for the origin). */
@@ -62,6 +71,8 @@ interface ChosenStop {
   legKm: number;
   arriveSocPct: number;
 }
+
+export type { ChosenStop };
 
 export class PlanningError extends Error {
   /** Machine-readable outcome for UI/MCP: not_determined is never a plan. */
@@ -102,6 +113,20 @@ export async function planTrip(
   destination: { label: string; lat: number; lon: number },
   options: PlanOptions = {},
 ): Promise<TripPlan> {
+  return (await planTripDetailed(deps, origin, destination, options)).plan;
+}
+
+/**
+ * Like planTrip, but also returns this run's rich candidate set and route,
+ * so callers (e.g. the AI planner) can validate and rebuild alternatives
+ * without re-fetching anything live.
+ */
+export async function planTripDetailed(
+  deps: PlannerDeps,
+  origin: { label: string; lat: number; lon: number },
+  destination: { label: string; lat: number; lon: number },
+  options: PlanOptions = {},
+): Promise<PlanBundle> {
   const opts = { ...DEFAULT_PLAN_OPTIONS, ...options };
   const vehicle = deps.vehicle ?? HARIER_EV_75;
   const resolvedVehicle: ResolvedVehicle = deps.resolvedVehicle ?? resolveVehicle();
@@ -139,11 +164,11 @@ export async function planTrip(
   };
 
   try {
-  const plan = await planCore(deps, origin, destination, opts, vehicle, vehicleMeta, {
+  const bundle = await planCore(deps, origin, destination, opts, vehicle, vehicleMeta, {
     countCall,
     signal: deadlineController.signal,
   });
-  return plan;
+  return bundle;
   } catch (err) {
   if (err instanceof PlanningError) throw err;
   if (err instanceof UpstreamBudgetError) {
@@ -183,7 +208,7 @@ async function planCore(
   vehicle: VehicleConfig,
   vehicleMeta: PlanVehicleMeta,
   hooks: GuardHooks,
-): Promise<TripPlan> {
+): Promise<PlanBundle> {
   /** Guard wrapper: counts calls, enforces budget, and threads the deadline. */
   const guardedStatiq = {
     markers: (lat: number, lon: number) => {
@@ -302,7 +327,7 @@ async function planCore(
   const totals = computeTotals(stops, totalKm, route, opts, vehicle);
 
   const status: PlanStatus = corridor.failedSamples.length > 0 ? 'degraded' : 'ok';
-  return {
+  const plan: TripPlan = {
     id: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
     origin,
@@ -317,6 +342,28 @@ async function planCore(
     totals,
     stationsSeen: corridor.stationsSeen,
     warnings,
+    // AI flow only: candidate summary WITHOUT occupancy (usable plugs are
+    // offered; the AI is never told which are occupied).
+    ...(opts.includeCandidates
+      ? { candidates: usable.map(toAiCandidate) }
+      : {}),
+  };
+  return { plan, usableCandidates: usable, route };
+}
+
+/** AI-safe candidate projection: no plug occupancy, no health detail. */
+function toAiCandidate(c: Candidate): PlanCandidate {
+  return {
+    stationId: c.candidate.stationId,
+    name: c.view.name,
+    brand: c.view.brand,
+    chainageKm: round1(c.candidate.chainageKm),
+    offRouteKm: round1(c.candidate.offRouteKm),
+    city: c.view.city,
+    rating: c.view.rating,
+    reviewCount: c.view.reviewCount,
+    maxKw: c.summary.maxKw,
+    pricePerKwh: c.summary.pricePerKwh,
   };
 }
 
@@ -392,7 +439,7 @@ function chooseNextStop(
 }
 
 /** Per-stop charge/price/time numbers, consistent with the selection pass. */
-function finalize(
+export function finalize(
   chosen: ChosenStop[],
   totalKm: number,
   route: { distanceKm: number; durationMin: number },
@@ -462,7 +509,7 @@ function legTimeMin(legKm: number, route: { distanceKm: number; durationMin: num
   return route.distanceKm > 0 ? route.durationMin * (legKm / route.distanceKm) : 0;
 }
 
-function computeTotals(
+export function computeTotals(
   stops: PlanStop[],
   totalKm: number,
   route: { distanceKm: number; durationMin: number },
