@@ -35,8 +35,14 @@ describe('planning failure reveal (keyboard reach + context restore)', () => {
     // 'nearest' left the title pinned at the bottom edge with the
     // details below the fold (rendered review); 'start' aligns the
     // failure top so it reads title-down.
+    //
+    // Scoped to the ERROR-BOX reveal ONLY (the \`box.\` subject): the
+    // autocomplete's arrow-key navigation legitimately scrolls the
+    // active suggestion with block:'nearest' (items[activeIndex]) and
+    // must never be banned. Source contracts must not globally forbid
+    // valid behavior elsewhere in the file.
     expect(plannerSrc).toContain("box.scrollIntoView({ block: 'start' })");
-    expect(plannerSrc).not.toContain("block: 'nearest'");
+    expect(plannerSrc).not.toContain("box.scrollIntoView({ block: 'nearest' })");
   });
 
   it('returns focus to the submitting button after BOTH failed run paths', () => {
