@@ -88,12 +88,12 @@ export function buildAnimatedExportSvg(plan: TripPlan): string {
       const begin = (drawTime * (i + 1)) / (stopPts.length + 1);
       return `
     <g class="stop" transform="translate(${p.x.toFixed(1)},${p.y.toFixed(1)})">
-      <circle r="13" fill="#ffffff"/>
-      <circle r="10" fill="#101623">
+      <circle r="13" fill="#E9F1FC"/>
+      <circle r="10" fill="#131F33" stroke="#4D9FFF" stroke-width="2.5">
         <animate attributeName="r" from="10" to="10" begin="${begin.toFixed(2)}s" dur="0.01s" fill="freeze"/>
         <animate attributeName="opacity" from="0" to="1" begin="${begin.toFixed(2)}s" dur="0.28s" fill="freeze"/>
       </circle>
-      <text y="4" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff" font-family="Inter, sans-serif">${i + 1}</text>
+      <text y="4" text-anchor="middle" font-size="11" font-weight="700" fill="#F1F5FB" font-family="Inter, sans-serif">${i + 1}</text>
     </g>`;
     })
     .join('');
@@ -111,8 +111,8 @@ export function buildAnimatedExportSvg(plan: TripPlan): string {
     .map(
       (s, i) => `
     <g class="stat" transform="translate(${70 + i * 177}, ${H - 66})">
-      <text font-size="11" font-weight="700" fill="#a8b0c0" font-family="Inter, sans-serif" letter-spacing="1.2">${escapeXml(s.label).toUpperCase()}</text>
-      <text y="24" font-size="20" font-weight="700" fill="#101623" font-family="Inter, sans-serif">${escapeXml(s.value)}</text>
+      <text font-size="11" font-weight="700" fill="#6C7B95" font-family="Inter, sans-serif" letter-spacing="1.2">${escapeXml(s.label).toUpperCase()}</text>
+      <text y="24" font-size="20" font-weight="700" fill="#F1F5FB" font-family="Inter, sans-serif">${escapeXml(s.value)}</text>
     </g>`,
     )
     .join('');
@@ -123,8 +123,8 @@ export function buildAnimatedExportSvg(plan: TripPlan): string {
   );
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" font-family="Inter, sans-serif">
-  <rect width="${W}" height="${H}" fill="#ffffff"/>
-  <rect x="0" y="0" width="${W}" height="${H}" fill="none" stroke="#e3e7ee" stroke-width="2"/>
+  <rect width="${W}" height="${H}" fill="#0E1626"/>
+  <rect x="1" y="1" width="${W - 2}" height="${H - 2}" fill="none" stroke="#2C3D5C" stroke-width="2" rx="0"/>
 
   <style>
     .draw { stroke-dasharray: ${totalPathLen}; stroke-dashoffset: ${totalPathLen}; animation: draw ${drawTime}s cubic-bezier(.4,.1,.2,1) forwards; }
@@ -134,26 +134,28 @@ export function buildAnimatedExportSvg(plan: TripPlan): string {
     text { user-select: none; }
   </style>
 
-  <text x="${padX}" y="52" font-size="30" font-weight="700" fill="#101623">${routeTitle}</text>
-  <text x="${padX}" y="76" font-size="15" fill="#7d8698">${vehicleLine}${plan.source === 'synthetic' ? ' · SYNTHETIC DATA (MOCK) — SCHEMATIC GEOMETRY' : ''}</text>
+  <text x="${padX}" y="52" font-size="30" font-weight="700" fill="#F1F5FB" letter-spacing="-0.5">${routeTitle}</text>
+  <text x="${padX}" y="76" font-size="15" fill="#A9B8CF">${vehicleLine}${plan.source === 'synthetic' ? ' · SYNTHETIC DATA (MOCK) — SCHEMATIC GEOMETRY' : ''}</text>
 
   <!-- static base route: full path at low opacity so previews without
        SMIL/CSS animation still show the route -->
-  <path d="${path}" fill="none" stroke="#2463eb" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="0.18"/>
-  <path d="${path}" fill="none" stroke="#ffffff" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" opacity="0.001"/>
-  <path class="draw" d="${path}" fill="none" stroke="#2463eb" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="${path}" fill="none" stroke="#4D9FFF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="0.28"/>
+  <path d="${path}" fill="none" stroke="#E9F1FC" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" opacity="0.001"/>
+  <path class="draw" d="${path}" fill="none" stroke="#4D9FFF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
 
   <g transform="translate(${originP.x.toFixed(1)},${originP.y.toFixed(1)})">
-    <circle r="11" fill="#2463eb" stroke="#ffffff" stroke-width="3"/>
+    <circle r="11" fill="#4D9FFF" stroke="#0E1626" stroke-width="3"/>
+    <text y="4" text-anchor="middle" font-size="10" font-weight="700" fill="#04182E" font-family="Inter, sans-serif">A</text>
   </g>
   <g transform="translate(${destP.x.toFixed(1)},${destP.y.toFixed(1)})">
-    <circle r="11" fill="#dc2626" stroke="#ffffff" stroke-width="3"/>
+    <circle r="11" fill="#F26D76" stroke="#0E1626" stroke-width="3"/>
+    <text y="4" text-anchor="middle" font-size="10" font-weight="700" fill="#FFFFFF" font-family="Inter, sans-serif">B</text>
   </g>
   ${stopCircles}
 
-  <line x1="${padX}" y1="${H - 100}" x2="${W - padX}" y2="${H - 100}" stroke="#e3e7ee" stroke-width="1"/>
+  <line x1="${padX}" y1="${H - 100}" x2="${W - padX}" y2="${H - 100}" stroke="#2C3D5C" stroke-width="1"/>
   <g class="fade">${statBlocks}</g>
-  <text class="fade" x="${padX}" y="${H - 16}" font-size="11" fill="#a8b0c0">IndEV — planned ${escapeXml(new Date(plan.createdAt).toLocaleDateString('en-IN'))}${plan.status === 'degraded' ? ' · partial coverage' : ''}${plan.source === 'synthetic' ? ' · synthetic schematic, not live geometry' : ''}</text>
+  <text class="fade" x="${padX}" y="${H - 16}" font-size="11" fill="#6C7B95">IndEV — planned ${escapeXml(new Date(plan.createdAt).toLocaleDateString('en-IN'))}${plan.status === 'degraded' ? ' · partial coverage' : ''}${plan.source === 'synthetic' ? ' · synthetic schematic, not live geometry' : ''}</text>
 </svg>`;
 }
 
