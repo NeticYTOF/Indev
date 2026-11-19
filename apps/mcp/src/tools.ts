@@ -311,8 +311,7 @@ export function planToStructured(plan: TripPlan): object {
       tariffInrPerKwh: s.pricePerKwh,
       rating: s.station.rating,
       reviewCount: s.station.reviewCount,
-      lastUsedOn:
-        s.station.chargers?.map((c) => c.lastUsedOn).find(Boolean) ?? null,
+      lastUsedOn: latestChargerDate(s.station.chargers?.map((c) => c.lastUsedOn) ?? []),
     })),
     warnings: plan.warnings,
   };
