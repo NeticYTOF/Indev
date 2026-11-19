@@ -151,6 +151,34 @@ describe('POST /api/ai/plan', () => {
     expect(body.code).toBe('ai_disabled');
   });
 
+  it('mock mode serves the synthetic plan even with AI fully configured (never reaches upstream)', async () => {
+    const deps = await makeDeps({
+      mock: true,
+      ai: AI_CFG,
+      aiCall: () => {
+        throw new Error('AI must never be called in mock mode');
+      },
+      createStatiq: () => {
+        throw new Error('live upstream must never be called in mock mode');
+      },
+    });
+    const app = createApp(deps);
+    const res = await app.request('/api/ai/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: ORIGIN, destination: DEST, request: 'prefer cafes' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      plan: { source: string; stops: Array<{ station: { stationId: number } }> };
+      ai: { applied: boolean; reason: string };
+    };
+    expect(body.plan.source).toBe('synthetic');
+    expect(body.plan.stops.length).toBeGreaterThan(0);
+    expect(body.ai.applied).toBe(false);
+    expect(body.ai.reason).toContain('mock mode');
+  });
+
   it('applies a valid AI choice and rebuilds the plan coherently', async () => {
     const aiCall = async () =>
       JSON.stringify({ chosenStationIds: [705, 711], notes: 'Evenly spaced stops.' });

@@ -175,13 +175,6 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   app.post('/api/ai/plan', async (c) => {
-    // AI planning is OFF unless AI_BASE_URL + AI_API_KEY + AI_MODEL are set.
-    if (!deps.ai) {
-      return c.json(
-        { error: 'AI planning is disabled on this server (no AI provider configured).', code: 'ai_disabled' },
-        503 as never,
-      );
-    }
     const body = await c.req.json().catch(() => null);
     const b = body as {
       origin?: { label?: string; lat?: number; lon?: number };
@@ -196,6 +189,28 @@ export function createApp(deps: AppDeps): Hono {
       return c.json(
         { error: 'origin and destination each need label, lat and lon', code: 'bad_request' },
         400,
+      );
+    }
+
+    // MOCK MODE: even an explicitly configured AI must never reach upstream.
+    // Serve the same synthetic plan /api/plan would, with an honest label.
+    if (deps.mock) {
+      const plan = mockPlan(origin, destination);
+      await deps.counters.addChargersSeen(plan.stationsSeen);
+      return c.json({
+        plan,
+        ai: {
+          applied: false,
+          reason: 'Synthetic plan (mock mode): AI planning is unavailable and never reaches live upstream.',
+        },
+      });
+    }
+
+    // AI planning is OFF unless AI_BASE_URL + AI_API_KEY + AI_MODEL are set.
+    if (!deps.ai) {
+      return c.json(
+        { error: 'AI planning is disabled on this server (no AI provider configured).', code: 'ai_disabled' },
+        503 as never,
       );
     }
     const customRequest =
