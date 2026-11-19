@@ -479,6 +479,13 @@ async function planCore(
     if (detailCache.has(c.stationId)) return;
     try {
       const { response, fetchedAt } = await guardedStatiq.detailsWithMeta(c.stationId);
+      // A details payload must describe the station actually requested.
+      // Otherwise another station's plugs could inherit this candidate's
+      // chainage and reachability. Treat that lookup as unknown, not usable.
+      if (!response || response.ok !== true ||
+          (response.station && response.station.stationId !== c.stationId)) {
+        throw new Error('Station details response does not match the request');
+      }
       if (response.station) {
         detailCache.set(c.stationId, {
           candidate: c,
