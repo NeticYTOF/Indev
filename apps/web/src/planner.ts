@@ -98,11 +98,11 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
 
   const errorBox = el(`<div class="error-box hidden" role="alert"></div>`);
 
-  // inline offline state: shown only while the server is unreachable
+  // Health-check failure does not establish that all server endpoints are offline.
   const offline = el(`
     <div class="server-offline hidden" role="status">
       <span aria-hidden="true">●</span>
-      <span>Server offline — start it with <strong>npm run dev</strong>, then try again.</span>
+      <span>Server status unavailable — the health check failed. Planning may still work.</span>
     </div>
   `);
 

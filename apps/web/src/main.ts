@@ -28,7 +28,7 @@ void (async () => {
         : '<span class="dot"></span> Live charger data';
     }
   } catch {
-    toast('Server offline — start it with npm run dev at the repo root.');
+    toast('Server status unavailable — the health check failed.', 'warn');
   }
 })();
 
