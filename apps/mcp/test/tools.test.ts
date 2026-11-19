@@ -110,6 +110,28 @@ describe('plan_trip handler', () => {
 });
 
 describe('get_station handler (AI-safe)', () => {
+  it.each(['wrong-id', 'not-ok', 'missing-chargers', 'null-chargers', 'missing-connectors', 'null-connectors'] as const)('rejects %s station evidence rather than reporting live availability', async (kind) => {
+    let calls = 0;
+    const station = { stationId: kind === 'wrong-id' ? 43 : 42, name: 'Fixture', chargers: [{ type: 'DC', connectors: [] }] };
+    if (kind.endsWith('chargers')) Object.assign(station, { chargers: kind === 'null-chargers' ? null : undefined });
+    if (kind.endsWith('connectors')) Object.assign(station.chargers[0]!, { connectors: kind === 'null-connectors' ? null : undefined });
+    const statiq = {
+      detailsWithMeta: async () => { calls++; return { response: { ok: kind !== 'not-ok', station }, fetchedAt: new Date() }; },
+    } as unknown as StatiqClient;
+    const deps = await makeDeps({ createStatiq: () => statiq });
+    await expect(getStationHandler(deps, 42)).rejects.toMatchObject({ code: 'not_determined' });
+    expect(calls).toBe(1);
+  });
+
+  it.each(['empty-chargers', 'empty-connectors'] as const)('preserves %s as valid known-empty evidence', async (kind) => {
+    const station = { stationId: 42, name: 'Fixture', chargers: kind === 'empty-chargers' ? [] : [{ type: 'DC', connectors: [] }] };
+    const statiq = { detailsWithMeta: async () => ({ response: { ok: true, station }, fetchedAt: new Date() }) } as unknown as StatiqClient;
+    const deps = await makeDeps({ createStatiq: () => statiq });
+    const result = await getStationHandler(deps, 42);
+    expect(result.station.stationId).toBe(42);
+    expect(result.station.ccs2Usable).toBe(0);
+  });
+
   it('reports usable plugs WITHOUT occupancy and keeps honesty counters', async () => {
     const fetchedAt = new Date('2026-11-19T12:00:00Z');
     const statiq = {
