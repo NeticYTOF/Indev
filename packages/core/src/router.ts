@@ -66,6 +66,19 @@ export class OsrmRouter {
       throw new RouterError(json.code ?? 'Unknown', `No route: ${json.message ?? json.code}`);
     }
     const r = json.routes[0] as OsrmRoute;
+    const coordinates = r?.geometry?.coordinates;
+    if (
+      !r || !Number.isFinite(r.distance) || r.distance < 0 ||
+      !Number.isFinite(r.duration) || r.duration < 0 ||
+      !Array.isArray(coordinates) || coordinates.length < 2 ||
+      coordinates.some((point) => !Array.isArray(point) || point.length < 2 ||
+        !Number.isFinite(point[0]) || Math.abs(point[0]) > 180 ||
+        !Number.isFinite(point[1]) || Math.abs(point[1]) > 90)
+    ) {
+      // A successful HTTP/code status is not proof of a usable route.
+      // Reject the whole payload before corridor scanning or plan claims.
+      throw new RouterError('InvalidResponse', 'Routing response contained invalid distance, duration or geometry');
+    }
     return {
       distanceKm: r.distance / 1000,
       durationMin: r.duration / 60,
