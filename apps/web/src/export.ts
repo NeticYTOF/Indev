@@ -80,7 +80,7 @@ export function buildAnimatedExportSvg(plan: TripPlan): string {
     return projectOntoPolyline(routeScreenPts, raw);
   });
 
-  const totalPathLen = 2600; // generous; actual length is shorter and that's fine
+  const totalPathLen = 1; // normalized by pathLength, independent of route complexity
   const drawTime = 2.2; // seconds for the route draw
 
   const stopCircles = stopPts
@@ -148,7 +148,7 @@ export function buildAnimatedExportSvg(plan: TripPlan): string {
        SMIL/CSS animation still show the route -->
   <path d="${path}" fill="none" stroke="#4D9FFF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="0.28"/>
   <path d="${path}" fill="none" stroke="#E9F1FC" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" opacity="0.001"/>
-  <path class="draw" d="${path}" fill="none" stroke="#4D9FFF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path class="draw" pathLength="1" d="${path}" fill="none" stroke="#4D9FFF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
 
   <g transform="translate(${originP.x.toFixed(1)},${originP.y.toFixed(1)})">
     <circle r="11" fill="#4D9FFF" stroke="#0E1626" stroke-width="3"/>
