@@ -15,11 +15,12 @@ For a route of `R` km:
 | Corridor scan (markers) | `ceil(R / 12) + 1` calls (one sample every 12 km plus the destination; consecutive samples overlap ~half of the ~13 km marker radius, and every sample is attempted) |
 | Candidate details | 1 per **unique** corridor candidate (both detour bands, deduped by `stationId`, within-run memo reuse is free) |
 
-The details phase is **exhaustive by owner directive**: every candidate in
-both the primary (≤ 2 km off-route) and fallback (≤ 5 km off-route) bands
-is fetched in one bounded-parallel batch — no window-based pruning, no lazy
-skips. Selection still *prefers* the primary band and never detours far for
-a brand, but it *consults* every fetched candidate.
+The details phase is **exhaustive by owner directive**: every unique
+candidate in both the primary (≤ 2 km off-route) and fallback (≤ 5 km
+off-route) bands is checked via **individual per-station lookups with
+multiple checks in flight** — no bulk endpoint, no window-based pruning, no
+lazy skips. Selection still *prefers* the primary band and never detours
+far for a brand, but it *consults* every fetched candidate.
 
 ### Examples
 
@@ -57,19 +58,48 @@ decision — code never raises them silently.
   The parsed `Retry-After` (both the delay-seconds and the HTTP-date form)
   is recorded and reported so the next run can be scheduled honestly.
 - **Exhausted budget**: the plan fails as `not_determined` with coverage
-  evidence (attempts used, samples covered, candidate details fetched).
-  This is **coverage undetermined — never a verdict that the route is
+  evidence — attempts used vs cap, route samples covered, and the candidate
+  aggregate (planned unique pool / processed / detailed / remaining,
+  recorded before the details phase starts and updated with each completed
+  lookup), plus phase timings (scan wall time, details elapsed). This is
+  **coverage undetermined — never a verdict that the route is
   impossible**, and never silent confidence. The HTTP response is 422 with
   `code: "not_determined"` and a cause (`budget-exhausted`, `throttled`,
   `auth`, `deadline`, `sample-throttled`, `scan-coverage`).
 - **Deadline**: same honest `not_determined: deadline`.
 
-## Pacing (unchanged)
+## Pacing (project safety defaults - NOT a provider contract)
 
-A rolling window limiter enforces **25 calls / 60 s** with a **2 s minimum
-gap** between dispatches. Parallel batches (corridor scan and candidate
-details both run `pMap(4)`) queue at the limiter: concurrency only keeps
-the limiter fed — no dead time between dispatches — and never raises QPS.
+The rolling window limiter enforces **25 calls / 60 s** with a **2 s minimum
+gap** between dispatches. These are CONSERVATIVE PROJECT SAFETY DEFAULTS -
+our own politeness choice, not a contract the upstream publishes or that
+we rely on rate headers for.
+
+### Concurrency evidence (offline harness, Linux)
+
+The candidate phase runs individual per-station lookups with a few checks
+in flight (`pMap(4)`); the corridor scan likewise. Offline harness runs
+(latency shaped like the replica) show what concurrency does and does NOT
+do:
+
+| Harness | Workers | Wall time | Max in flight |
+|---|---|---|---|
+| 40 ms latency, 200 ms gaps, 12 calls | 3 | ~2244 ms | 1 |
+| 40 ms latency, 200 ms gaps, 12 calls | 100 | ~2242 ms | 1 |
+| 600 ms latency | 3 | ~2955 ms (overlap) | >1 |
+
+Multiple checks in flight let upstream LATENCY overlap the pacing gap -
+that is all. They **never reduce the request count**, **never remove
+pacing**, and with short replica latency at most one request is actually
+in flight. The limiter alone decides pace.
+
+### CPU cost context (offline, synthetic geometry)
+
+Synthetic-geometry processing costs are negligible against the network
+span: ~3 ms at 100×1000 points, ~74 ms at 500×5000, ~298 ms at 1000×10000 -
+versus ~236 s of live network span for a full run. These are isolated
+measurements, not a full run CPU profile; no speculative rewrite (e.g. to
+native code) is warranted by them.
 
 ## Instrumentation
 
