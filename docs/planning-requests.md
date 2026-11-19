@@ -32,11 +32,22 @@ far for a brand, but it *consults* every fetched candidate.
 ## What the run budget counts
 
 The budget (`UpstreamBudget`, see `packages/core/src/upstream-budget.ts`)
-is a **hard cap on actual transport attempts**, shared by everything in
-one planning run:
+is a **hard cap on actual transport attempts**, shared by everything in one
+planning run:
 
-- every transport attempt reserves a slot **before** it can dispatch —
-  nothing may slip past the cap;
+- **dispatch-accounting**: an attempt is reserved ATOMICALLY immediately
+  before its dispatch (after the paced limiter permit, with no await
+  between a successful reservation and the fetch), so
+  **reserved == dispatched** — the counters always match real network work.
+  Waiting callers reserve nothing up front: no pacing wait can be
+  retroactively cancelled by another waiter;
+- **cap exhaustion is per-caller, never run-fatal**: a caller that finds no
+  room is refused without dispatching, while work already reserved by other
+  callers proceeds. (A past reservation race let N>cap concurrent callers
+  globally stop the run before anyone dispatched — actual 0, reported N —
+  fixed and regression-tested);
+- a **fatal stop** (first 429 throttle / 401/403 auth) is run-global: every
+  caller fails fast at the recheck, with zero NEW dispatch after the stop;
 - **in-client 5xx retries count too**: a flaky gateway consumes real
   attempts, not just logical calls;
 - memo hits (a station examined twice in one run, within the 90 s TTL)
