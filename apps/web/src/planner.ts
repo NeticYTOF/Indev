@@ -603,6 +603,14 @@ function makeSearchField(
   });
 
   input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !list.classList.contains('hidden')) {
+      // Dismiss the innermost popup first. Do not clear the search input
+      // through its native Escape action or close the entire mobile sheet.
+      e.preventDefault();
+      e.stopPropagation();
+      invalidateSuggestions();
+      return;
+    }
     const items = Array.from(list.querySelectorAll('.suggestion-item'));
     if (items.length === 0 || list.classList.contains('hidden')) return;
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
