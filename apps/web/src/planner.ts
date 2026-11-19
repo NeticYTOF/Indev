@@ -12,6 +12,7 @@ import { drawTrip } from './map.js';
 import { renderPlanPanel } from './plan-panel.js';
 import { toast } from './toast.js';
 import { formatElapsedMs, planFailureGuidance, type PlanFailureGuidance } from './plan-errors.js';
+import { SubmitGate } from './submit-gate.js';
 
 interface PlaceInput {
   hit: GeocodeHit | null;
@@ -243,6 +244,21 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
     form.dispatchEvent(new CustomEvent('ai-plan'));
   });
 
+  // ONE planning run at a time: the plan and AI submit paths are mutually
+  // exclusive. Each planning run opens its own upstream request window
+  // (per-run client + limiter on the server), so overlapping UI runs
+  // would double the effective request rate against the charger API -
+  // never assumed safe. Single flight also gives the shared busy/elapsed
+  // readout exactly one owner, so one run's finally can never hide a
+  // still-pending run (the shared-timer lifecycle defect from
+  // independent review).
+  const gate = new SubmitGate();
+  const setActionsBusy = (busy: boolean): void => {
+    planButton.disabled = busy;
+    const aiBtn = aiBox.querySelector<HTMLButtonElement>('[data-ai-plan]');
+    if (aiBtn) aiBtn.disabled = busy;
+  };
+
   section.appendChild(errorBox);
 
   form.addEventListener('ai-plan', async () => {
@@ -257,8 +273,13 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
       showError(errorBox, vehicleResult.reason);
       return;
     }
+    // One planning run at a time - a second run while one is in flight
+    // would double the upstream request window and orphan the shared
+    // busy readout. Buttons are already disabled; this is the fail-closed
+    // backstop for any submit that fires anyway.
+    if (!gate.tryBegin()) return;
+    setActionsBusy(true);
     const aiButton = aiBox.querySelector('[data-ai-plan]') as HTMLButtonElement | null;
-    if (aiButton) aiButton.disabled = true;
     hideError(errorBox);
     startBusy();
     let focusOnSettle: HTMLElement | null = null;
@@ -283,7 +304,8 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
       focusOnSettle = aiButton;
     } finally {
       stopBusy();
-      if (aiButton) aiButton.disabled = false;
+      setActionsBusy(false);
+      gate.end();
       focusOnSettle?.focus();
     }
   });
@@ -302,7 +324,10 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
       return;
     }
 
+    // One planning run at a time - see the gate declaration above.
+    if (!gate.tryBegin()) return;
     setLoading(true, serverIsMock ? 'Planning synthetic route…' : 'Planning live route…');
+    setActionsBusy(true);
     hideError(errorBox);
     startBusy();
     let focusOnSettle: HTMLElement | null = null;
@@ -323,6 +348,8 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
     } finally {
       stopBusy();
       setLoading(false, 'Plan route');
+      setActionsBusy(false);
+      gate.end();
       focusOnSettle?.focus();
     }
   });

@@ -47,6 +47,22 @@ describe('planning failure reveal (keyboard reach + context restore)', () => {
   });
 });
 
+describe('planning run lifecycle (single flight by construction)', () => {
+  it('gates both submit paths through the shared single-flight gate', () => {
+    // Old defect: plan + AI runs could overlap; either finally hid the
+    // shared busy readout while the other was STILL pending. Single flight
+    // makes the overlap unreachable - both paths must begin through the
+    // gate and release it in their finally.
+    expect((plannerSrc.match(/gate\.tryBegin\(\)/g) ?? []).length).toBe(2);
+    expect((plannerSrc.match(/gate\.end\(\)/g) ?? []).length).toBe(2);
+  });
+
+  it('reflects the shared busy state on BOTH submit controls', () => {
+    expect((plannerSrc.match(/setActionsBusy\(true\)/g) ?? []).length).toBe(2);
+    expect((plannerSrc.match(/setActionsBusy\(false\)/g) ?? []).length).toBe(2);
+  });
+});
+
 describe('toast vs drawer overlays (mobile Close control)', () => {
   it('keeps #trips-drawer before #toast-root (sibling override contract)', () => {
     // The "drawer open" toast repositioning is a general-sibling CSS rule;
