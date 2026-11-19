@@ -40,6 +40,16 @@ export interface ServerEnv {
   planMaxCalls: number | undefined;
   planDeadlineMs: number | undefined;
   planRetries: number | undefined;
+  /**
+   * Per-launch instance identity (INDEV_LAUNCH_ID): a random UUID the
+   * LAUNCHER (e.g. the acceptance runner) generates per launch and the
+   * server echoes in /api/health - NOT a credential, never validated. It
+   * lets a launcher prove the health answer came from ITS OWN child and
+   * not an unrelated same-mode server that happens to hold the port
+   * (the proven empty-log success race). Absent = undefined (plain `npm
+   * run dev` launches need no identity).
+   */
+  launchId: string | undefined;
 }
 
 /**
@@ -98,6 +108,9 @@ export function loadEnv(
     planMaxCalls: parseIntOverride('INDEV_PLAN_MAX_CALLS', merged.INDEV_PLAN_MAX_CALLS, 1, 10_000),
     planDeadlineMs: parseIntOverride('INDEV_PLAN_DEADLINE_MS', merged.INDEV_PLAN_DEADLINE_MS, 10_000, 6 * 60 * 60_000),
     planRetries: parseIntOverride('INDEV_PLAN_RETRIES', merged.INDEV_PLAN_RETRIES, 0, 3),
+    // Per-launch instance identity: plain passthrough (a launcher-generated
+    // UUID; never a credential, no validation semantics)
+    launchId: merged.INDEV_LAUNCH_ID || undefined,
   };
 }
 

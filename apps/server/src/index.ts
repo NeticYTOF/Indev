@@ -44,6 +44,9 @@ const app = createApp({
   // the same composed object.
   planRunBudget: effectiveRunBudget,
   ...(env.planRetries !== undefined ? { statiqRetries: env.planRetries } : {}),
+  // Per-launch instance identity for the /api/health provenance echo
+  // (launcher-generated UUID; absent = null, plain dev launches)
+  ...(env.launchId !== undefined ? { launchId: env.launchId } : {}),
   // Fresh client per planning run (single-run memo policy), wired with the
   // EFFECTIVE deadline so Retry-After waits that cannot fit fail as
   // throttled - matching the budget /api/health reports, never the source

@@ -60,6 +60,14 @@ export interface AppDeps {
   /** Explicit per-launch client retry override (0..3, validated); the
    *  StatiqClient default (2) applies when absent. */
   statiqRetries?: number;
+  /**
+   * Per-launch instance identity (a launcher-generated UUID): echoed in
+   * /api/health as `launchId` so a launcher can gate on ITS OWN server
+   * instance. NOT a credential; absent = null in health (plain dev
+   * launches need no identity). This is the provenance gate that killed
+   * the unrelated-same-mode-server acceptance race.
+   */
+  launchId?: string;
 }
 
 /** Server-side bounds for a planning request. */
@@ -109,6 +117,10 @@ export function createApp(deps: AppDeps): Hono {
       mock: deps.mock,
       chargersSeen: counters.chargersSeen,
       ai: Boolean(deps.ai),
+      // INSTANCE PROVENANCE: the launcher-generated launch id echoed back so
+      // a launcher can prove this health answer came from its OWN child (a
+      // random UUID per launch - sanitized, never a credential)
+      launchId: deps.launchId ?? null,
       // Sanitized introspection (no secrets): the effective planning
       // envelope this server was launched with
       runBudget: {

@@ -165,3 +165,17 @@ describe('explicit bounded planning-budget overrides (defaults preserved)', () =
     }
   });
 });
+
+describe('per-launch instance identity (INDEV_LAUNCH_ID)', () => {
+  it('absent = undefined (plain dev launches need no identity)', () => {
+    const env = loadEnv(fixtureDir, {});
+    expect(env.launchId).toBeUndefined();
+  });
+
+  it('a launcher-supplied id parses as a plain passthrough (fixture .env too)', () => {
+    const id = '0e7d9a12-9876-4c1b-b2a3-launch-test-uuid';
+    expect(loadEnv(fixtureDir, { INDEV_LAUNCH_ID: id }).launchId).toBe(id);
+    // dotenv fill-if-missing applies like every other key
+    expect(loadEnv(fixtureDir, {}).launchId).toBeUndefined();
+  });
+});
