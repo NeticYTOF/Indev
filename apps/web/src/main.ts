@@ -35,7 +35,8 @@ void (async () => {
 const planner = document.getElementById('planner-panel') as HTMLElement;
 renderPlanner(planner, map);
 
-const isMobile = (): boolean => window.innerWidth <= 720;
+const mobileViewport = window.matchMedia('(max-width: 720px)');
+const isMobile = (): boolean => mobileViewport.matches;
 
 // mobile: the planner starts OPEN so the form is reachable first-paint;
 // the FAB only appears once the sheet is dismissed. The FAB's expanded
@@ -54,6 +55,14 @@ if (isMobile()) {
   planner.classList.add('open');
   sheetFab?.setAttribute('aria-expanded', 'true');
 }
+
+// CSS changes panel visibility at this breakpoint without a new page load.
+// Preserve mobile open/closed state, but keep a visible entry when closed.
+mobileViewport.addEventListener('change', () => {
+  const visible = !isMobile() || planner.classList.contains('open');
+  sheetFab?.classList.toggle('hidden', visible);
+  sheetFab?.setAttribute('aria-expanded', String(visible));
+});
 
 sheetFab?.addEventListener('click', () => {
   setSheetOpen(true);
