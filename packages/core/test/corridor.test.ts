@@ -87,20 +87,22 @@ describe('incremental scan progress (onProgress)', () => {
       stepKm: 12,
       onProgress: (p) => events.push({ ...p }),
     });
-    const planned = res.samplesAttempted;
+    const planned = res.samplesPlanned;
     expect(planned).toBeGreaterThanOrEqual(16); // ~197 km / 12 km step + dest
     // PLAN-FIRST: the first report carries the full plan, zero completed
-    expect(events[0]).toEqual({ planned, attempted: 0, ok: 0, failed: 0 });
-    // one report per completion, plus the plan-first report
+    expect(events[0]).toEqual({ planned, completed: 0, ok: 0, failed: 0 });
+    // one report per completion, plus the plan-first report;
+    // completed counts RESPONSES (never dispatches - that counter lives
+    // in the run budget)
     expect(events).toHaveLength(planned + 1);
     const last = events[events.length - 1] as CorridorScanProgress;
-    expect(last).toEqual({ planned, attempted: planned, ok: planned, failed: 0 });
+    expect(last).toEqual({ planned, completed: planned, ok: planned, failed: 0 });
     // counters are monotonic and always internally consistent
     for (let i = 1; i < events.length; i++) {
       const prev = events[i - 1] as CorridorScanProgress;
       const cur = events[i] as CorridorScanProgress;
-      expect(cur.attempted).toBe(prev.attempted + 1);
-      expect(cur.ok + cur.failed).toBe(cur.attempted);
+      expect(cur.completed).toBe(prev.completed + 1);
+      expect(cur.ok + cur.failed).toBe(cur.completed);
       expect(cur.planned).toBe(planned);
     }
   });
@@ -123,8 +125,8 @@ describe('incremental scan progress (onProgress)', () => {
       onProgress: (p) => events.push({ ...p }),
     });
     const last = events[events.length - 1] as CorridorScanProgress;
-    expect(last.ok + last.failed).toBe(last.attempted);
-    expect(last.attempted).toBe(last.planned); // every sample completed
+    expect(last.ok + last.failed).toBe(last.completed);
+    expect(last.completed).toBe(last.planned); // every sample completed
     expect(last.failed).toBe(1); // exactly the first sample failed
     expect(last.ok).toBe(last.planned - 1);
   });
@@ -151,9 +153,9 @@ describe('incremental scan progress (onProgress)', () => {
     ).rejects.toBeInstanceOf(UpstreamRunStoppedError);
     // plan-first + exactly the three successful completions survived
     expect(events).toHaveLength(4);
-    expect(events[0]?.attempted).toBe(0);
+    expect(events[0]?.completed).toBe(0);
     const last = events[events.length - 1] as CorridorScanProgress;
-    expect(last).toEqual({ planned: last.planned, attempted: 3, ok: 3, failed: 0 });
+    expect(last).toEqual({ planned: last.planned, completed: 3, ok: 3, failed: 0 });
     expect(last.planned).toBeGreaterThanOrEqual(16);
   });
 });

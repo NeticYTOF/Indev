@@ -236,7 +236,7 @@ describe('planner runs over a real budgeted client (wire transport)', () => {
 
     const markers = calls.filter((c) => c.endpoint === 'markers');
     const details = calls.filter((c) => c.endpoint === 'details');
-    // every planned corridor sample was attempted exactly once
+    // every planned corridor sample was dispatched exactly once
     expect(markers).toHaveLength(expectedMarkerCalls(700));
     // EVERY unique candidate got exactly ONE individual per-station lookup:
     // marker-sample overlap never duplicates lookups (within-run dedupe)

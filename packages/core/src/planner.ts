@@ -184,7 +184,7 @@ export async function planTripDetailed(
   const runBudget = new UpstreamBudget(runBudgetSpec.maxUpstreamCalls);
   const stats: RunProgressStats = {
     samplesPlanned: 0,
-    samplesAttempted: 0,
+    samplesCompleted: 0,
     samplesOk: 0,
     samplesFailed: 0,
     candidatesPlanned: 0,
@@ -234,8 +234,13 @@ export async function planTripDetailed(
 export interface RunProgressStats {
   /** Marker sample points the corridor planned (known plan-first). */
   samplesPlanned: number;
-  /** Samples COMPLETED before the run stopped (ok or failed). */
-  samplesAttempted: number;
+  /**
+   * Samples COMPLETED before the stop: responses received (ok or failed).
+   * In-flight/fatal-unwound samples are not completed. This is a completion
+   * count, never a dispatch count - actual transport attempts are counted
+   * separately by the run budget and reported as 'N of M upstream attempts'.
+   */
+  samplesCompleted: number;
   samplesOk: number;
   samplesFailed: number;
   /** Unique candidate pool planned for the details phase (both bands). */
@@ -253,13 +258,15 @@ export interface RunProgressStats {
 /** Human-readable aggregate for not_determined evidence (run level). */
 function coverageEvidence(stats: RunProgressStats): string {
   const bits: string[] = [];
-  if (stats.samplesAttempted > 0 || stats.samplesPlanned > 0) {
+  if (stats.samplesCompleted > 0 || stats.samplesPlanned > 0) {
     // Mid-scan stops carry the partially-completed plan honestly: the
-    // completed-so-far count plus the full planned denominator.
+    // completed-so-far count plus the full planned denominator. Display is
+    // OK/COMPLETED/PLANNED - a completion count, never a dispatch count
+    // (actual attempts are the separate 'N of M upstream attempts' figure).
     const plannedSuffix =
-      stats.samplesPlanned > stats.samplesAttempted ? ` of ${stats.samplesPlanned} planned` : '';
+      stats.samplesPlanned > stats.samplesCompleted ? ` of ${stats.samplesPlanned} planned` : '';
     bits.push(
-      `route samples covered ${stats.samplesOk}/${stats.samplesAttempted}` +
+      `route samples covered ${stats.samplesOk}/${stats.samplesCompleted}` +
         `${plannedSuffix}` +
         (stats.samplesFailed > 0 ? ` (${stats.samplesFailed} failed)` : ''),
     );
@@ -379,11 +386,11 @@ async function planCore(
     signal: hooks.signal,
     // INCREMENTAL SCAN PROGRESS: counters flow in per completed sample,
     // so a fatal stop MID-SCAN (first 429/auth, cap exhaustion, deadline)
-    // still reports the actual samples attempted/ok/failed in the
+    // still reports the actual samples completed/ok/failed in the
     // not_determined evidence (the plan arrives before any dispatch).
     onProgress: (p) => {
       hooks.stats.samplesPlanned = p.planned;
-      hooks.stats.samplesAttempted = p.attempted;
+      hooks.stats.samplesCompleted = p.completed;
       hooks.stats.samplesOk = p.ok;
       hooks.stats.samplesFailed = p.failed;
     },
@@ -393,8 +400,8 @@ async function planCore(
   // incremental callbacks already carried; the plan-first report arrives
   // before any dispatch).
   hooks.stats.scanMs = Date.now() - scanStartedAt;
-  hooks.stats.samplesPlanned = corridor.samplesAttempted;
-  hooks.stats.samplesAttempted = corridor.samplesAttempted;
+  hooks.stats.samplesPlanned = corridor.samplesPlanned;
+  hooks.stats.samplesCompleted = corridor.samples + corridor.failedSamples.length;
   hooks.stats.samplesOk = corridor.samples;
   hooks.stats.samplesFailed = corridor.failedSamples.length;
   hooks.stats.candidatesPlanned = corridor.candidates.length;
@@ -403,7 +410,7 @@ async function planCore(
   // never be presented as a verified plan.
   const throttled = corridor.failedSamples.filter((f) => f.cause === 'throttled').length;
   const failedFrac =
-    corridor.samplesAttempted > 0 ? corridor.failedSamples.length / corridor.samplesAttempted : 0;
+    corridor.samplesPlanned > 0 ? corridor.failedSamples.length / corridor.samplesPlanned : 0;
   if (throttled > 0) {
     throw new PlanningError(
       'Plan not determined: the charger API is throttling requests (429).' +
@@ -415,7 +422,7 @@ async function planCore(
   }
   if (failedFrac > 0.05) {
     throw new PlanningError(
-      `Plan not determined: ${corridor.failedSamples.length} of ${corridor.samplesAttempted} route samples ` +
+      `Plan not determined: ${corridor.failedSamples.length} of ${corridor.samplesPlanned} route samples ` +
         'could not be scanned. Charger coverage is incomplete; refusing to present this as a verified plan.',
       'not_determined',
       'scan-coverage',

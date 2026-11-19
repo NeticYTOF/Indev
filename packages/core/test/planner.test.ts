@@ -501,7 +501,7 @@ describe('fail-closed scan integrity', () => {
   it('MID-SCAN cap exhaustion carries incremental scan progress in the evidence', async () => {
     // regression (Linux review): scan stats used to be assigned only AFTER
     // scanCorridor returned, so a fatal stop mid-scan lost the actual
-    // samples attempted/ok/failed. Progress must now flow even when the
+    // samples completed/ok/failed. Progress must now flow even when the
     // scan never completes: the evidence names the full planned sample
     // count (plan-first report) and the completed-so-far aggregates.
     const err = await planTrip(

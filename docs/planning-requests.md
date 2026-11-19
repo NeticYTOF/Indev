@@ -12,7 +12,7 @@ For a route of `R` km:
 | Phase | Upstream requests |
 |---|---|
 | Route | 0 (OSRM is a separate free service) |
-| Corridor scan (markers) | `ceil(R / 12) + 1` calls (one sample every 12 km plus the destination; consecutive samples overlap ~half of the ~13 km marker radius, and every sample is attempted) |
+| Corridor scan (markers) | `ceil(R / 12) + 1` sample points planned (one every 12 km plus the destination; consecutive samples overlap ~half of the ~13 km marker radius; a completed scan dispatches exactly this many) |
 | Candidate details | 1 per **unique** corridor candidate (both detour bands, deduped by `stationId`, within-run memo reuse is free) |
 
 The details phase is **exhaustive by owner directive**: every unique
@@ -69,14 +69,22 @@ decision — code never raises them silently.
   The parsed `Retry-After` (both the delay-seconds and the HTTP-date form)
   is recorded and reported so the next run can be scheduled honestly.
 - **Exhausted budget**: the plan fails as `not_determined` with coverage
-  evidence — attempts used vs cap, route samples covered, and the candidate
-  aggregate (planned unique pool / processed / detailed / remaining,
-  recorded before the details phase starts and updated with each completed
-  lookup), plus phase timings (scan wall time, details elapsed). This is
-  **coverage undetermined — never a verdict that the route is
-  impossible**, and never silent confidence. The HTTP response is 422 with
-  `code: "not_determined"` and a cause (`budget-exhausted`, `throttled`,
-  `auth`, `deadline`, `sample-throttled`, `scan-coverage`).
+  evidence — attempts used vs cap (actual transport attempts, incl.
+  retries), route samples covered, and the candidate aggregate (planned
+  unique pool / processed / detailed / remaining, recorded before the
+  details phase starts and updated with each completed lookup), plus
+  phase timings (scan wall time, details elapsed). This is **coverage
+  undetermined — never a verdict that the route is impossible**, and never
+  silent confidence. The HTTP response is 422 with `code: "not_determined"`
+  and a cause (`budget-exhausted`, `throttled`, `auth`, `deadline`,
+  `sample-throttled`, `scan-coverage`).
+- **Completed ≠ dispatched (terminology)**: the scan-evidence line reads
+  `route samples covered OK/COMPLETED of N planned` — COMPLETED counts
+  sample RESPONSES received (ok or failed). In-flight samples and samples
+  unwound by a fatal stop are neither completed nor dispatched-counted;
+  completed is never presented as the dispatch count. The ACTUAL upstream
+  attempt figure is always the separate `N of M upstream attempts` count
+  from the run budget (reserved == dispatched, retries included).
 - **Deadline**: same honest `not_determined: deadline`.
 
 ## Pacing (project safety defaults - NOT a provider contract)

@@ -49,10 +49,12 @@ export interface CorridorOptions {
   signal?: AbortSignal;
   /**
    * Incremental scan progress: invoked synchronously once with the PLAN
-   * (planned = N, attempted = 0) and after EVERY completed sample (success
+   * (planned = N, completed = 0) and after EVERY completed sample (success
    * or failure). Callers carry honest counters even when the scan unwinds
    * fatally mid-way (fatal stops are rethrown, not recorded as sample
-   * failures - but progress made before the stop is not lost).
+   * failures - but progress made before the stop is not lost). Completed
+   * counts responses received - never a substitute for the separate
+   * actual-attempt counter (budget attemptsMade).
    */
   onProgress?: (progress: CorridorScanProgress) => void;
 }
@@ -63,8 +65,14 @@ export type SampleFailCause = 'throttled' | 'error';
 export interface CorridorScanProgress {
   /** Sample points planned for this scan (known before dispatching). */
   planned: number;
-  /** Samples COMPLETED so far (ok or failed). */
-  attempted: number;
+  /**
+   * Samples COMPLETED so far: responses received (ok or failed).
+   * In-flight samples and samples unwound by a fatal stop are NOT
+   * completed and NOT counted here. This is a completion count, never a
+   * dispatch count - actual upstream attempts are counted separately by
+   * the run budget (reserved == dispatched).
+   */
+  completed: number;
   /** Samples that returned markers successfully. */
   ok: number;
   /** Samples that failed (any cause). */
@@ -80,8 +88,9 @@ export interface CorridorResult {
   candidates: CorridorCandidate[];
   /** Marker calls that succeeded. */
   samples: number;
-  /** Marker calls attempted. */
-  samplesAttempted: number;
+  /** Sample points planned for this scan (the scan plan; ok + failed
+   *  count the COMPLETED responses once the scan returns). */
+  samplesPlanned: number;
   /** Unique stations seen in this run (before off-route filtering). */
   stationsSeen: number;
   /** Per-sample failures with causes (throttling fails CLOSED upstream). */
@@ -121,7 +130,7 @@ export async function scanCorridor(
     return {
       candidates: [],
       samples: 0,
-      samplesAttempted: 0,
+      samplesPlanned: 0,
       stationsSeen: 0,
       failedSamples: [],
       warnings: [],
@@ -147,7 +156,7 @@ export async function scanCorridor(
   const report = (): void => {
     onProgress?.({
       planned: samplePoints.length,
-      attempted: okSamples + failedSamples.length,
+      completed: okSamples + failedSamples.length,
       ok: okSamples,
       failed: failedSamples.length,
     });
@@ -207,7 +216,7 @@ export async function scanCorridor(
   return {
     candidates,
     samples: okSamples,
-    samplesAttempted: samplePoints.length,
+    samplesPlanned: samplePoints.length,
     stationsSeen: seen.size,
     failedSamples,
     warnings,
