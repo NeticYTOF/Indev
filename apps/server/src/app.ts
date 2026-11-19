@@ -422,6 +422,11 @@ export function createApp(deps: AppDeps): Hono {
         400,
       );
     }
+    // Saved routes must be redrawable. Reject the whole malformed path;
+    // never discard points or fabricate replacement geometry.
+    if (plan.geometry.length < 2 || plan.geometry.some((point) => !coordRef(point))) {
+      return c.json({ error: 'Plan geometry is malformed', code: 'bad_request' }, 400);
+    }
     const saved = await deps.trips.save(plan, (body as { name?: string }).name);
     return c.json({ trip: saved }, 201);
   });
