@@ -314,7 +314,11 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
       // aligned it to the top); a scrolling focus would push it back
       // below the fold (the mobile long-error defect from rendered
       // review).
-      focusOnSettle?.focus({ preventScroll: true });
+      // Restore only focus actually lost by disabling the submit control.
+      // Do not interrupt someone who moved to another field during the wait.
+      if (document.activeElement === document.body) {
+        focusOnSettle?.focus({ preventScroll: true });
+      }
     }
   });
 
@@ -363,7 +367,11 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
       // aligned it to the top); a scrolling focus would push it back
       // below the fold (the mobile long-error defect from rendered
       // review).
-      focusOnSettle?.focus({ preventScroll: true });
+      // Restore only focus actually lost by disabling the submit control.
+      // Do not interrupt someone who moved to another field during the wait.
+      if (document.activeElement === document.body) {
+        focusOnSettle?.focus({ preventScroll: true });
+      }
     }
   });
 }
