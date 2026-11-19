@@ -5,6 +5,15 @@
  */
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+// MapLibre builds its web worker from a URL derived from import.meta.url;
+// bundlers can't follow that (dev serves it 504, build emits nothing -> 404
+// and the map renders black). Hand the library an explicit asset URL that
+// Vite statically emits: `?url` copies the pre-bundled, self-contained
+// worker file into the build and serves the exact file in dev.
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url';
+
+// Must run before the first Map claims the worker pool.
+maplibregl.setWorkerUrl(maplibreWorkerUrl);
 
 /** Dark styles, tried in order (all free, no API keys). */
 const STYLE_URLS = [
