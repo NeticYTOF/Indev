@@ -191,6 +191,24 @@ describe('TripsStore', () => {
 });
 
 describe('CountersStore', () => {
+  it('allows an update after a failed queued write is repaired', async () => {
+    const dir = await tempDir();
+    const blockedParent = join(dir, 'blocked');
+    await writeFile(blockedParent, 'not a directory');
+    const store = new CountersStore({ filePath: join(blockedParent, 'counters.json') });
+    await expect(store.addChargersSeen(12)).rejects.toThrow();
+    await rm(blockedParent);
+    await store.addChargersSeen(7);
+    expect((await store.load()).chargersSeen).toBe(7);
+  });
+
+  it('retains every increment from overlapping completed runs', async () => {
+    const dir = await tempDir();
+    const store = new CountersStore({ filePath: join(dir, 'counters.json') });
+    await Promise.all(Array.from({ length: 10 }, (_, index) => store.addChargersSeen(index + 1)));
+    expect((await store.load()).chargersSeen).toBe(55);
+  });
+
   it('accumulates the running chargers-seen count across runs', async () => {
     const dir = await tempDir();
     const store = new CountersStore({ filePath: join(dir, 'counters.json') });
