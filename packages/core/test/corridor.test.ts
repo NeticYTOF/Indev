@@ -46,6 +46,18 @@ const route: Coords[] = [
 ];
 
 describe('scanCorridor', () => {
+  it.each([false, true])('counts marker-consumption failure once even after valid data (%s)', async (hasValidPrefix) => {
+    const stations = hasValidPrefix ? [marker(1, 28, 77), null] : [null];
+    const client = { markers: async () => ({ ok: true, stations }) } as unknown as StatiqClient;
+    const progress: Array<{ completed: number; planned: number }> = [];
+    const result = await scanCorridor(client, route, { stepKm: 100, onProgress: p => progress.push(p) });
+    expect(result.samples).toBe(0);
+    expect(result.failedSamples).toHaveLength(result.samplesPlanned);
+    expect(result.samples + result.failedSamples.length).toBe(result.samplesPlanned);
+    expect(progress.every(p => p.completed <= p.planned)).toBe(true);
+    expect(result.candidates).toHaveLength(hasValidPrefix ? 1 : 0);
+  });
+
   it.each([
     { ok: true }, { ok: true, stations: null }, { ok: true, stations: {} },
     { ok: false, stations: [] },
