@@ -8,15 +8,19 @@
  *   plan). Callers must create a fresh client per planning run; memoized
  *   data must NEVER be presented as live status. Anything showing status
  *   carries a `fetchedAt` timestamp from `detailsWithMeta`.
- * - Retries cover transient upstream failures (5xx / 429 / network) with
- *   exponential backoff + jitter and a hard cap; never 4xx (permanent).
+ * - The rolling-window limiter spaces calls out (anti-burst) and hard-caps
+ *   calls per 60s; it is abort-aware so a run deadline cancels cleanly.
+ * - 429 responses are honored via Retry-After when present; retries are
+ *   capped and combined with exponential backoff + jitter. Persistent
+ *   throttling fails CLOSED at the planner level: "plan not determined",
+ *   never a falsely-confident plan.
  */
 import type {
   StatiqCardsResponse,
   StatiqDetailsResponse,
   StatiqMarkersResponse,
 } from './types.js';
-import { sleep } from './utils.js';
+import { sleep as defaultSleep } from './utils.js';
 
 export const DEFAULT_STATIQ_BASE_URL =
   'https://harrier-evroute.aaravnirajsingh.workers.dev/api';
@@ -26,12 +30,30 @@ export class StatiqApiError extends Error {
     readonly status: number,
     readonly path: string,
     readonly body: string,
+    readonly retryAfterMs?: number,
   ) {
     // Body text is upstream-controlled JSON; keep it short and never
     // include request headers (token safety).
     super(`Statiq API ${status} on ${path}: ${body.slice(0, 200)}`);
     this.name = 'StatiqApiError';
   }
+}
+
+/** Raised when a call is aborted (run deadline/budget reached). Never retried. */
+export class StatiqAbortError extends Error {
+  constructor(message = 'Statiq call aborted (run deadline or cancellation)') {
+    super(message);
+    this.name = 'StatiqAbortError';
+  }
+}
+
+/** True for any abort-shaped error (ours, fetch's, or DOMException). */
+export function isAbortLike(err: unknown): boolean {
+  return (
+    err instanceof StatiqAbortError ||
+    (err instanceof Error && err.name === 'AbortError') ||
+    (err instanceof Error && /aborted/i.test(err.message))
+  );
 }
 
 export interface StatiqClientOptions {
@@ -42,10 +64,17 @@ export interface StatiqClientOptions {
   cacheTtlMs?: number;
   timeoutMs?: number;
   retries?: number;
-  /** Rolling-window limit: max upstream calls per 60s (default 25). */
+  /**
+   * Rolling-window limit: max upstream calls per 60s (default 25).
+   * Smoothed by minCallGapMs below, so the budget cannot burst.
+   */
   maxCallsPerMinute?: number;
-  /** Fixed politeness gap between upstream calls (default 300ms). */
+  /** Minimum gap between upstream calls (default 2000ms, anti-burst). */
   minCallGapMs?: number;
+  /** Injectable clock for deterministic limiter tests. */
+  now?: () => number;
+  /** Injectable sleep for deterministic limiter tests. */
+  sleepImpl?: (ms: number) => Promise<void>;
 }
 
 interface CacheEntry {
@@ -69,9 +98,13 @@ export class StatiqClient {
   private readonly retries: number;
   private readonly maxCallsPerMinute: number;
   private readonly minCallGapMs: number;
+  private readonly now: () => number;
+  private readonly doSleep: (ms: number) => Promise<void>;
   private readonly detailsCache = new Map<number, CacheEntry>();
-  private lastCallAt = 0;
-  private callTimestamps: number[] = [];
+  private lastCallAt = Number.NEGATIVE_INFINITY;
+  private callStamps: number[] = [];
+  /** Serializes slot acquisition so concurrent callers cannot interleave. */
+  private slotQueue: Promise<void> = Promise.resolve();
 
   constructor(opts: StatiqClientOptions) {
     if (!opts.token) {
@@ -84,85 +117,117 @@ export class StatiqClient {
     this.timeoutMs = opts.timeoutMs ?? 10_000;
     this.retries = opts.retries ?? 2;
     this.maxCallsPerMinute = opts.maxCallsPerMinute ?? 25;
-    this.minCallGapMs = opts.minCallGapMs ?? 300;
+    this.minCallGapMs = opts.minCallGapMs ?? 2_000;
+    this.now = opts.now ?? Date.now;
+    this.doSleep = opts.sleepImpl ?? defaultSleep;
   }
 
   /** Stations near a point (~13 km radius, capped at 256 by the upstream). */
-  markers(lat: number, lon: number): Promise<StatiqMarkersResponse> {
-    return this.postJson('/stations/markers', { latitude: lat, longitude: lon });
+  markers(lat: number, lon: number, signal?: AbortSignal): Promise<StatiqMarkersResponse> {
+    return this.postJson('/stations/markers', { latitude: lat, longitude: lon }, signal);
   }
 
   /** Nearest station cards around a point. */
-  cards(lat: number, lon: number): Promise<StatiqCardsResponse> {
-    return this.postJson('/stations/cards', { latitude: lat, longitude: lon });
+  cards(lat: number, lon: number, signal?: AbortSignal): Promise<StatiqCardsResponse> {
+    return this.postJson('/stations/cards', { latitude: lat, longitude: lon }, signal);
   }
 
   /**
    * Full details with a fetched-at timestamp. The memo returns the original
    * fetch time (not access time) so status displays stay honest.
    */
-  async detailsWithMeta(stationId: number): Promise<StationDetailsWithMeta> {
+  async detailsWithMeta(stationId: number, signal?: AbortSignal): Promise<StationDetailsWithMeta> {
     const cached = this.detailsCache.get(stationId);
-    if (cached && Date.now() - cached.at < this.cacheTtlMs) {
+    if (cached && this.now() - cached.at < this.cacheTtlMs) {
       return { response: cached.response, fetchedAt: cached.fetchedAt };
     }
     const response = await this.postJson<StatiqDetailsResponse>('/stations/details', {
       station_id: stationId,
-    });
+    }, signal);
     const fetchedAt = new Date();
     if (response && response.station) {
-      this.detailsCache.set(stationId, { at: Date.now(), response, fetchedAt });
+      this.detailsCache.set(stationId, { at: this.now(), response, fetchedAt });
     }
     return { response, fetchedAt };
   }
 
   /** Wire-shaped details (no fetch metadata). */
-  async details(stationId: number): Promise<StatiqDetailsResponse> {
-    return (await this.detailsWithMeta(stationId)).response;
-  }
-
-  /** Exponential backoff with full jitter, capped: no tight retry loops. */
-  private async backoffMs(attempt: number): Promise<void> {
-    const base = 250 * 2 ** Math.min(attempt, 4); // caps the exponential at 4s
-    const jittered = Math.random() * base; // full jitter: 0..base
-    await sleep(Math.min(jittered, 4_000) + 100);
+  async details(stationId: number, signal?: AbortSignal): Promise<StatiqDetailsResponse> {
+    return (await this.detailsWithMeta(stationId, signal)).response;
   }
 
   /**
-   * Rolling-window rate limiter: at most `maxCallsPerMinute` upstream calls
-   * per 60s, with a minimum gap between calls. Waits (no tight loops) when
-   * the budget is exhausted. Creates one client per planning run so the
-   * limiter reflects that run's traffic.
+   * Backoff between attempts. When the upstream sent Retry-After (parsed
+   * to ms), it is honored (capped at 90s) with a small jitter allowance.
+   * Otherwise: exponential with full jitter, capped at 4s.
    */
-  private async acquireSlot(): Promise<void> {
+  private async backoffMs(attempt: number, retryAfterMs?: number): Promise<void> {
+    if (retryAfterMs != null && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+      await this.doSleep(Math.min(retryAfterMs, 90_000) + Math.random() * 250);
+      return;
+    }
+    const base = 250 * 2 ** Math.min(attempt, 4); // caps the exponential at 4s
+    const jittered = Math.random() * base; // full jitter: 0..base
+    await this.doSleep(Math.min(jittered, 4_000) + 100);
+  }
+
+  /**
+   * Rolling-window rate limiter. Guaranteed properties (unit-tested with
+   * a mocked transport and clock):
+   * - no two upstream calls closer than `minCallGapMs`
+   * - never more than `maxCallsPerMinute` calls in ANY rolling 60s window
+   *   (stamps are retained 62s so boundary windows stay conservative)
+   * - aborts promptly when `signal` fires while waiting (poll sleeps are
+   *   capped at 200ms)
+   * Waiters are SERIALIZED through `slotQueue`: only one waiter evaluates
+   * the gap/window state at a time, so concurrent bursts cannot interleave
+   * between the check and the stamp.
+   */
+  private acquireSlot(signal?: AbortSignal): Promise<void> {
+    const turn = this.slotQueue.then(() => this.acquireSlotLocked(signal));
+    // keep the queue moving even if this waiter aborts/fails
+    this.slotQueue = turn.catch(() => {});
+    return turn;
+  }
+
+  private async acquireSlotLocked(signal?: AbortSignal): Promise<void> {
     for (;;) {
-      const now = Date.now();
-      this.callTimestamps = this.callTimestamps.filter((t) => now - t < 60_000);
+      if (signal?.aborted) throw new StatiqAbortError();
+      const now = this.now();
+      // Retain stamps past the window: a push is only allowed when even the
+      // most conservative 60s window (ending now) holds < max calls.
+      const RETENTION_MS = 62_000;
+      this.callStamps = this.callStamps.filter((t) => now - t < RETENTION_MS);
       const gapWait = this.lastCallAt + this.minCallGapMs - now;
-      if (this.callTimestamps.length < this.maxCallsPerMinute && gapWait <= 0) {
+      const windowFull = this.callStamps.length >= this.maxCallsPerMinute;
+      if (!windowFull && gapWait <= 0) {
         const stamp = Math.max(now, this.lastCallAt + this.minCallGapMs);
-        this.callTimestamps.push(stamp);
+        this.callStamps.push(stamp);
         this.lastCallAt = stamp;
         return;
       }
-      const windowWait =
-        this.callTimestamps.length >= this.maxCallsPerMinute && this.callTimestamps[0] !== undefined
-          ? 60_000 - (now - (this.callTimestamps[0] as number))
-          : 0;
-      await sleep(Math.max(gapWait, windowWait, 50) + Math.random() * 100);
+      const oldest = this.callStamps[0] ?? now;
+      const windowWait = windowFull ? RETENTION_MS - (now - oldest) + 50 : 0;
+      // wait at most ~200ms so an abort is noticed within one poll cycle
+      await this.doSleep(Math.min(Math.max(gapWait, windowWait, 50), 200));
     }
   }
 
-  private async postJson<T>(path: string, body: unknown): Promise<T> {
+  private async postJson<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
     let lastError: unknown;
-    // 1 initial attempt + `retries` retries, exponential backoff + jitter
+    let lastRetryAfterMs: number | undefined;
+    // 1 initial attempt + `retries` retries; aborts are never retried
     for (let attempt = 0; attempt <= this.retries; attempt++) {
       if (attempt > 0) {
-        await this.backoffMs(attempt);
+        const override = lastRetryAfterMs;
+        lastRetryAfterMs = undefined;
+        await this.backoffMs(attempt, override);
       }
-      await this.acquireSlot();
+      await this.acquireSlot(signal);
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+      const onOuterAbort = () => controller.abort();
+      signal?.addEventListener('abort', onOuterAbort, { once: true });
       try {
         const res = await this.fetchImpl(this.base + path, {
           method: 'POST',
@@ -175,15 +240,22 @@ export class StatiqClient {
         });
         const text = await res.text();
         if (!res.ok) {
+          const retryAfter =
+            res.status === 429 ? this.parseRetryAfterMs(res.headers?.get('retry-after')) : undefined;
           // 4xx (except 429) are permanent: do not retry.
           if (res.status >= 500 || res.status === 429) {
-            lastError = new StatiqApiError(res.status, path, text);
+            lastError = new StatiqApiError(res.status, path, text, retryAfter);
+            lastRetryAfterMs = retryAfter;
             continue;
           }
-          throw new StatiqApiError(res.status, path, text);
+          throw new StatiqApiError(res.status, path, text, retryAfter);
         }
         return JSON.parse(text) as T;
       } catch (err) {
+        // aborts propagate immediately; they are never retried
+        if (signal?.aborted || (signal && isAbortLike(err))) {
+          throw new StatiqAbortError();
+        }
         if (err instanceof StatiqApiError && err.status < 500 && err.status !== 429) {
           throw err;
         }
@@ -191,9 +263,18 @@ export class StatiqClient {
         continue;
       } finally {
         clearTimeout(timer);
+        signal?.removeEventListener('abort', onOuterAbort);
       }
     }
     if (lastError instanceof StatiqApiError) throw lastError;
     throw new StatiqApiError(0, path, lastError instanceof Error ? lastError.message : 'network error');
+  }
+
+  /** Parse Retry-After (delay-seconds form). */
+  private parseRetryAfterMs(header: string | null | undefined): number | undefined {
+    if (!header) return undefined;
+    const seconds = Number(header.trim());
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+    return undefined; // HTTP-date form: fall back to default backoff
   }
 }

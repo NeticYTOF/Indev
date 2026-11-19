@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { StatiqApiError, StatiqClient } from '../src/statiq.js';
+import { StatiqAbortError, StatiqApiError, StatiqClient } from '../src/statiq.js';
 import type { StatiqDetailsResponse, StatiqMarkersResponse } from '../src/types.js';
 
 const TOKEN = 'test-token-abc123';
+/** Limiter-friendly settings so these tests don't wait real seconds. */
+const FAST = { minCallGapMs: 1, maxCallsPerMinute: 1_000 } as const;
 
 interface Call {
   url: string;
@@ -81,7 +83,7 @@ afterEach(() => {
 describe('StatiqClient', () => {
   it('sends the bearer token and parses markers', async () => {
     const { impl, calls } = fakeFetch(() => ({ status: 200, body: JSON.stringify(markersResponse) }));
-    const client = new StatiqClient({ token: TOKEN, baseUrl: 'https://example.test/api', fetchImpl: impl });
+    const client = new StatiqClient({ token: TOKEN, baseUrl: 'https://example.test/api', fetchImpl: impl, ...FAST });
     const res = await client.markers(28.6, 77.2);
     expect(res.stations[0]?.stationId).toBe(1790);
     expect(calls).toHaveLength(1);
@@ -101,6 +103,7 @@ describe('StatiqClient', () => {
       baseUrl: 'https://example.test/api',
       fetchImpl: impl,
       cacheTtlMs: 10,
+      ...FAST,
     });
     await client.details(1790);
     await client.details(1790);
@@ -116,7 +119,7 @@ describe('StatiqClient', () => {
       status: 200,
       body: JSON.stringify({ ok: false, live: false, retained: true, source: 'test', station: null }),
     }));
-    const client = new StatiqClient({ token: TOKEN, baseUrl: 'https://example.test/api', fetchImpl: impl });
+    const client = new StatiqClient({ token: TOKEN, baseUrl: 'https://example.test/api', fetchImpl: impl, ...FAST });
     await client.details(1790);
     await client.details(1790);
     expect(calls).toHaveLength(2);
@@ -130,7 +133,7 @@ describe('StatiqClient', () => {
         ? { status: 502, body: '{"error":"bad gateway"}' }
         : { status: 200, body: JSON.stringify(detailsResponse) };
     });
-    const client = new StatiqClient({ token: TOKEN, baseUrl: 'https://example.test/api', fetchImpl: impl });
+    const client = new StatiqClient({ token: TOKEN, baseUrl: 'https://example.test/api', fetchImpl: impl, ...FAST });
     const res = await client.details(1790);
     expect(res.station?.stationId).toBe(1790);
     expect(calls).toHaveLength(2);
@@ -138,7 +141,7 @@ describe('StatiqClient', () => {
 
   it('does not retry 404 and throws without leaking the token', async () => {
     const { impl, calls } = fakeFetch(() => ({ status: 404, body: '{"error":"Not found"}' }));
-    const client = new StatiqClient({ token: TOKEN, baseUrl: 'https://example.test/api', fetchImpl: impl });
+    const client = new StatiqClient({ token: TOKEN, baseUrl: 'https://example.test/api', fetchImpl: impl, ...FAST });
     await expect(client.details(1)).rejects.toBeInstanceOf(StatiqApiError);
     expect(calls).toHaveLength(1);
     try {
@@ -155,6 +158,7 @@ describe('StatiqClient', () => {
       baseUrl: 'https://example.test/api',
       fetchImpl: impl,
       retries: 1,
+      ...FAST,
     });
     await expect(client.markers(1, 1)).rejects.toThrow(StatiqApiError);
     expect(calls).toHaveLength(2); // initial + 1 retry
@@ -162,5 +166,119 @@ describe('StatiqClient', () => {
 
   it('requires a token', () => {
     expect(() => new StatiqClient({ token: '' })).toThrow(/STATIQ_API_TOKEN/);
+  });
+});
+
+/** Deterministic harness: fake clock + recording transport. */
+function deterministicClient(
+  opts: {
+    respond?: (call: { n: number; attempt: number }) => { status: number; body?: string; headers?: Record<string, string> };
+    maxCallsPerMinute?: number;
+    minCallGapMs?: number;
+    retries?: number;
+  } = {},
+) {
+  let nowMs = 0;
+  const transportTimes: number[] = [];
+  let call = 0;
+  const transport = (async (_url: unknown, init?: RequestInit) => {
+    const n = call++;
+    transportTimes.push(nowMs);
+    const r = opts.respond?.({ n, attempt: 0 }) ?? { status: 200, body: JSON.stringify(emptyMarkers) };
+    const body =
+      r.body ?? JSON.stringify({ ok: true, live: true, retained: false, source: 't', count: 0, stations: [] } as StatiqMarkersResponse);
+    const headers = new Headers(r.headers ?? {});
+    void init;
+    return new Response(body, { status: r.status, headers });
+  }) as typeof fetch;
+  const sleepImpl = async (ms: number) => {
+    nowMs += Math.max(0, ms); // sleeping advances the fake clock deterministically
+  };
+  const client = new StatiqClient({
+    token: 't',
+    baseUrl: 'https://x.test/api',
+    fetchImpl: transport,
+    now: () => nowMs,
+    sleepImpl,
+    retries: opts.retries ?? 0,
+    ...(opts.maxCallsPerMinute ? { maxCallsPerMinute: opts.maxCallsPerMinute } : {}),
+    ...(opts.minCallGapMs ? { minCallGapMs: opts.minCallGapMs } : {}),
+  });
+  return { client, transportTimes, now: () => nowMs };
+}
+
+const emptyMarkers: StatiqMarkersResponse = {
+  ok: true,
+  live: true,
+  retained: false,
+  source: 't',
+  count: 0,
+  stations: [],
+};
+
+describe('rate limiter (mocked transport + mocked clock)', () => {
+  it('enforces the minimum gap even when requests burst in concurrently', async () => {
+    const { client, transportTimes } = deterministicClient({ minCallGapMs: 2000 });
+    await Promise.all(Array.from({ length: 12 }, (_, i) => client.markers(1 + i, 1)));
+    expect(transportTimes).toHaveLength(12);
+    for (let i = 1; i < transportTimes.length; i++) {
+      const gap = (transportTimes[i] as number) - (transportTimes[i - 1] as number);
+      expect(gap).toBeGreaterThanOrEqual(2000);
+    }
+  });
+
+  it('never exceeds maxCallsPerMinute in any rolling 60s window', async () => {
+    const { client, transportTimes } = deterministicClient({
+      maxCallsPerMinute: 5,
+      minCallGapMs: 100, // gap allows bursts; the window cap must stop them
+    });
+    await Promise.all(Array.from({ length: 16 }, (_, i) => client.markers(1 + i, 1)));
+    expect(transportTimes.length).toBe(16);
+    for (let i = 0; i < transportTimes.length; i++) {
+      const t = transportTimes[i] as number;
+      const inWindow = transportTimes.filter((x) => x >= t - 59_999 && x <= t);
+      expect(inWindow.length).toBeLessThanOrEqual(5);
+    }
+  });
+
+  it('honors Retry-After seconds on 429 before retrying', async () => {
+    let n = 0;
+    const { client, transportTimes } = deterministicClient({
+      retries: 2,
+      respond: () => {
+        n++;
+        if (n === 1) {
+          return { status: 429, body: '{"error":"Please wait a minute."}', headers: { 'Retry-After': '30' } };
+        }
+        return { status: 200 };
+      },
+    });
+    await client.markers(1, 1);
+    expect(transportTimes).toHaveLength(2);
+    // second attempt must wait >= 30s of clock time after the first
+    expect((transportTimes[1] as number) - (transportTimes[0] as number)).toBeGreaterThanOrEqual(30_000);
+  });
+
+  it('propagates aborts immediately instead of retrying or waiting', async () => {
+    // saturate the window so the next call has to wait in acquireSlot
+    const { client, transportTimes } = deterministicClient({
+      maxCallsPerMinute: 2,
+      minCallGapMs: 1,
+    });
+    await client.markers(1, 1);
+    await client.markers(2, 2);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(client.markers(3, 3, controller.signal)).rejects.toBeInstanceOf(StatiqAbortError);
+    expect(transportTimes).toHaveLength(2); // no third call was made
+  });
+
+  it('caps total attempts at retries and surfaces the last error', async () => {
+    const { client, transportTimes } = deterministicClient({
+      retries: 2,
+      respond: () => ({ status: 500, body: '{"error":"boom"}' }),
+    });
+    await expect(client.markers(1, 1)).rejects.toBeInstanceOf(StatiqApiError);
+    expect(transportTimes).toHaveLength(3); // initial + 2 retries, no tight loop
   });
 });
