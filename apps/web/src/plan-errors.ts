@@ -5,9 +5,10 @@
  * (throttled | auth | budget-exhausted | deadline | sample-throttled |
  * scan-coverage | candidate-holes). Guidance correctness rules:
  *
- *  - Throttle causes NEVER invent a blanket wait ("a minute or two"):
- *    the API's own requested wait (Retry-After) is in the server evidence
- *    shown below the guidance - the user defers to THAT number.
+ *  - Throttle causes NEVER invent a blanket wait ("a minute or two")
+ *    and never ASSUME the API supplied one: any exact requested wait
+ *    (Retry-After) is in the server evidence shown below the guidance,
+ *    referenced only conditionally - "if it specified".
  *  - Budget exhaustion is reported without diagnosing WHY (attempt caps
  *    count retries too; a big candidate pool is only one possibility)
  *    and without promising any retry path succeeds.
@@ -32,7 +33,7 @@ export interface PlanFailureGuidance {
 }
 
 const THROTTLE_DETAIL =
-  'Wait as long as the API asked - the requested wait is in the details below - then try again.';
+  'Wait for the pause the API asked for - if it specified an exact wait, that number is in the details below - then try again.';
 
 // Null-prototype map: inherited Object.prototype keys ('toString',
 // 'constructor'...) must never masquerade as causes. Lookup is
@@ -45,17 +46,17 @@ const CAUSE_GUIDANCE: Record<string, PlanFailureGuidance> = Object.assign(
     throttled: {
       title: 'Charger API throttling',
       detail: `The charger API refused this run (429) and asked for a pause, so the plan stopped without a verdict. ${THROTTLE_DETAIL}`,
-      toast: 'Plan not determined — charger API throttling. Wait as the API asked, then retry.',
+      toast: 'Plan not determined — charger API throttling. Wait for its pause to lift, then retry.',
     },
     'sample-throttled': {
       title: 'Charger API throttling',
       detail: `A corridor sample was refused with 429 and the scan stopped fail-closed instead of guessing. ${THROTTLE_DETAIL}`,
-      toast: 'Plan not determined — charger API throttling. Wait as the API asked, then retry.',
+      toast: 'Plan not determined — charger API throttling. Wait for its pause to lift, then retry.',
     },
     auth: {
       title: 'Charger API credentials rejected',
       detail:
-        "The charger API refused this run's credentials (401/403) - the token may be invalid or expired, or the account may lack access to this data. Check the server's STATIQ_API_TOKEN and the account's access; retrying will not change it.",
+        "The charger API refused this run's credentials (401/403) - the token may be invalid or expired, or the account may lack access to this data. Check the server's STATIQ_API_TOKEN and the account's access first; a retry is only useful after something on that side actually changes.",
       toast: 'Plan not determined — charger API credentials rejected. See details.',
     },
     'budget-exhausted': {

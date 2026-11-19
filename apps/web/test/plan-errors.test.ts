@@ -67,15 +67,19 @@ describe('plan failure guidance correctness (cause-true, never invented)', () =>
     }
   });
 
-  it('throttle guidance honors the API-requested wait, never a blanket number', () => {
+  it('throttle guidance mentions the requested wait ONLY if one was supplied', () => {
     for (const cause of ['throttled', 'sample-throttled'] as const) {
       const g = planFailureGuidance(cause);
-      // The old blanket lie was "Retry in a minute" - the API's own
-      // Retry-After (in the server evidence) is the only honest wait.
+      // The old blanket lie was "Retry in a minute"; the follow-up defect
+      // was ASSUMING the API always supplies Retry-After. The conditional
+      // form ("if it specified") is the contract: never a blanket number,
+      // never an asserted wait that may not exist.
       expect(g.detail).not.toMatch(/minute/i);
-      expect(g.detail).toMatch(/as the API asked/);
-      expect(g.detail).toMatch(/requested wait is in the details/);
+      expect(g.detail).toMatch(/pause the API asked for/);
+      expect(g.detail).toMatch(/if it specified an exact wait, that number is in the details below/);
+      expect(g.detail).not.toMatch(/the requested wait is in the details/);
       expect(g.toast).not.toMatch(/minute/i);
+      expect(g.toast).toMatch(/pause to lift/);
     }
   });
 
@@ -102,13 +106,17 @@ describe('plan failure guidance correctness (cause-true, never invented)', () =>
     expect(g.detail).toMatch(/phase timings.*details below/);
   });
 
-  it('auth guidance names credentials OR access - never a definitive token-replacement diagnosis', () => {
+  it('auth guidance names credentials OR access - no categorical retry verdict', () => {
     const g = planFailureGuidance('auth');
     expect(g.detail).toMatch(/401\/403/);
     expect(g.detail).toMatch(/invalid or expired/i);
     expect(g.detail).toMatch(/lack access/i);
     expect(g.detail).not.toMatch(/replac/i);
-    expect(g.detail).toMatch(/retrying will not change it/i);
+    // Never categorical: a retry IS useful if the token/access side
+    // actually changed - not "retry never changes it".
+    expect(g.detail).toMatch(/only useful after something on that side actually changes/);
+    expect(g.detail).not.toMatch(/\bnever\b/i);
+    expect(g.detail).not.toMatch(/will not change/);
   });
 
   it('coverage causes never claim the route is impossible', () => {
