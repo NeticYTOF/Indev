@@ -388,6 +388,15 @@ export function onPlanAvailable(plan: TripPlan, map: maplibregl.Map): void {
     document.getElementById('sheet-open')?.setAttribute('aria-expanded', 'true');
     document.getElementById('sheet-open')?.classList.add('hidden');
   }
+  // A disabled submit can drop keyboard focus to body during the wait.
+  // Reveal the completed summary in that case, but never take focus from
+  // another field/control the user deliberately reached while waiting.
+  if (document.activeElement === document.body) {
+    const results = panel.querySelector<HTMLElement>('.plan-results');
+    results?.setAttribute('tabindex', '-1');
+    results?.scrollIntoView({ block: 'start' });
+    results?.focus({ preventScroll: true });
+  }
 }
 
 type VehicleSelectionResult =
