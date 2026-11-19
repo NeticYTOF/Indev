@@ -21,6 +21,7 @@ const photonResponse = {
 
 describe('PhotonGeocoder', () => {
   it.each([
+    {}, { features: null }, null,
     { features: {} }, { features: [null] },
     { features: [{ geometry: { coordinates: [77, 91] }, properties: { name: 'Invalid' } }] },
     { features: [{ geometry: { coordinates: ['77', 28] }, properties: { name: 'Invalid' } }] },
