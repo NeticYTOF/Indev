@@ -36,6 +36,13 @@ describe('classifyPlug (observed Statiq vocabulary)', () => {
     [conn('finishing', false, 'Finished'), 'finishing', false],
     // status=available, available=false, note=Charging -> occupied (flags agree: busy)
     [conn('available', false, 'Charging'), 'working-occupied', false],
+    // Unknown words containing a known token are not positive evidence.
+    [conn('not available', null, null), 'uncertain', true],
+    [conn('not charging', null, null), 'uncertain', true],
+    [conn('not preparing', null, null), 'uncertain', true],
+    [conn('not finishing', null, null), 'uncertain', true],
+    [conn('maybe available', null, null), 'uncertain', true],
+    [conn('unknown', null, 'Finished'), 'uncertain', true],
     // unknown vocabulary -> uncertain, never working
     [conn('suspendedev', null, null), 'uncertain', true],
     [conn('', null, null), 'uncertain', true],
