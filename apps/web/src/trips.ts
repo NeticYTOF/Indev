@@ -109,7 +109,7 @@ function openSavedTrip(trip: SavedTrip, map: maplibregl.Map): void {
   if (window.innerWidth <= 720) {
     panel.classList.add('open');
   }
-  toast('Saved trip loaded — stations revalidate live when you open a stop card.');
+  toast('Saved trip loaded — station cards fetch current details on request.');
 }
 
 function renderSavedSummary(panel: HTMLElement, trip: SavedTrip): void {
@@ -124,7 +124,8 @@ function renderSavedSummary(panel: HTMLElement, trip: SavedTrip): void {
       ${trip.status === 'degraded' ? '<div class="banner banner-warn">This plan was saved with partial charger coverage (degraded).</div>' : ''}
       <div class="banner banner-soft">
         Saved on ${escapeHtml(new Date(trip.createdAt).toLocaleString('en-IN'))}.
-        Charger status is never stored — station cards below revalidate live.
+        Charger status is never stored — station cards below fetch current
+        details on request (labelled synthetic in mock mode).
       </div>
     </div>
     <div class="plan-head">
@@ -157,7 +158,7 @@ function renderSavedSummary(panel: HTMLElement, trip: SavedTrip): void {
           <div class="stop-main">
             <div class="stop-head">
               <div class="stop-title"><span class="stop-name">${escapeHtml(s.name)}</span></div>
-              <button type="button" class="btn btn-compact btn-ghost" data-revalidate>Revalidate live</button>
+              <button type="button" class="btn btn-compact btn-ghost" data-revalidate>Fetch current details</button>
             </div>
             <div class="stop-body revalidate-box hidden"></div>
           </div>
@@ -173,7 +174,7 @@ function renderSavedSummary(panel: HTMLElement, trip: SavedTrip): void {
       const stationId = Number(card.dataset.stationId);
       const box = card.querySelector('.revalidate-box') as HTMLElement;
       box.classList.remove('hidden');
-      box.textContent = 'Fetching live station details…';
+      box.textContent = 'Fetching station details…';
       try {
         const res = await fetch(`/api/stations/${stationId}`);
         if (!res.ok) {
@@ -189,16 +190,17 @@ function renderSavedSummary(panel: HTMLElement, trip: SavedTrip): void {
             synthetic?: boolean;
             fetchedAt: string;
             ccs2: { usable: number; free: number; occupied: number; faulted: number; uncertain: number; maxKw: number | null; pricePerKwh: number | null };
-            chargers: Array<{ lastUsedOn: string | null; kw: number; type: string; pricePerKwh: number | null; connectors: Array<{ type: string; status: string; note: string | null }> }>;
+            chargers: Array<{ lastUsedOn: string | null; kw: number; type: string; pricePerKwh: number | null; connectors: Array<{ type: string; status: string; note: string | null }> };
           };
         };
         const lastUsed = station.chargers.map((c) => c.lastUsedOn).filter(Boolean).join(', ') || 'unknown';
         box.innerHTML = `
+          ${station.synthetic ? '<div class="banner banner-synthetic">Synthetic station (mock mode) — a fixed sample, not live charger data.</div>' : ''}
           <div class="stop-meta">
             <span class="meta">${station.rating != null ? `★ ${Math.round(station.rating * 10) / 10} (${(station.reviewCount ?? 0).toLocaleString('en-IN')} reviews)` : 'No rating'}</span>
-            <span class="meta">Last used ${escapeHtml(lastUsed)}</span>
+            <span class="meta">Last used ${escapeHtml(lastUsed)}${station.synthetic ? ' (fixture)' : ''}</span>
             <span class="meta">Reliability: unavailable</span>
-            <span class="meta fetched">Fetched just now</span>
+            <span class="meta fetched">Details fetched just now</span>
           </div>
           <div class="chips">
             <span class="chip">${station.ccs2.usable} usable CCS2 plug${station.ccs2.usable === 1 ? '' : 's'}</span>

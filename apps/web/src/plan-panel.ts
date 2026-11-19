@@ -126,7 +126,7 @@ async function revalidateStop(btn: HTMLElement, plan: TripPlan): Promise<void> {
   if (!stop || stop.station.stationId !== stationId) return;
   const box = document.createElement('div');
   box.className = 'revalidate-box';
-  box.textContent = 'Fetching fresh live status…';
+  box.textContent = 'Fetching station status…';
   card.querySelector('.stop-body')?.appendChild(box);
   btn.setAttribute('disabled', 'true');
   try {
@@ -147,11 +147,12 @@ async function revalidateStop(btn: HTMLElement, plan: TripPlan): Promise<void> {
     };
     const lastUsed = station.chargers.map((c) => c.lastUsedOn).filter(Boolean).sort().pop() ?? 'unknown';
     box.innerHTML = `
+      ${station.synthetic ? '<div class="banner banner-synthetic">Synthetic station (mock mode) — a fixed sample, not live charger data.</div>' : ''}
       <div class="stop-meta">
         <span class="meta">${station.rating != null ? `★ ${Math.round(station.rating * 10) / 10} (${(station.reviewCount ?? 0).toLocaleString('en-IN')} reviews)` : 'No rating'}</span>
-        <span class="meta">Last used ${escapeHtml(String(lastUsed))}</span>
+        <span class="meta">Last used ${escapeHtml(String(lastUsed))}${station.synthetic ? ' (fixture)' : ''}</span>
         <span class="meta">Reliability: unavailable</span>
-        <span class="meta fetched">Fetched just now</span>
+        <span class="meta fetched">Details fetched just now</span>
       </div>
       <div class="chips">
         <span class="chip">${station.ccs2.usable} usable CCS2 plug${station.ccs2.usable === 1 ? '' : 's'}</span>
