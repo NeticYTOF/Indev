@@ -1,0 +1,233 @@
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  CountersStore,
+  OsrmRouter,
+  PhotonGeocoder,
+  StatiqClient,
+  TripsStore,
+  type RouteResult,
+  type StatiqDetailsResponse,
+  type StatiqMarkersResponse,
+  type StatiqStationDetail,
+} from '@indeev/core';
+import {
+  getStationHandler,
+  listSavedTripsHandler,
+  planTripHandler,
+  type McpToolDeps,
+} from '../src/tools.js';
+
+const tempDirs: string[] = [];
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+});
+
+async function makeDeps(overrides: Partial<McpToolDeps> = {}): Promise<McpToolDeps> {
+  const dir = await mkdtemp(join(tmpdir(), 'indeev-mcp-test-'));
+  tempDirs.push(dir);
+  return {
+    createStatiq: () => new StatiqClient({ token: 't', minCallGapMs: 1, maxCallsPerMinute: 1_000 }),
+    router: {
+      route: async (): Promise<RouteResult> => ({
+        distanceKm: 300,
+        durationMin: 300,
+        geometry: [
+          { lat: 28.6, lon: 77.2 },
+          { lat: 26.9, lon: 75.8 },
+        ],
+      }),
+    } as unknown as OsrmRouter,
+    geocoder: {
+      search: async (q: string) => [
+        { name: q, label: `${q}, India`, lat: 28.6, lon: 77.2, city: 'Delhi', state: 'Delhi', country: 'India' },
+      ],
+    } as unknown as PhotonGeocoder,
+    trips: new TripsStore({ filePath: join(dir, 'saved-trips.json') }),
+    counters: new CountersStore({ filePath: join(dir, 'counters.json') }),
+    mock: false,
+    ...overrides,
+  };
+}
+
+function liveStatiqFake() {
+  return {
+    markers: async (): Promise<StatiqMarkersResponse> => ({
+      ok: true,
+      live: true,
+      retained: false,
+      source: 'test',
+      count: 0,
+      stations: [],
+    }),
+    detailsWithMeta: async (): Promise<{ response: StatiqDetailsResponse; fetchedAt: Date }> => ({
+      response: { ok: true, live: true, retained: false, source: 'test', station: null },
+      fetchedAt: new Date(),
+    }),
+  } as unknown as StatiqClient;
+}
+
+describe('plan_trip handler', () => {
+  it('plans a route, accepts "lat,lon" origins, and saves when asked', async () => {
+    const deps = await makeDeps({ createStatiq: () => liveStatiqFake() });
+    // 300 km route, no stations needed from full charge
+    const result = await planTripHandler(deps, {
+      origin: '28.6139,77.2090',
+      destination: 'Jaipur',
+      save: 'Work trip',
+    });
+    expect(result.plan.stops).toHaveLength(0);
+    expect(result.plan.origin.label).toContain('28.6139');
+    expect(result.plan.vehicle.label).toContain('Harrier');
+    expect(result.savedTripId).toBeTruthy();
+
+    const list = await listSavedTripsHandler(deps);
+    expect(list.count).toBe(1);
+    expect(list.trips[0]?.source).toBe('live');
+    expect(list.trips[0]?.name).toBe('Work trip');
+  });
+
+  it('rejects non-default vehicles without a user-provided real-world range', async () => {
+    const deps = await makeDeps({ createStatiq: () => liveStatiqFake() });
+    await expect(
+      planTripHandler(deps, {
+        origin: 'Delhi',
+        destination: 'Jaipur',
+        vehicleCatalogId: 'tata-nexon-ev-lr-45',
+        // realWorldRangeKm omitted: manufacturer claims must never stand in
+      }),
+    ).rejects.toThrow(/real-world range/i);
+  });
+
+  it('fails closed in mock mode (no synthetic planner in MCP)', async () => {
+    const deps = await makeDeps({ mock: true });
+    await expect(
+      planTripHandler(deps, { origin: 'Delhi', destination: 'Jaipur' }),
+    ).rejects.toThrow(/mock mode/i);
+  });
+});
+
+describe('get_station handler (AI-safe)', () => {
+  it('reports usable plugs WITHOUT occupancy and keeps honesty counters', async () => {
+    const fetchedAt = new Date('2026-11-19T12:00:00Z');
+    const statiq = {
+      detailsWithMeta: async (): Promise<{ response: StatiqDetailsResponse; fetchedAt: Date }> => ({
+        response: {
+          ok: true,
+          live: true,
+          retained: false,
+          source: 'test',
+          station: {
+            stationId: 1790,
+            name: 'Statiq Hotel The Suryaa Station',
+            lat: 28.56,
+            lon: 77.27,
+            address: null,
+            area: null,
+            city: 'New Delhi',
+            landmark: null,
+            hours: '00:00 To 23:59',
+            openText: 'Open Now',
+            rating: 4.72,
+            reviewCount: 4774,
+            accessType: 'public',
+            navUrl: 'n',
+            stationUrl: 's',
+            imageUrl: null,
+            amenities: [],
+            stepsToReach: null,
+            chargers: [
+              {
+                chargerId: 1,
+                name: 'DC 120',
+                type: 'DC',
+                kw: 120,
+                pricePerKwh: 22.75,
+                currency: 'INR',
+                lastUsedOn: '19/11/2026',
+                connectors: [
+                  // one occupied-but-working plug and one free plug
+                  { displayId: 1, connectorId: 11, type: 'CCS-2', status: 'charging', available: false, note: 'Charging' },
+                  { displayId: 2, connectorId: 12, type: 'CCS-2', status: 'available', available: true, note: null },
+                  // one contradictory plug: positive status vs fault text -> uncertain
+                  { displayId: 3, connectorId: 13, type: 'CCS-2', status: 'available', available: true, note: 'Faulted' },
+                ],
+              },
+            ],
+            summary: null,
+          } as StatiqStationDetail,
+        },
+        fetchedAt,
+      }),
+    } as unknown as StatiqClient;
+    const deps = await makeDeps({ createStatiq: () => statiq });
+
+    const { station, summary } = await getStationHandler(deps, 1790);
+    expect(station.ccs2Usable).toBe(2); // occupied counts as usable
+    expect(station.ccs2Uncertain).toBe(1);
+    expect(station.reliability).toBeNull();
+    expect(station.fetchedAt).toBe('2026-11-19T12:00:00.000Z');
+    // NEVER occupancy: no free/occupied/charging vocabulary anywhere
+    expect(JSON.stringify(station)).not.toMatch(/occupied|"free"|charging/i);
+    expect(summary).toContain('usable CCS2 DC plug(s)');
+    expect(summary).toContain('reliability unavailable');
+  });
+
+  it('throws for unknown stations', async () => {
+    const deps = await makeDeps({ createStatiq: () => liveStatiqFake() });
+    await expect(getStationHandler(deps, 42)).rejects.toThrow(/not found/i);
+  });
+});
+
+describe('list_saved_trips handler (shared store)', () => {
+  it('sees trips saved by the website (same file semantics), minimal refs only', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'indeev-mcp-shared-'));
+    tempDirs.push(dir);
+    const storePath = join(dir, 'saved-trips.json');
+    const webStore = new TripsStore({ filePath: storePath });
+    await webStore.save({
+      id: 'web-1',
+      createdAt: new Date().toISOString(),
+      origin: { label: 'Delhi', lat: 28.6, lon: 77.2 },
+      destination: { label: 'Agra', lat: 27.17, lon: 78.01 },
+      vehicle: {
+        label: 'Tata Harrier EV (75 kWh)',
+        catalogId: 'tata-harrier-ev-75',
+        batteryKwh: 75,
+        claimedRangeKm: 627,
+        realWorldRangeKm: null,
+      },
+      status: 'ok',
+      source: 'live',
+      routeDistanceKm: 230,
+      routeDurationMin: 220,
+      geometry: [[28.6, 77.2]],
+      stations: [],
+      totals: {
+        distanceKm: 230,
+        driveTimeMin: 220,
+        chargeTimeMin: 0,
+        totalTimeMin: 220,
+        chargeKwh: 0,
+        estPriceInr: null,
+        finalSocPct: 40,
+      },
+      warnings: [],
+      stops: [],
+    } as never);
+
+    const deps = await makeDeps({ trips: new TripsStore({ filePath: storePath }) });
+    const list = await listSavedTripsHandler(deps);
+    expect(list.count).toBe(1);
+    expect(list.trips[0]?.id).toBe('web-1');
+
+    // minimal refs only: no station detail data persisted
+    const raw = JSON.parse(await readFile(storePath, 'utf8')) as unknown[];
+    const rawJson = JSON.stringify(raw);
+    expect(rawJson).not.toContain('rating');
+    expect(rawJson).not.toContain('chargers');
+    expect(rawJson).not.toContain('reliability');
+  });
+});
