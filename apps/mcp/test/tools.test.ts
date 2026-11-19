@@ -70,6 +70,15 @@ function liveStatiqFake() {
 }
 
 describe('plan_trip handler', () => {
+  it('delivers and saves a valid plan with an explicit warning when counter telemetry fails', async () => {
+    const deps = await makeDeps({ createStatiq: () => liveStatiqFake(), counters: { addChargersSeen: async () => { throw new Error('counter corrupt'); } } as unknown as CountersStore });
+    const result = await planTripHandler(deps, { origin: 'Delhi', destination: 'Jaipur', save: 'Counter warning fixture' });
+    expect(result.plan.source).toBe('live');
+    expect(result.summary).toContain('not added to the saved running count');
+    expect(result.savedTripId).toBeTruthy();
+    expect((await deps.trips.list())).toHaveLength(1);
+  });
+
   it('plans a route, accepts "lat,lon" origins, and saves when asked', async () => {
     const deps = await makeDeps({ createStatiq: () => liveStatiqFake() });
     // 300 km route, no stations needed from full charge

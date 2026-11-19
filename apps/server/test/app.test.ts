@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -74,6 +74,43 @@ function liveStatiqFake() {
 }
 
 describe('GET /api/health', () => {
+  it('preserves actual corrupt counter bytes while health and computed plans remain usable', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'indeev-counter-http-'));
+    tempDirs.push(dir);
+    const path = join(dir, 'counters.json');
+    const original = '{"incomplete":';
+    await writeFile(path, original);
+    const app = createApp(await makeDeps({ mock: true, counters: new CountersStore({ filePath: path }) }));
+    const health = await app.request('/api/health');
+    expect(health.status).toBe(200);
+    expect(await health.json()).toMatchObject({ mock: true, chargersSeen: null, counterAvailable: false });
+    const res = await app.request('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ origin: ORIGIN, destination: DEST }) });
+    expect(res.status).toBe(200);
+    expect((await res.json()).plan.warnings.join(' ')).toContain('counter unavailable');
+    expect(await readFile(path, 'utf8')).toBe(original);
+  });
+
+  it('keeps health mode metadata available when the counter file is corrupt', async () => {
+    const deps = await makeDeps({ counters: { load: async () => { throw new Error('counter corrupt'); } } as unknown as CountersStore });
+    const res = await createApp(deps).request('/api/health');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, mock: false, chargersSeen: null, counterAvailable: false });
+  });
+
+  it.each([false, true])('delivers a computed plan and honest audit despite counter failure (mock=%s)', async (mock) => {
+    const audit: string[] = [];
+    const statiq = { ...liveStatiqFake(), upstreamCallsMade: () => 17 } as unknown as StatiqClient;
+    const deps = await makeDeps({ mock, createStatiq: () => statiq,
+      counters: { addChargersSeen: async () => { throw new Error('counter corrupt'); } } as unknown as CountersStore,
+      onRunComplete: (outcome, calls) => audit.push(`${outcome}:${calls}`),
+    });
+    const res = await createApp(deps).request('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ origin: ORIGIN, destination: DEST }) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.plan.warnings.some((warning: string) => warning.includes('not added to the saved running count'))).toBe(true);
+    expect(audit).toEqual([mock ? 'ok:0' : 'ok:17']);
+  });
+
   it('reports ok with the running chargers-seen count', async () => {
     const deps = await makeDeps();
     const app = createApp(deps);

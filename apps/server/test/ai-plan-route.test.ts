@@ -139,6 +139,25 @@ const DEST = { label: 'Destination', lat: TOTAL_KM / KM_PER_DEG, lon: 0 };
 const AI_CFG = { baseUrl: 'https://ai.test/v1', apiKey: 'sk-test', model: 'test-model' };
 
 describe('POST /api/ai/plan', () => {
+  it.each([false, true])('does not stop AI flow or misreport audit when counter telemetry fails (mock=%s)', async (mock) => {
+    const audit: string[] = [];
+    let modelCalls = 0;
+    const base = fakeStatiq(stations);
+    const app = createApp(await makeDeps({ mock, ai: AI_CFG,
+      createStatiq: () => ({ ...base, upstreamCallsMade: () => 23 }) as unknown as StatiqClient,
+      counters: { addChargersSeen: async () => { throw new Error('counter corrupt'); } } as unknown as CountersStore,
+      onRunComplete: (outcome, calls) => audit.push(`${outcome}:${calls}`),
+      aiCall: async () => { modelCalls++; return JSON.stringify({ chosenStationIds: [705, 711] }); },
+    }));
+    const res = await app.request('/api/ai/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ origin: ORIGIN, destination: DEST }) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.plan.warnings.some((warning: string) => warning.includes('not added to the saved running count'))).toBe(true);
+    expect(modelCalls).toBe(mock ? 0 : 1);
+    expect(body.ai.applied).toBe(!mock);
+    expect(audit).toEqual([mock ? 'ok:0' : 'ok:23']);
+  });
+
   it('rejects an AI first stop that cannot be reached at the requested starting charge', async () => {
     const app = createApp(await makeDeps({ ai: AI_CFG,
       aiCall: async () => JSON.stringify({ chosenStationIds: [705, 711] }) }));

@@ -191,6 +191,18 @@ describe('TripsStore', () => {
 });
 
 describe('CountersStore', () => {
+  it.each(['{"incomplete":', '{"chargersSeen":-10}', '{"chargersSeen":"12"}', '{"chargersSeen":1.5}', '{}', 'null'])('preserves invalid existing counter data: %s', async (original) => {
+    const dir = await tempDir();
+    const filePath = join(dir, 'counters.json');
+    await writeFile(filePath, original);
+    const store = new CountersStore({ filePath });
+    const outcomes = await Promise.allSettled([store.load(), store.addChargersSeen(3)]);
+    expect(outcomes.map(result => result.status)).toEqual(['rejected', 'rejected']);
+    expect(await readFile(filePath, 'utf8')).toBe(original);
+    await writeFile(filePath, '{"chargersSeen":12}');
+    expect((await store.addChargersSeen(3)).chargersSeen).toBe(15);
+  });
+
   it('allows an update after a failed queued write is repaired', async () => {
     const dir = await tempDir();
     const blockedParent = join(dir, 'blocked');
