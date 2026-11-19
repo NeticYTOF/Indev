@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { planTripDetailed } from '../src/planner.js';
+import { planTripDetailed, finalize } from '../src/planner.js';
 import { assembleAiPlan, validateAiChoice } from '../src/ai-plan.js';
-import { HARIER_EV_75 } from '../src/vehicle.js';
+import { DEFAULT_PLAN_OPTIONS } from '../src/plan-types.js';
+import { HARIER_EV_75, socAfterDriving } from '../src/vehicle.js';
 import type { OsrmRouter, RouteResult } from '../src/router.js';
 import type { StatiqClient } from '../src/statiq.js';
 import type { StatiqDetailsResponse, StatiqMarkersResponse, StatiqStationDetail, StatiqCharger } from '../src/types.js';
@@ -110,6 +111,19 @@ const stations: StationSpec[] = Array.from({ length: 14 }, (_, i) => ({
 }));
 
 describe('validateAiChoice', () => {
+  it('preserves excess battery energy between closely spaced early stops', () => {
+    const bundle = handBuiltBundle([50, 100], 200);
+    const validation = validateAiChoice(bundle, { stationIds: [idAt(50), idAt(100)] }, {}, HARIER_EV_75);
+    expect(validation.ok).toBe(true);
+    if (!validation.ok) return;
+    const stops = finalize(validation.seq, 200, bundle.route, DEFAULT_PLAN_OPTIONS, HARIER_EV_75, []);
+    expect(stops[0]!.chargeKwh).toBe(0);
+    expect(stops[1]!.arriveSocPct).toBeCloseTo(socAfterDriving(50, stops[0]!.leaveSocPct), 0);
+    expect(stops[1]!.chargeKwh).toBe(0);
+    expect(stops[1]!.chargeTimeMin).toBe(0);
+    expect(stops[1]!.estPriceInr).toBe(0);
+  });
+
   it('rejects an energy-reachable final leg that exceeds the 300 km hard gap', () => {
     const bundle = handBuiltBundle([300], 650);
     const v = validateAiChoice(bundle, { stationIds: [idAt(300)] }, {}, HARIER_EV_75);
