@@ -1668,4 +1668,14 @@ body {
     right: 12px;
     width: min(340px, calc(100vw - 24px));
   }
+
+  /* Drawer open: drop toasts below its sticky head so the title and the
+     Close control stay visible. Geometry of the old defect: toast top
+     58px + safe-t vs drawer-head top 52px + safe-t at the identical
+     right offset - a load/delete toast covered the Close button for its
+     whole duration (rendered review: the Close overlay). 52px mirrors .drawer;
+     54px clears the head (16 + ~20 line + 16 + 1 border). */
+  #trips-drawer:not(.hidden) ~ #toast-root {
+    top: calc(52px + var(--safe-t) + 54px);
+  }
 }

@@ -12,6 +12,8 @@ import { describe, expect, it } from 'vitest';
  * Each assertion documents the defect it locks out.
  */
 const plannerSrc = readFileSync(new URL('../src/planner.ts', import.meta.url), 'utf8');
+const stylesSrc = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+const htmlSrc = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 
 describe('planning wait-state announcements (no live-region spam)', () => {
   it('announces the stable hint exactly once: role=status lives on the hint line', () => {
@@ -42,5 +44,25 @@ describe('planning failure reveal (keyboard reach + context restore)', () => {
     expect(focusRestores).toHaveLength(2);
     expect(plannerSrc).toContain('focusOnSettle = planButton');
     expect(plannerSrc).toContain('focusOnSettle = aiButton');
+  });
+});
+
+describe('toast vs drawer overlays (mobile Close control)', () => {
+  it('keeps #trips-drawer before #toast-root (sibling override contract)', () => {
+    // The "drawer open" toast repositioning is a general-sibling CSS rule;
+    // if the DOM order ever changes, the override silently dies.
+    const drawerAt = htmlSrc.indexOf('id="trips-drawer"');
+    const toastAt = htmlSrc.indexOf('id="toast-root"');
+    expect(drawerAt).toBeGreaterThan(-1);
+    expect(toastAt).toBeGreaterThan(drawerAt);
+  });
+
+  it('repositions toasts clear of the open drawer head on mobile', () => {
+    // Old defect: with the drawer open on <=720px, toasts at
+    // top: calc(58px + safe-t) sat directly over the drawer's sticky head
+    // (top: calc(52px + safe-t), same right offset), covering the Close
+    // control for the toast's duration.
+    expect(stylesSrc).toContain('#trips-drawer:not(.hidden) ~ #toast-root');
+    expect(stylesSrc).toContain('top: calc(52px + var(--safe-t) + 54px)');
   });
 });
