@@ -46,6 +46,9 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
   let serverIsMock = false;
   void api.health().then((h) => {
     serverIsMock = h.mock;
+    if (h.ai) {
+      aiBox.classList.remove('hidden');
+    }
   });
 
   // clearing stale validation: picking a suggestion (or typing anew) resolves
@@ -91,7 +94,55 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
   actions.appendChild(planButton);
   form.appendChild(actions);
 
+  // AI planning (hidden unless the server has an AI provider configured).
+  const aiBox = el(`
+    <div class="ai-box hidden">
+      <label for="ai-request" class="search-label">AI planning — custom requests (optional)</label>
+      <textarea id="ai-request" rows="2" placeholder="e.g. Prefer stops with cafes, avoid single-plug stations"></textarea>
+      <button type="button" class="btn btn-ghost" data-ai-plan>Plan with AI</button>
+      <p class="hint">The AI picks from the same live candidates and every choice is validated against the 300 km rules.</p>
+    </div>
+  `);
+  form.appendChild(aiBox);
+  aiBox.querySelector('[data-ai-plan]')?.addEventListener('click', () => {
+    form.dispatchEvent(new CustomEvent('ai-plan'));
+  });
+
   section.appendChild(errorBox);
+
+  form.addEventListener('ai-plan', async () => {
+    if (!origin.hit || !destination.hit) {
+      showError(errorBox, 'Pick both a starting point and a destination from the suggestions first.');
+      return;
+    }
+    const aiRequestEl = document.getElementById('ai-request') as HTMLTextAreaElement | null;
+    const customRequest = aiRequestEl?.value.trim() || undefined;
+    const startSoc = Number((document.getElementById('start-soc') as HTMLInputElement).value);
+    const vehicle = readVehicleSelection(vehicleRow);
+    const aiButton = aiBox.querySelector('[data-ai-plan]') as HTMLButtonElement | null;
+    if (aiButton) aiButton.disabled = true;
+    hideError(errorBox);
+    try {
+      const { plan, ai } = await api.aiPlan({
+        origin: { label: origin.hit.label, lat: origin.hit.lat, lon: origin.hit.lon },
+        destination: { label: destination.hit.label, lat: destination.hit.lat, lon: destination.hit.lon },
+        startSocPct: Number.isFinite(startSoc) ? startSoc : undefined,
+        ...(vehicle ? { vehicle } : {}),
+        ...(customRequest ? { request: customRequest } : {}),
+      });
+      onPlanAvailable(plan, map);
+      if (ai.applied) {
+        toast(ai.notes ? `AI plan applied: ${ai.notes}` : 'AI plan applied.');
+      } else if (ai.reason) {
+        toast(`Computed plan shown — ${ai.reason}`, 'warn', 6000);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'AI planning failed.';
+      showError(errorBox, message);
+    } finally {
+      if (aiButton) aiButton.disabled = false;
+    }
+  });
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();

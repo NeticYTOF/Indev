@@ -1035,6 +1035,38 @@ body {
 
 .saved-stops .saved-stop .stop-head { background: var(--surface); }
 
+/* ---------- AI planning box (off unless configured) ---------- */
+
+.ai-box {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px dashed var(--line-2);
+  border-radius: var(--r-md);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-box textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  padding: 9px 11px;
+  min-height: 56px;
+  resize: vertical;
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+
+.ai-box textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 /* ---------- responsive: mobile ---------- */
 
 @media (max-width: 720px) {

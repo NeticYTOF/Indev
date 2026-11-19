@@ -8,6 +8,8 @@ export interface HealthInfo {
   ok: boolean;
   mock: boolean;
   chargersSeen: number;
+  /** AI planning is only shown in the UI when this is true. */
+  ai: boolean;
 }
 
 export interface PlanRequest {
@@ -19,6 +21,16 @@ export interface PlanRequest {
     realWorldRangeKm?: number;
   };
   startSocPct?: number;
+}
+
+export interface AiPlanRequest extends PlanRequest {
+  /** Plain-text custom requests from the AI box (e.g. "prefer food stops"). */
+  request?: string;
+}
+
+export interface AiPlanResponse {
+  plan: TripPlan;
+  ai: { applied: boolean; notes?: string; reason?: string };
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -65,6 +77,7 @@ export const api = {
     get<{ default: string; catalog: VehicleCatalogEntry[]; note: string }>('/api/vehicles'),
   geocode: (q: string) => get<{ hits: GeocodeHit[] }>(`/api/geocode?q=${encodeURIComponent(q)}`),
   plan: (req: PlanRequest) => post<{ plan: TripPlan }>('/api/plan', req),
+  aiPlan: (req: AiPlanRequest) => post<AiPlanResponse>('/api/ai/plan', req),
   trips: () => get<{ trips: SavedTrip[] }>('/api/trips'),
   trip: (id: string) => get<{ trip: SavedTrip }>(`/api/trips/${encodeURIComponent(id)}`),
   saveTrip: (plan: TripPlan, name?: string) => post<{ trip: SavedTrip }>('/api/trips', { plan, name }),

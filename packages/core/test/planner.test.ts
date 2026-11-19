@@ -153,6 +153,21 @@ describe('planTrip', () => {
     expect(plan.totals.totalTimeMin).toBeCloseTo(284.9, 0); // driving only
   });
 
+  it('regression: explicit undefined option fields must not erase defaults', async () => {
+    const stations: StationSpec[] = Array.from({ length: 14 }, (_, i) => ({
+      id: 900 + i,
+      name: `Statiq U ${i}`,
+      chainageKm: 50 * (i + 1),
+    }));
+    const plan = await planTrip({ router: fakeRouter(700), statiq: fakeStatiq(stations) }, O, D(700), {
+      startSocPct: undefined, // e.g. server clamp() returning undefined
+      runBudget: undefined,
+    });
+    // start charge fell back to the 100% default, so stops are planned
+    expect(plan.stops.length).toBe(2);
+    expect(plan.stops[0]?.arriveSocPct).toBeGreaterThanOrEqual(25);
+  });
+
   it('long routes take fewest stops with 250-300 km legs', async () => {
     const stations: StationSpec[] = Array.from({ length: 14 }, (_, i) => ({
       id: 100 + i,

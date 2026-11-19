@@ -107,6 +107,20 @@ export const DEFAULT_RUN_BUDGET: PlanRunBudget = {
   maxUpstreamCalls: 220,
 };
 
+/**
+ * Merge options over defaults WITHOUT letting explicit undefined fields
+ * erase a default (a classic spread bug that produced NaN-free 0-stop plans).
+ */
+function mergePlanOptions(options: PlanOptions): Required<PlanOptions> {
+  const clean: PlanOptions = {};
+  for (const [k, v] of Object.entries(options)) {
+    if (v !== undefined) {
+      (clean as Record<string, unknown>)[k] = v;
+    }
+  }
+  return { ...DEFAULT_PLAN_OPTIONS, ...clean };
+}
+
 export async function planTrip(
   deps: PlannerDeps,
   origin: { label: string; lat: number; lon: number },
@@ -127,7 +141,7 @@ export async function planTripDetailed(
   destination: { label: string; lat: number; lon: number },
   options: PlanOptions = {},
 ): Promise<PlanBundle> {
-  const opts = { ...DEFAULT_PLAN_OPTIONS, ...options };
+  const opts = mergePlanOptions(options);
   const vehicle = deps.vehicle ?? HARIER_EV_75;
   const resolvedVehicle: ResolvedVehicle = deps.resolvedVehicle ?? resolveVehicle();
   const vehicleMeta: PlanVehicleMeta = {

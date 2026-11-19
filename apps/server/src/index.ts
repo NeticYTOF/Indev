@@ -46,6 +46,10 @@ const app = createApp({
   onRunComplete: (outcome, upstreamCalls) => {
     console.log(JSON.stringify({ type: 'plan-run', outcome, upstreamCalls }));
   },
+  // AI planning is OFF unless all three env vars are set.
+  ...(aiEnabled(env)
+    ? { ai: { baseUrl: env.aiBaseUrl as string, apiKey: env.aiApiKey as string, model: env.aiModel as string } }
+    : {}),
 });
 
 const server = serve({ fetch: app.fetch, port: env.port }, (info) => {

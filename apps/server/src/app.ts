@@ -30,6 +30,8 @@ import {
   type TripPlan,
   type VehicleSelection,
 } from '@indeev/core';
+import { planTripDetailed, validateAiChoice, assembleAiPlan } from '@indeev/core';
+import { chatCompletion, parseChoiceJson, AiProviderError } from './ai-provider.js';
 
 export interface AppDeps {
   /** Creates a fresh Statiq client for one planning run. */
@@ -41,6 +43,10 @@ export interface AppDeps {
   mock: boolean;
   /** Sanitized run-completion hook: outcome + upstream call count only. */
   onRunComplete?: (outcome: string, upstreamCalls: number) => void;
+  /** AI planning config: all three set = enabled. Off by default. */
+  ai?: { baseUrl: string; apiKey: string; model: string };
+  /** Injectable for tests; defaults to the real provider call. */
+  aiCall?: (messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>) => Promise<string>;
 }
 
 /** Server-side bounds for a planning request. */
@@ -74,6 +80,7 @@ export function createApp(deps: AppDeps): Hono {
       ok: true,
       mock: deps.mock,
       chargersSeen: counters.chargersSeen,
+      ai: Boolean(deps.ai),
     });
   });
 
@@ -164,6 +171,124 @@ export function createApp(deps: AppDeps): Hono {
       const code = err instanceof PlanningError ? err.code : 'error';
       deps.onRunComplete?.(code, statiq.upstreamCallsMade());
       throw err;
+    }
+  });
+
+  app.post('/api/ai/plan', async (c) => {
+    // AI planning is OFF unless AI_BASE_URL + AI_API_KEY + AI_MODEL are set.
+    if (!deps.ai) {
+      return c.json(
+        { error: 'AI planning is disabled on this server (no AI provider configured).', code: 'ai_disabled' },
+        503 as never,
+      );
+    }
+    const body = await c.req.json().catch(() => null);
+    const b = body as {
+      origin?: { label?: string; lat?: number; lon?: number };
+      destination?: { label?: string; lat?: number; lon?: number };
+      vehicle?: VehicleSelection;
+      startSocPct?: number;
+      request?: string;
+    } | null;
+    const origin = coordRef(b?.origin);
+    const destination = coordRef(b?.destination);
+    if (!origin || !destination) {
+      return c.json(
+        { error: 'origin and destination each need label, lat and lon', code: 'bad_request' },
+        400,
+      );
+    }
+    const customRequest =
+      typeof b?.request === 'string' && b.request.trim() ? b.request.trim().slice(0, 2000) : undefined;
+
+    let resolved: ResolvedVehicle;
+    try {
+      resolved = resolveVehicle(b?.vehicle);
+    } catch (err) {
+      if (err instanceof VehicleSelectionError) throw err;
+      throw err;
+    }
+
+    const statiq = deps.createStatiq();
+    // 1) base plan + AI-safe candidates (no occupancy anywhere)
+    const bundle = await planTripDetailed(
+      { router: deps.router, statiq, vehicle: resolved.config, resolvedVehicle: resolved },
+      origin,
+      destination,
+      {
+        startSocPct: clampSoc(b?.startSocPct),
+        runBudget: SERVER_RUN_BUDGET,
+        includeCandidates: true,
+      },
+    );
+    await deps.counters.addChargersSeen(bundle.plan.stationsSeen);
+
+    // 2) ask the model to pick the stop sequence from the candidates
+    const system =
+      'You are an EV trip-planning assistant for India. You receive a computed base plan ' +
+      'and its candidate charging stations. Choose the best stop sequence respecting: ' +
+      'legs at most 300 km, fewest stops, brands preferred in order Statiq > Tata > BPCL > HP > others. ' +
+      'You may keep the base sequence if it is already best. Respond with STRICT JSON only: ' +
+      '{"chosenStationIds": number[], "notes": string}. chosenStationIds must be the station ids in ' +
+      'route order, drawn only from the provided candidates. notes is one short sentence for the user.';
+    const user = JSON.stringify({
+      vehicle: {
+        label: bundle.plan.vehicle.label,
+        batteryKwh: bundle.plan.vehicle.batteryKwh,
+        claimedRangeKm: bundle.plan.vehicle.claimedRangeKm,
+        realWorldRangeKm: bundle.plan.vehicle.realWorldRangeKm,
+      },
+      basePlan: {
+        stopIds: bundle.plan.stops.map((s) => s.station.stationId),
+        stopNames: bundle.plan.stops.map((s) => s.station.name),
+        distanceKm: Math.round(bundle.plan.routeDistanceKm),
+        totalTimeMin: Math.round(bundle.plan.totals.totalTimeMin),
+      },
+      candidates: bundle.plan.candidates ?? [],
+      userRequest: customRequest ?? null,
+    });
+
+    try {
+      const content = deps.aiCall
+        ? await deps.aiCall([{ role: 'system', content: system }, { role: 'user', content: user }])
+        : (
+            await chatCompletion(deps.ai, [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+            ])
+          ).content;
+      const { stationIds, notes } = parseChoiceJson(content);
+
+      if (!stationIds || stationIds.length === 0) {
+        deps.onRunComplete?.('ai-invalid', statiq.upstreamCallsMade());
+        return c.json({
+          plan: bundle.plan,
+          ai: { applied: false, reason: 'The AI returned no stop sequence; showing the computed plan.' },
+        });
+      }
+
+      const validation = validateAiChoice(bundle, { stationIds, notes }, {}, resolved.config);
+      if (!validation.ok) {
+        deps.onRunComplete?.('ai-invalid', statiq.upstreamCallsMade());
+        return c.json({
+          plan: bundle.plan,
+          ai: { applied: false, reason: `The AI choice was rejected (${validation.reason}). Showing the computed plan.` },
+        });
+      }
+
+      const rebuilt = assembleAiPlan(bundle, validation.seq, { applied: true, notes }, {}, resolved.config);
+      deps.onRunComplete?.('ok', statiq.upstreamCallsMade());
+      return c.json({ plan: rebuilt, ai: { applied: true, notes } });
+    } catch (err) {
+      const reason =
+        err instanceof AiProviderError || err instanceof PlanningError || err instanceof SyntaxError
+          ? err.message
+          : 'The AI provider failed; showing the computed plan.';
+      deps.onRunComplete?.('ai-error', statiq.upstreamCallsMade());
+      return c.json({
+        plan: bundle.plan,
+        ai: { applied: false, reason },
+      });
     }
   });
 
