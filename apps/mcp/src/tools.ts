@@ -235,6 +235,14 @@ export async function getStationHandler(
   // Always a FRESH client: station status is never served from a memo.
   const statiq = deps.createStatiq();
   const { response, fetchedAt } = await statiq.detailsWithMeta(stationId);
+  // Match HTTP/planner integrity: never publish another station's plugs
+  // or treat missing lists as confirmed absence of usable connectors.
+  if (!response || response.ok !== true ||
+      (response.station && (response.station.stationId !== stationId ||
+        !Array.isArray(response.station.chargers) ||
+        response.station.chargers.some((charger) => !charger || !Array.isArray(charger.connectors))))) {
+    throw new PlanningError('Station details could not be verified. Please retry.', 'not_determined');
+  }
   if (!response.station) {
     throw new PlanningError(`Station ${stationId} not found.`, 'no_route');
   }
