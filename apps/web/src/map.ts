@@ -107,8 +107,31 @@ interface TripDraw {
 }
 
 const tripSources = new WeakMap<maplibregl.Map, maplibregl.Marker[]>();
+// A plan may finish before the basemap. Keep only the latest requested
+// drawing; the route summary must not fail because a style is offline.
+const pendingTrips = new WeakMap<maplibregl.Map, TripDraw>();
+const readinessListeners = new WeakSet<maplibregl.Map>();
+
+function flushPendingTrip(map: maplibregl.Map): void {
+  const trip = pendingTrips.get(map);
+  if (!trip || !map.isStyleLoaded()) return;
+  pendingTrips.delete(map);
+  drawTrip(map, trip);
+}
 
 export function drawTrip(map: maplibregl.Map, trip: TripDraw): void {
+  if (!map.isStyleLoaded()) {
+    pendingTrips.set(map, trip);
+    if (!readinessListeners.has(map)) {
+      readinessListeners.add(map);
+      // style.load handles the initial style or its fallback; idle covers
+      // styles whose sources are still loading at style.load time.
+      map.on('style.load', () => flushPendingTrip(map));
+      map.on('idle', () => flushPendingTrip(map));
+    }
+    return;
+  }
+  pendingTrips.delete(map);
   clearTrip(map);
   const id = `trip-${++tripLayerCounter}`;
 
@@ -176,6 +199,7 @@ export function drawTrip(map: maplibregl.Map, trip: TripDraw): void {
 }
 
 export function clearTrip(map: maplibregl.Map): void {
+  pendingTrips.delete(map);
   const markers = tripSources.get(map);
   if (markers) {
     markers.forEach((m) => m.remove());
