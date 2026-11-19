@@ -486,6 +486,12 @@ async function planCore(
           (response.station && response.station.stationId !== c.stationId)) {
         throw new Error('Station details response does not match the request');
       }
+      // Absent charger/connector lists are missing evidence, not proof
+      // there are no usable plugs. Explicit empty lists remain valid.
+      if (response.station && (!Array.isArray(response.station.chargers) ||
+          response.station.chargers.some((charger) => !charger || !Array.isArray(charger.connectors)))) {
+        throw new Error('Station details are missing charger or connector lists');
+      }
       if (response.station) {
         detailCache.set(c.stationId, {
           candidate: c,
