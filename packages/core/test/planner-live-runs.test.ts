@@ -32,9 +32,6 @@ import type {
 const KM_PER_DEG = 111.32;
 /** Fast limiter: keep the shared pacing machinery but at test speed. */
 const FAST = { minCallGapMs: 1, maxCallsPerMinute: 10_000 } as const;
-/** Gap-less limiter for the deadline test: markers dispatch in a burst so
- *  the deadline lands deterministically inside the details phase. */
-const BURST = { minCallGapMs: 0, maxCallsPerMinute: 10_000 } as const;
 
 /** Straight-line northwards route of the given length. */
 function makeRoute(totalKm: number): RouteResult {
@@ -124,14 +121,25 @@ interface WireOpts {
   specs: StationSpec[];
   /** Per-station lookup behavior (null/undefined = normal 200). */
   detailsBehavior?: (stationId: number, dispatch: number) => DetailsBehavior | null;
+  /** First transport call per MARKER SAMPLE POINT -> 500, subsequent -> 200
+   *  (drives in-client retries; the client's default retries: 2 covers it). */
+  markerAttemptFailOnce?: boolean;
+  /** First transport call per STATION ID -> 500, subsequent -> 200. */
+  detailAttemptFailOnce?: boolean;
+  /** REAL-timer delay per markers call (ms) - for deadline tests; the fake
+   *  client clock cannot advance this, deliberately (the transport's own
+   *  latency is what the wall budget must cover). */
+  markerDelayMs?: number;
 }
 
 /**
  * Wire-shaped fake transport behind a REAL StatiqClient: markers respond
  * with the finite pool around the sampled chainage; details respond per
- * station (behavior can inject 429s / latency). Both routes record every
- * attempt. The limiter serializes dispatch order via its slot queue, so
- * "dispatch N" counting is deterministic.
+ * station (behavior can inject 429s / latency / fail-once retries). Both
+ * routes record every attempt. The client runs on an ADVANCING FAKE CLOCK
+ * (limiter gaps and backoffs are instant real-time but still ordered via
+ * the slot queue, so "dispatch N" counting is deterministic); transport
+ * `delayMs` is a REAL timer, unaffected by the fake clock.
  */
 function wireStatiq(
   opts: WireOpts,
@@ -139,6 +147,9 @@ function wireStatiq(
 ): { client: StatiqClient; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
   let detailsDispatch = 0;
+  let nowMs = 0; // advancing fake clock (deterministic; no real sleeps)
+  const markerAttempts = new Map<string, number>();
+  const detailAttempts = new Map<number, number>();
   const details = new Map<number, StatiqStationDetail>(
     opts.specs.map((s) => [s.id, stationDetail(s)]),
   );
@@ -147,7 +158,19 @@ function wireStatiq(
     const bodyText = String(init?.body ?? '');
     if (path.endsWith('/stations/markers')) {
       calls.push({ endpoint: 'markers' });
-      const { latitude } = JSON.parse(bodyText) as { latitude: number };
+      const { latitude, longitude } = JSON.parse(bodyText) as {
+        latitude: number;
+        longitude: number;
+      };
+      const key = `${latitude.toFixed(4)},${longitude.toFixed(4)}`;
+      const seen = (markerAttempts.get(key) ?? 0) + 1;
+      markerAttempts.set(key, seen);
+      if (opts.markerDelayMs) {
+        await new Promise((r) => setTimeout(r, opts.markerDelayMs));
+      }
+      if (opts.markerAttemptFailOnce && seen === 1) {
+        return new Response('{"error":"transient 500"}', { status: 500 });
+      }
       const centerKm = latitude * KM_PER_DEG;
       const stations = opts.specs
         .filter((s) => Math.abs(s.chainageKm - centerKm) <= 13)
@@ -175,6 +198,11 @@ function wireStatiq(
       const dispatch = ++detailsDispatch;
       const { station_id } = JSON.parse(bodyText) as { station_id: number };
       calls.push({ endpoint: 'details', stationId: station_id });
+      const attempt = (detailAttempts.get(station_id) ?? 0) + 1;
+      detailAttempts.set(station_id, attempt);
+      if (opts.detailAttemptFailOnce && attempt === 1) {
+        return new Response('{"error":"transient 500"}', { status: 500 });
+      }
       const behavior = opts.detailsBehavior?.(station_id, dispatch) ?? null;
       if (behavior?.delayMs) {
         await new Promise((r) => setTimeout(r, behavior.delayMs));
@@ -200,6 +228,10 @@ function wireStatiq(
   const client = new StatiqClient({
     token: 'wire-test',
     fetchImpl: impl,
+    now: () => nowMs,
+    sleepImpl: async (ms: number) => {
+      nowMs += ms;
+    },
     minCallGapMs: limiter.minCallGapMs,
     maxCallsPerMinute: limiter.maxCallsPerMinute,
   });
@@ -216,6 +248,7 @@ const POOL: StationSpec[] = Array.from({ length: 8 }, (_, i) => ({
 
 const O = { label: 'Origin', lat: 0, lon: 0 };
 const D700 = { label: 'Destination', lat: 700 / KM_PER_DEG, lon: 0 };
+const D500 = { label: 'Destination', lat: 500 / KM_PER_DEG, lon: 0 };
 
 /** markers samples for a corridor scan of `totalKm` (12 km step + destination). */
 function expectedMarkerCalls(totalKm: number): number {
@@ -249,17 +282,24 @@ describe('planner runs over a real budgeted client (wire transport)', () => {
   });
 
   it('a first 429 in the details phase stops the whole run: zero traffic after', async () => {
-    const { client, calls } = wireStatiq({
-      specs: POOL,
-      detailsBehavior: (_id, dispatch) =>
-        dispatch <= 3
-          ? null // first three lookups succeed
-          : {
-              status: 429,
-              headers: { 'Retry-After': '30' },
-              body: '{"error":"Please wait a minute."}',
-            },
-    });
+    const { client, calls } = wireStatiq(
+      {
+        specs: POOL,
+        detailsBehavior: (_id, dispatch) =>
+          dispatch <= 3
+            ? null // first three lookups succeed
+            : {
+                status: 429,
+                headers: { 'Retry-After': '30' },
+                body: '{"error":"Please wait a minute."}',
+              },
+      },
+      // Wide fake gaps (2s -> 10 poll chunks per waiter) give the 429's
+      // stop (~4 microtask hops) a guaranteed margin, mirroring the proven
+      // concurrent-throttle analysis in statiq-budget.test.ts; with 1ms
+      // gaps a waiter could slip one extra dispatch before the stop lands
+      { minCallGapMs: 2_000, maxCallsPerMinute: 10_000 },
+    );
     const err = await planTrip(
       { router: fakeRouter(700), statiq: client },
       O,
@@ -286,7 +326,11 @@ describe('planner runs over a real budgeted client (wire transport)', () => {
   });
 
   it('attempt-cap exhaustion refuses the next dispatch before any traffic', async () => {
-    // 60 marker samples + 3 successful lookups = exactly the cap
+    // 60 marker samples + 3 successful lookups = exactly the cap: the 4th
+    // lookup's RESERVATION is refused pre-dispatch (reservation-after-permit)
+    // - honest budget-exhausted, with the aggregate evidence. The advisory
+    // estimate line reports (~5 more calls) but NEVER gates: the owner
+    // policy is every-candidate-checked and the run simply hits its cap.
     const { client, calls } = wireStatiq({ specs: POOL });
     const err = await planTrip(
       { router: fakeRouter(700), statiq: client },
@@ -318,25 +362,41 @@ describe('planner runs over a real budgeted client (wire transport)', () => {
     expect(err.message).toContain('5 remaining');
   });
 
-  it('a deadline abort mid-details fails as an honest not_determined', async () => {
-    // Deterministic shape: gap-less limiter => the 60-marker burst finishes
-    // in milliseconds; every per-station lookup takes 120ms; the deadline
-    // (100ms) therefore lands with the first four lookups in flight (all
-    // dispatched immediately by the 4 workers) and candidates 5..8 still
-    // waiting - their acquireSlot sees the aborted signal and the run
-    // unwinds as not_determined:deadline.
-    const { client, calls } = wireStatiq(
+  it('an EXACT-FIT budget covers the whole finite pool and plans', async () => {
+    // cap = 60 samples + 8 candidates EXACTLY: every candidate is checked
+    // with a single call and the plan succeeds - the every-candidate policy
+    // runs to completion whenever the budget suffices
+    const { client, calls } = wireStatiq({ specs: POOL });
+    const plan = await planTrip(
+      { router: fakeRouter(700), statiq: client },
+      O,
+      D700,
       {
-        specs: POOL,
-        detailsBehavior: () => ({ delayMs: 120 }),
+        runBudget: {
+          deadlineMs: 60_000,
+          maxUpstreamCalls: expectedMarkerCalls(700) + 8,
+        },
       },
-      BURST,
     );
+    expect(plan.stops.length).toBeGreaterThanOrEqual(1);
+    const markers = calls.filter((c) => c.endpoint === 'markers');
+    const details = calls.filter((c) => c.endpoint === 'details');
+    expect(markers).toHaveLength(expectedMarkerCalls(700));
+    expect(details).toHaveLength(8);
+  });
+
+  it('a deadline abort MID-SCAN fails as an honest not_determined:deadline', async () => {
+    // Real-timer marker latency (10ms per call) drives the wall budget: the
+    // 60-sample scan needs ~600ms of real transport time, so a 200ms
+    // deadline lands mid-scan deterministically (the fake client clock keeps
+    // pacing cheap; only the transport latency is real). The abort surfaces
+    // at the workers' abort-aware gates and the run unwinds as deadline.
+    const { client, calls } = wireStatiq({ specs: POOL, markerDelayMs: 10 });
     const err = await planTrip(
       { router: fakeRouter(700), statiq: client },
       O,
       D700,
-      { runBudget: { deadlineMs: 100, maxUpstreamCalls: 1_000 } },
+      { runBudget: { deadlineMs: 200, maxUpstreamCalls: 1_000 } },
     ).catch((e) => e);
     expectPlanningError(err);
     expect(err.code).toBe('not_determined');
@@ -345,8 +405,75 @@ describe('planner runs over a real budgeted client (wire transport)', () => {
 
     const markers = calls.filter((c) => c.endpoint === 'markers');
     const details = calls.filter((c) => c.endpoint === 'details');
-    // scan burst completed; the only lookups dispatched were the first four
+    // mid-scan abort: some samples completed (>= 4: all 4 workers completed
+    // their in-flight calls within ~12ms, far before the 200ms deadline),
+    // the scan never completed (60 would need ~600ms of real delays), and
+    // the details phase never started
+    expect(markers.length).toBeGreaterThanOrEqual(4);
+    expect(markers.length).toBeLessThan(expectedMarkerCalls(700));
+    expect(details).toHaveLength(0);
+  });
+
+  it('retry-driven MID-SCAN exhaustion keeps progress and fails budget-exhausted', async () => {
+    // 500 km plans 43 samples; every sample's FIRST transport call 500s and
+    // the retry succeeds (2 attempts per sample), so attempts reach the cap
+    // of 70 exactly at the 35th completed sample: exhaustion DURING the
+    // scan (not covered by the plan-first pre-check, 43 <= 70) with the
+    // incremental progress retained in the evidence.
+    const { client, calls } = wireStatiq({ specs: POOL, markerAttemptFailOnce: true });
+    const err = await planTrip(
+      { router: fakeRouter(500), statiq: client },
+      O,
+      D500,
+      { runBudget: { deadlineMs: 60_000, maxUpstreamCalls: 70 } },
+    ).catch((e) => e);
+    expectPlanningError(err);
+    expect(err.code).toBe('not_determined');
+    expect(err.cause).toBe('budget-exhausted');
+
+    const markers = calls.filter((c) => c.endpoint === 'markers');
+    const details = calls.filter((c) => c.endpoint === 'details');
+    // 70 attempts all consumed by markers (2 per sample; deterministic),
+    // nothing reached details
+    expect(markers).toHaveLength(70);
+    expect(details).toHaveLength(0);
+    // progress retained: N complete pairs where 2N + S = 70 and S is the
+    // count of in-flight first-500s whose retry was refused (S in {0,2,4}
+    // across the 4 workers) - so N is 33-35; the PLANNED denominator is the
+    // deterministic figure
+    expect(err.message).toMatch(/route samples covered (3[3-5])\/\1 of 43 planned/);
+    expect(err.message).toContain('budget of 70 upstream attempts');
+  });
+
+  it('retry-driven MID-DETAILS exhaustion keeps progress and fails budget-exhausted', async () => {
+    // 700 km = 60 samples (first-try) + 8 candidates whose first lookup
+    // 500s and the retry succeeds (2 attempts each): the post-scan
+    // pre-check passes (60 + 8 = 68 <= 70), then attempts reach the cap of
+    // 70 exactly at the 4th completed candidate + 2 in-flight 500s.
+    const { client, calls } = wireStatiq({ specs: POOL, detailAttemptFailOnce: true });
+    const err = await planTrip(
+      { router: fakeRouter(700), statiq: client },
+      O,
+      D700,
+      { runBudget: { deadlineMs: 60_000, maxUpstreamCalls: 70 } },
+    ).catch((e) => e);
+    expectPlanningError(err);
+    expect(err.code).toBe('not_determined');
+    expect(err.cause).toBe('budget-exhausted');
+
+    const markers = calls.filter((c) => c.endpoint === 'markers');
+    const details = calls.filter((c) => c.endpoint === 'details');
+    // the scan completed (60 first-try calls); 70 - 60 = 10 detail
+    // attempts: N complete candidate pairs (500+200) plus S in-flight
+    // first-500s (S in {0,2,4} across the 4 workers, 2N + S = 10)
     expect(markers).toHaveLength(expectedMarkerCalls(700));
-    expect(details).toHaveLength(4);
+    expect(details).toHaveLength(10);
+    // progress retained: N complete candidate pairs (500+200) plus S
+    // in-flight first-500s (S in {0,2,4} across the 4 workers, 2N + S =
+    // 10): processed/detailed land in 3-5; the planned denominator (8) is
+    // the deterministic figure
+    expect(err.message).toMatch(/candidates processed [3-5]\/8 \([3-5] detailed, [3-5] remaining\)/);
+    // the ADVISORY estimate line reports the remainder (never gated)
+    expect(err.message).toMatch(/rough estimate: ~\d more upstream calls remain/);
   });
 });

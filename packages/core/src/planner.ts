@@ -26,6 +26,7 @@ import { chargeTimeMin, kwhForSocDelta, socAfterDriving, socRequiredForArrival, 
 import type { OsrmRouter } from './router.js';
 import { isAbortLike, StatiqRunFatalError, type StatiqClient } from './statiq.js';
 import { UpstreamBudget, UpstreamRunStoppedError } from './upstream-budget.js';
+import { estimateRunWork } from './work-estimate.js';
 import type { StatiqStationDetail } from './types.js';
 import { resolveVehicle, type ResolvedVehicle } from './vehicle-catalog.js';
 import {
@@ -279,6 +280,23 @@ function coverageEvidence(stats: RunProgressStats): string {
         ` (${stats.candidatesDetailed} detailed, ${remaining} remaining)`,
     );
   }
+  // DERIVED WORK ESTIMATE (ADVISORY REPORTING ONLY - never gates
+  // execution; the owner policy is every-candidate-checked, and runs
+  // proceed until the budget/deadline is hit). Sustained-pacing product,
+  // explicitly NOT a strict finite-run bound: first-dispatch and
+  // rolling-window credits shift the true time either way.
+  const est = estimateRunWork(stats);
+  if (est.remainingCalls > 0) {
+    const scanIncomplete = stats.samplesPlanned > stats.samplesCompleted;
+    bits.push(
+      `rough estimate: ~${est.remainingCalls} more upstream calls remain for full fresh coverage` +
+        ` (~${(est.remainingEstimateMs / 60_000).toFixed(1)} min at` +
+        ` ~${(est.pacePerCallMs / 1000).toFixed(2)}s/call sustained safety pacing - advisory,` +
+        ' a sustained-pacing estimate, not a strict bound; zero-retry assumption - latency, backoff and retries only add' +
+        (scanIncomplete ? '; the candidate pool is not yet discovered' : '') +
+        ')',
+    );
+  }
   const timings: string[] = [];
   if (stats.scanMs > 0) timings.push(`scan phase ~${Math.round(stats.scanMs)}ms`);
   if (stats.detailsStartedAt != null) {
@@ -389,6 +407,10 @@ async function planCore(
     // so a fatal stop MID-SCAN (first 429/auth, cap exhaustion, deadline)
     // still reports the actual samples completed/ok/failed in the
     // not_determined evidence (the plan arrives before any dispatch).
+    // ADVISORY ONLY: progress reporting never gates execution - the owner
+    // policy is every-candidate-checked, and the run proceeds until the
+    // budget/deadline is hit (the derived estimate appears in the failure
+    // evidence as rough reporting, nothing more).
     onProgress: (p) => {
       hooks.stats.samplesPlanned = p.planned;
       hooks.stats.samplesCompleted = p.completed;
