@@ -378,6 +378,71 @@ describe('saved trips (shared with MCP)', () => {
 });
 
 describe('mock mode (synthetic data for UI work)', () => {
+  it('echoes the requested vehicle in synthetic plans (catalog, with claims kept separate)', async () => {
+    const deps = await makeDeps({ mock: true, createStatiq: () => { throw new Error('live call in mock mode!'); } });
+    const app = createApp(deps);
+    const res = await app.request('/api/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        origin: ORIGIN,
+        destination: DEST,
+        vehicle: { entryId: 'tata-nexon-ev-lr-45', realWorldRangeKm: 300 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const { plan } = (await res.json()) as {
+      plan: { vehicle: { label: string; catalogId: string; batteryKwh: number; claimedRangeKm: number | null; realWorldRangeKm: number | null } };
+    };
+    expect(plan.vehicle.catalogId).toBe('tata-nexon-ev-lr-45');
+    expect(plan.vehicle.label).toContain('Nexon');
+    expect(plan.vehicle.batteryKwh).toBe(45);
+    // claimed range stays the mfr claim; the user's input stays "yours"
+    expect(plan.vehicle.claimedRangeKm).toBe(465);
+    expect(plan.vehicle.realWorldRangeKm).toBe(300);
+  });
+
+  it('echoes custom vehicles truthfully in synthetic plans (no invented claim)', async () => {
+    const deps = await makeDeps({ mock: true, createStatiq: () => { throw new Error('live call in mock mode!'); } });
+    const app = createApp(deps);
+    const res = await app.request('/api/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        origin: ORIGIN,
+        destination: DEST,
+        vehicle: { custom: { label: 'My EV', batteryKwh: 60, realWorldRangeKm: 350 } },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const { plan } = (await res.json()) as {
+      plan: { vehicle: { label: string; catalogId: string | null; batteryKwh: number; claimedRangeKm: number | null; realWorldRangeKm: number | null } };
+    };
+    expect(plan.vehicle.label).toBe('My EV');
+    expect(plan.vehicle.catalogId).toBeNull();
+    expect(plan.vehicle.batteryKwh).toBe(60);
+    expect(plan.vehicle.realWorldRangeKm).toBe(350);
+    // no manufacturer claim invented for customs
+    expect(plan.vehicle.claimedRangeKm).toBeNull();
+  });
+
+  it('validates vehicles identically in mock mode (real-world range required)', async () => {
+    const deps = await makeDeps({ mock: true, createStatiq: () => { throw new Error('live call in mock mode!'); } });
+    const app = createApp(deps);
+    const res = await app.request('/api/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        origin: ORIGIN,
+        destination: DEST,
+        vehicle: { entryId: 'tata-nexon-ev-lr-45' },
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe('bad_vehicle');
+  });
+
   it('serves synthetic geocode, plans and stations without live calls', async () => {
     const deps = await makeDeps({ mock: true, createStatiq: () => { throw new Error('live call in mock mode!'); } });
     const app = createApp(deps);

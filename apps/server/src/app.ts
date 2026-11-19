@@ -136,19 +136,22 @@ export function createApp(deps: AppDeps): Hono {
       );
     }
 
-    if (deps.mock) {
-      const plan = mockPlan(origin, destination);
-      await deps.counters.addChargersSeen(plan.stationsSeen);
-      return c.json({ plan });
-    }
-
-    // Vehicle selection (real-world range separation, never invented).
+    // Vehicle selection (real-world range separation, never invented) -
+    // resolved BEFORE the mock branch so synthetic plans echo the request
+    // vehicle truthfully and validation errors behave identically in both
+    // modes.
     let resolved: ResolvedVehicle;
     try {
       resolved = resolveVehicle(b.vehicle);
     } catch (err) {
       if (err instanceof VehicleSelectionError) throw err;
       throw err;
+    }
+
+    if (deps.mock) {
+      const plan = mockPlan(origin, destination, resolved);
+      await deps.counters.addChargersSeen(plan.stationsSeen);
+      return c.json({ plan });
     }
 
     const statiq = deps.createStatiq();
@@ -192,10 +195,19 @@ export function createApp(deps: AppDeps): Hono {
       );
     }
 
+    // Vehicle selection resolves first in ALL modes (mock echoes it).
+    let resolved: ResolvedVehicle;
+    try {
+      resolved = resolveVehicle(b?.vehicle);
+    } catch (err) {
+      if (err instanceof VehicleSelectionError) throw err;
+      throw err;
+    }
+
     // MOCK MODE: even an explicitly configured AI must never reach upstream.
     // Serve the same synthetic plan /api/plan would, with an honest label.
     if (deps.mock) {
-      const plan = mockPlan(origin, destination);
+      const plan = mockPlan(origin, destination, resolved);
       await deps.counters.addChargersSeen(plan.stationsSeen);
       return c.json({
         plan,
@@ -215,14 +227,6 @@ export function createApp(deps: AppDeps): Hono {
     }
     const customRequest =
       typeof b?.request === 'string' && b.request.trim() ? b.request.trim().slice(0, 2000) : undefined;
-
-    let resolved: ResolvedVehicle;
-    try {
-      resolved = resolveVehicle(b?.vehicle);
-    } catch (err) {
-      if (err instanceof VehicleSelectionError) throw err;
-      throw err;
-    }
 
     const statiq = deps.createStatiq();
     // 1) base plan + AI-safe candidates (no occupancy anywhere)
@@ -471,6 +475,7 @@ function mockGeocode(q: string) {
 function mockPlan(
   origin: { label: string; lat: number; lon: number },
   destination: { label: string; lat: number; lon: number },
+  resolved: ResolvedVehicle,
 ): TripPlan {
   const now = new Date().toISOString();
   return {
@@ -479,11 +484,11 @@ function mockPlan(
     origin,
     destination,
     vehicle: {
-      label: 'Tata Harrier EV (75 kWh)',
-      catalogId: 'tata-harrier-ev-75',
-      batteryKwh: 75,
-      claimedRangeKm: 627,
-      realWorldRangeKm: null,
+      label: resolved.label,
+      catalogId: resolved.catalogId,
+      batteryKwh: resolved.batteryKwh,
+      claimedRangeKm: resolved.claimedRangeKm,
+      realWorldRangeKm: resolved.realWorldRangeKm,
     },
     status: 'ok',
     source: 'synthetic',
