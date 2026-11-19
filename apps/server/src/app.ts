@@ -404,7 +404,7 @@ export function createApp(deps: AppDeps): Hono {
     }
     // sanity-check stop station refs so corrupted plans cannot be persisted
     for (const s of plan.stops) {
-      if (!s || typeof s.station !== 'object' || typeof s.station.stationId !== 'number') {
+      if (!s || !s.station || typeof s.station !== 'object' || !Number.isInteger(s.station.stationId) || s.station.stationId <= 0) {
         return c.json({ error: 'Plan stops are malformed', code: 'bad_request' }, 400);
       }
     }
