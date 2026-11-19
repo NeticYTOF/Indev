@@ -6,6 +6,9 @@
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
+const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
+const STYLE_FALLBACK_URL = 'https://tiles.openfreemap.org/styles/bright';
+
 export interface MapStop {
   lat: number;
   lon: number;
@@ -18,13 +21,48 @@ let tripLayerCounter = 0;
 export function createMap(container: HTMLElement): maplibregl.Map {
   const map = new maplibregl.Map({
     container,
-    style: 'https://tiles.openfreemap.org/styles/liberty',
+    style: STYLE_URL,
     center: [78.96, 22.59], // geographic centre of India
-    zoom: 4.6,
+    zoom: 5, // z>=5 puts state and city labels in the visible tile ranges
     attributionControl: { compact: true },
     pitchWithRotate: false,
     dragRotate: false,
   });
+
+  // Surface style/tile/glyph failures loudly: a silent failure renders
+  // terrain with no labels (diagnosed during the visual pass). The console
+  // output makes any future fetch failure self-evidencing.
+  map.on('error', (e) => {
+    const err = e as { error?: unknown; sourceId?: string; layerId?: string; sourceLayerId?: string; tile?: unknown };
+    console.warn(
+      '[map]',
+      JSON.stringify({
+        message: err.error instanceof Error ? err.error.message : String(err.error ?? 'unknown'),
+        source: err.sourceId,
+        layer: err.layerId,
+        sourceLayer: err.sourceLayerId,
+        hasTile: Boolean(err.tile),
+      }),
+    );
+  });
+
+  // If the primary style never loads, fall back to bright (still free,
+  // still OpenFreeMap) so the UI never shows a label-less void.
+  let styleLoaded = false;
+  map.on('load', () => {
+    styleLoaded = true;
+  });
+  setTimeout(() => {
+    if (!styleLoaded) {
+      console.warn('[map] style did not load in time; switching to fallback style');
+      try {
+        map.setStyle(STYLE_FALLBACK_URL);
+      } catch {
+        /* map already torn down */
+      }
+    }
+  }, 15_000);
+
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-left');
   map.addControl(new maplibregl.GeolocateControl({ trackUserLocation: false }), 'bottom-left');
   return map;
@@ -69,7 +107,8 @@ export function drawTrip(map: maplibregl.Map, trip: TripDraw): void {
     source: id,
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: {
-      'line-color': getComputedStyle(document.documentElement).getPropertyValue('--route').trim() || '#2463eb',
+      'line-color':
+        getComputedStyle(document.documentElement).getPropertyValue('--route').trim() || '#2463eb',
       'line-width': 5,
     },
   });
@@ -141,10 +180,7 @@ export function makeStop(
   const el = document.createElement('div');
   el.className = 'stop-marker';
   el.setAttribute('role', 'img');
-  el.setAttribute(
-    'aria-label',
-    `Charging stop ${number}: ${stop.label} (${stop.brand})`,
-  );
+  el.setAttribute('aria-label', `Charging stop ${number}: ${stop.label} (${stop.brand})`);
   el.innerHTML = `<span class="stop-num">${number}</span>`;
   if (onClick) {
     el.addEventListener('click', onClick);

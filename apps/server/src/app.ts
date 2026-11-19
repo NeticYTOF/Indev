@@ -94,8 +94,19 @@ export function createApp(deps: AppDeps): Hono {
     if (deps.mock) {
       return c.json({ hits: mockGeocode(q) });
     }
-    const hits = await deps.geocoder.search(q.trim(), 6);
-    return c.json({ hits });
+    const all = await deps.geocoder.search(q.trim(), 8);
+    // India-first: if any India hit exists, drop foreign ones (this is an
+    // India route planner); then dedupe by place identity.
+    const indian = all.filter((h) => h.country === 'India');
+    const pool = indian.length > 0 ? indian : all;
+    const seen = new Set<string>();
+    const hits = pool.filter((h) => {
+      const key = `${h.name}::${h.lat.toFixed(3)},${h.lon.toFixed(3)}::${h.state ?? ''}::${h.city ?? ''}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return c.json({ hits: hits.slice(0, 6) });
   });
 
   app.post('/api/plan', async (c) => {

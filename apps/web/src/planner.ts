@@ -39,6 +39,22 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
   });
   form.append(originField.wrap, destField.wrap);
 
+  const errorBox = el(`<div class="error-box hidden" role="alert"></div>`);
+
+  // Mode provenance: the pending label must reflect the server mode from
+  // /api/health - never assume live.
+  let serverIsMock = false;
+  void api.health().then((h) => {
+    serverIsMock = h.mock;
+  });
+
+  // clearing stale validation: picking a suggestion (or typing anew) resolves
+  // the "pick both places" error immediately, not only on the next submit
+  for (const field of [originField, destField]) {
+    field.input.addEventListener('picked', () => hideError(errorBox));
+    field.input.addEventListener('input', () => hideError(errorBox));
+  }
+
   const swap = el(`<button type="button" class="btn btn-ghost planner-swap" aria-label="Swap origin and destination">⇅</button>`) as HTMLButtonElement;
   swap.addEventListener('click', () => {
     const tmp = origin.hit;
@@ -75,7 +91,6 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
   actions.appendChild(planButton);
   form.appendChild(actions);
 
-  const errorBox = el(`<div class="error-box hidden" role="alert"></div>`);
   section.appendChild(errorBox);
 
   form.addEventListener('submit', async (e) => {
@@ -88,7 +103,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
     const vehicle = readVehicleSelection(vehicleRow);
 
     planButton.disabled = true;
-    planButton.textContent = 'Planning live route…';
+    planButton.textContent = serverIsMock ? 'Planning synthetic route...' : 'Planning live route...';
     hideError(errorBox);
     try {
       const req: PlanRequest = {
@@ -257,7 +272,14 @@ function makeSearchField(
           return;
         }
         const pickedWrapper = wrap;
-        hits.forEach((h, i) => {
+        const seen = new Set<string>();
+        for (const h of hits) {
+          // identity: name + rounded coords + admin context - Photon can
+          // return the same OSM place under slightly different labels
+          const key = `${h.name}::${h.lat.toFixed(3)},${h.lon.toFixed(3)}::${h.state ?? ''}::${h.city ?? ''}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const index = seen.size - 1;
           const item = el(`<button type="button" class="suggestion-item" role="option">${escapeHtml(h.label)}</button>`);
           item.addEventListener('click', () => {
             input.value = h.label;
@@ -266,9 +288,9 @@ function makeSearchField(
             input.dispatchEvent(new Event('picked'));
             void pickedWrapper;
           });
-          item.addEventListener('mousemove', () => setActive(i));
+          item.addEventListener('mousemove', () => setActive(index));
           list.appendChild(item);
-        });
+        }
         function setActive(idx: number): void {
           const items = list.querySelectorAll('.suggestion-item');
           items.forEach((n, ni) => n.classList.toggle('active', ni === idx));
