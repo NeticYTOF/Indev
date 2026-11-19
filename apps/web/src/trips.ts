@@ -10,7 +10,7 @@ import { api } from './api.js';
 import { el, escapeHtml } from './planner.js';
 import { drawTrip } from './map.js';
 import { toast } from './toast.js';
-import { formatDuration } from './format.js';
+import { formatDuration, formatDateTime } from './format.js';
 
 /**
  * Hide the saved-trips drawer. Closing it leaves every in-drawer focus
@@ -243,7 +243,7 @@ function renderSavedSummary(panel: HTMLElement, trip: SavedTrip): void {
             <span class="meta">${station.rating != null ? `★ ${Math.round(station.rating * 10) / 10} (${(station.reviewCount ?? 0).toLocaleString('en-IN')} reviews)` : 'No rating'}</span>
             <span class="meta">Last used ${escapeHtml(lastUsed)}${station.synthetic ? ' (fixture)' : ''}</span>
             <span class="meta">Reliability: unavailable</span>
-            <span class="meta fetched">Details fetched just now</span>
+            <span class="meta fetched">Details fetched ${escapeHtml(formatDateTime(station.fetchedAt))}</span>
           </div>
           <div class="chips">
             <span class="chip">${station.ccs2.usable} usable CCS2 plug${station.ccs2.usable === 1 ? '' : 's'}</span>

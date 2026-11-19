@@ -11,7 +11,7 @@ import { el, escapeHtml } from './planner.js';
 import { api } from './api.js';
 import { downloadAnimatedExport } from './export.js';
 import { toast } from './toast.js';
-import { formatDuration, formatEta, formatInr, lastUsedLabel } from './format.js';
+import { formatDuration, formatEta, formatInr, lastUsedLabel, formatDateTime } from './format.js';
 import { safeHttpUrl } from './safe-url.js';
 
 export function renderPlanPanel(
@@ -145,6 +145,7 @@ async function revalidateStop(btn: HTMLElement, plan: TripPlan): Promise<void> {
         reviewCount: number | null;
         reliability: null;
         synthetic?: boolean;
+        fetchedAt?: string;
         ccs2: { usable: number; free: number; occupied: number; faulted: number; uncertain: number; maxKw: number | null; pricePerKwh: number | null };
         chargers: Array<{ lastUsedOn: string | null }>;
       };
@@ -156,7 +157,7 @@ async function revalidateStop(btn: HTMLElement, plan: TripPlan): Promise<void> {
         <span class="meta">${station.rating != null ? `★ ${Math.round(station.rating * 10) / 10} (${(station.reviewCount ?? 0).toLocaleString('en-IN')} reviews)` : 'No rating'}</span>
         <span class="meta">Last used ${escapeHtml(String(lastUsed))}${station.synthetic ? ' (fixture)' : ''}</span>
         <span class="meta">Reliability: unavailable</span>
-        <span class="meta fetched">Details fetched just now</span>
+        <span class="meta fetched">Details fetched ${escapeHtml(formatDateTime(station.fetchedAt))}</span>
       </div>
       <div class="chips">
         <span class="chip">${station.ccs2.usable} usable CCS2 plug${station.ccs2.usable === 1 ? '' : 's'}</span>
@@ -214,7 +215,7 @@ function renderStopCard(stop: PlanStop, index: number): HTMLElement {
             <span class="meta">${s.rating != null ? `★ ${Math.round(s.rating * 10) / 10} (${(s.reviewCount ?? 0).toLocaleString('en-IN')} reviews)` : 'No rating'}</span>
             <span class="meta">Last used ${escapeHtml(lastUsedLabel(s.chargers))}</span>
             <span class="meta">Reliability: unavailable</span>
-            <span class="meta fetched">Status fetched ${fetchedAgo(s.fetchedAt)}</span>
+            <span class="meta fetched">Status fetched ${escapeHtml(formatDateTime(s.fetchedAt))}</span>
           </div>
           ${uncertaintyChips(s)}
           ${s.synthetic ? '<div class="synthetic-flag">Synthetic station (mock data)</div>' : ''}
@@ -242,16 +243,6 @@ function socBar(labelText: string, soc: number): string {
       </div>
       <span class="soc-value">${Math.round(soc)}%</span>
     </div>`;
-}
-
-function fetchedAgo(iso: string): string {
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return 'unknown time ago';
-  const mins = Math.max(0, Math.round((Date.now() - t) / 60_000));
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins} min ago`;
-  const h = Math.round(mins / 60);
-  return `${h} h ago`;
 }
 
 function uncertaintyChips(s: PlanStop['station']): string {
