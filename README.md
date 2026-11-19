@@ -38,7 +38,8 @@ npm run dev            # LIVE mode: server :8787 + web :5173
 - `apps/server` — HTTP API: live planning, mock mode, saved trips shared with
   MCP, station revalidation with fetchedAt, AI planning endpoint (off by
   default).
-- `apps/web` — map UI (MapLibre + OpenFreeMap, no gradients, flat design).
+- `apps/web` — map UI (MapLibre + a dark OpenFreeMap basemap, flat solid-color
+  "Night Drive" design with no gradients, mobile bottom sheet).
 - `apps/mcp` — MCP stdio server (`plan_trip`, `list_saved_trips`,
   `get_station`) sharing the saved trips with the website. Launch with
   `node node_modules/tsx/dist/cli.mjs apps/mcp/src/index.ts` (avoid npm's

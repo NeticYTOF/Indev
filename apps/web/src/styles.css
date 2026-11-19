@@ -809,39 +809,7 @@ body {
   font-weight: 500;
 }
 
-/* --- start charge (legacy number input until the stepper lands) --- */
-
-.soc-row {
-  justify-content: space-between;
-}
-
-.soc-input {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.soc-input input {
-  width: 76px;
-  font: inherit;
-  text-align: right;
-  color: var(--ink);
-  background: var(--surface-2);
-  border: 1px solid var(--line-2);
-  border-radius: var(--r-xs);
-  padding: 8px 10px;
-  font-variant-numeric: tabular-nums;
-}
-
-.soc-input input:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
-
-.unit {
-  color: var(--ink-3);
-}
+/* --- start charge stepper (replaces the legacy number input) --- */
 
 /* --- start charge stepper (opt-in) --- */
 
@@ -1098,44 +1066,6 @@ body {
   color: var(--accent-strong);
 }
 
-/* legacy totals grid (old markup until its rewrite lands) */
-.totals-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1px;
-  background: var(--line);
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  overflow: hidden;
-}
-
-.total {
-  background: var(--surface-2);
-  padding: 12px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.total-num {
-  font-size: var(--text-base);
-  font-weight: 700;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink);
-}
-
-.total-label {
-  font-size: 10px;
-  color: var(--ink-3);
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  font-weight: 700;
-}
-
 /* --- actions row --- */
 
 .plan-actions {
@@ -1179,53 +1109,7 @@ body {
   border-color: var(--line-2);
 }
 
-/* --- legacy layout --- */
-
-.stop-card:not(.timeline) .stop-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 13px 14px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--line);
-  flex-wrap: wrap;
-}
-
-.stop-card:not(.timeline) .stop-number {
-  display: inline-flex;
-  width: 26px;
-  height: 26px;
-  border-radius: 999px;
-  background: var(--accent);
-  color: var(--accent-ink);
-  align-items: center;
-  justify-content: center;
-  font-size: 12.5px;
-  font-weight: 700;
-  flex: none;
-}
-
-.stop-card:not(.timeline) .stop-title {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.stop-card:not(.timeline) .stop-body {
-  padding: 14px;
-}
-
-.stop-card:not(.timeline) .stop-foot {
-  display: flex;
-  gap: 8px;
-  padding: 10px 14px 12px;
-  border-top: 1px solid var(--line);
-  background: var(--surface);
-}
-
-/* --- redesigned timeline layout (opt-in) --- */
+/* --- redesigned timeline layout --- */
 
 .stop-card.timeline {
   display: grid;
@@ -1678,10 +1562,6 @@ body {
   }
 
   .trip-strip {
-    grid-template-columns: repeat(2, 1fr);
-  }
-
-  .totals-grid {
     grid-template-columns: repeat(2, 1fr);
   }
 
