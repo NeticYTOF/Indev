@@ -14,7 +14,8 @@ import { toast } from './toast.js';
 
 const map = createMap(document.getElementById('map') as HTMLElement);
 
-// Topbar health badge: the synthetic-data label is always visible in mock mode.
+// Mode badge (top cluster): the synthetic-data label is always visible in
+// mock mode, over the map.
 void (async () => {
   try {
     const health: HealthInfo = await api.health();
