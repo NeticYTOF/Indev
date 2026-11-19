@@ -92,15 +92,29 @@ function renderTripRow(trip: SavedTrip, map: maplibregl.Map, drawer: HTMLElement
   });
 
   row.querySelector('[data-delete]')?.addEventListener('click', async () => {
+    const btn = row.querySelector<HTMLButtonElement>('[data-delete]');
+    // Single-flight: a second click during the flight would fire a
+    // duplicate DELETE (the 404 it gets would toast a false 'Could not
+    // delete' right after the first one succeeded).
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
     try {
       const res = await api.deleteTrip(trip.id);
       if (res.ok) {
+        // The refresh below replaces the drawer's DOM wholesale - the
+        // clicked button dies with it. Land focus on the stable owner
+        // control before that, instead of letting it fall to <body>.
+        document.getElementById('trips-button')?.focus();
         renderTripsDrawer(drawer, map); // refresh list
         toast('Trip deleted.');
       } else {
+        btn.disabled = false;
+        if (document.activeElement === document.body) btn.focus();
         toast('Could not delete the trip.', 'bad');
       }
     } catch {
+      btn.disabled = false;
+      if (document.activeElement === document.body) btn.focus();
       toast('Could not delete the trip.', 'bad');
     }
   });

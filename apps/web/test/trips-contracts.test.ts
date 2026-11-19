@@ -44,3 +44,25 @@ describe('opening a saved trip: focus lands on the rendered summary', () => {
     expect(tripsSrc).toContain("results.setAttribute('tabindex', '-1');");
   });
 });
+
+describe('saved-trip delete: single flight + focus that survives both outcomes', () => {
+  it('refuses a second click while the DELETE is still in flight', () => {
+    // Old defect: repeat clicks fired duplicate DELETEs; the second 404
+    // toasted a false 'Could not delete' right after a successful delete.
+    expect(tripsSrc).toContain('if (!btn || btn.disabled) return;');
+    expect(tripsSrc).toContain('btn.disabled = true;');
+  });
+
+  it('re-enables the button on BOTH failure branches (res not ok, throw)', () => {
+    expect((tripsSrc.match(/btn\.disabled = false;/g) ?? []).length).toBe(2);
+    expect((tripsSrc.match(/document\.activeElement === document\.body/g) ?? []).length).toBe(2);
+  });
+
+  it('lands focus on the stable owner control before the refresh destroys the row', () => {
+    // renderTripsDrawer clears innerHTML wholesale - the clicked button
+    // dies with it; the owner control is the only stable target, and it
+    // must receive focus BEFORE the refresh destroys the row.
+    expect(tripsSrc)
+      .toMatch(/document\.getElementById\('trips-button'\)\?\.focus\(\);\s+renderTripsDrawer\(drawer, map\); \/\/ refresh list/);
+  });
+});
