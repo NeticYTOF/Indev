@@ -27,6 +27,11 @@ describe('classifyPlug (observed Statiq vocabulary)', () => {
     [conn('preparing', true, 'Faulted'), 'uncertain', true],
     // preparing plainly -> free
     [conn('preparing', true, null), 'working-free', false],
+    // Finishing does not override explicit disconnection/offline evidence.
+    [conn('finishing', false, 'Disconnected'), 'uncertain', true],
+    [conn('finishing', false, 'Offline'), 'uncertain', true],
+    [conn('offline', false, 'Finished'), 'offline', false],
+    [conn('unknown', null, 'Finished but disconnected'), 'uncertain', true],
     // finishing -> finishing
     [conn('finishing', false, 'Finished'), 'finishing', false],
     // status=available, available=false, note=Charging -> occupied (flags agree: busy)
@@ -77,6 +82,17 @@ const station = (chargers: Array<{ type: string; kw: number; price: number | nul
   }) as unknown as StatiqStationDetail;
 
 describe('summarizeCcs2', () => {
+  it('does not promote finishing/disconnected contradictions to usable-free', () => {
+    const s = summarizeCcs2(station([{ type: 'DC', kw: 60, price: 20,
+      connectors: [conn('finishing', false, 'Disconnected')] }]));
+    expect(s.usable).toBe(0);
+    expect(s.free).toBe(0);
+    expect(s.uncertain).toBe(1);
+    expect(s.hasContradiction).toBe(true);
+    expect(s.isUsable).toBe(false);
+    expect(s.maxKw).toBeNull();
+  });
+
   it('counts only DC CCS2 plugs', () => {
     const s = summarizeCcs2(
       station([
