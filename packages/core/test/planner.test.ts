@@ -484,10 +484,13 @@ describe('fail-closed scan integrity', () => {
       { runBudget: { deadlineMs: 60_000, maxUpstreamCalls: 3 } },
     ).catch((e) => e);
     expect(err).toBeInstanceOf(PlanningError);
-    expect((err as PlanningError).code).toBe('budget');
+    expect((err as PlanningError).code).toBe('not_determined');
+    expect((err as PlanningError).cause).toBe('budget-exhausted');
+    // honest evidence, never a route-impossibility claim
+    expect((err as PlanningError).message).toContain('3 upstream attempts');
   });
 
-  it('deadline expiry cancels the run and reports budget failure', async () => {
+  it('deadline expiry cancels the run and reports an honest not_determined', async () => {
     // slow fake: every upstream call takes 30ms real time; deadline 40ms
     const base = fakeStatiq(stations);
     const slow = {
@@ -505,6 +508,7 @@ describe('fail-closed scan integrity', () => {
       { runBudget: { deadlineMs: 40, maxUpstreamCalls: 1_000 } },
     ).catch((e) => e);
     expect(err).toBeInstanceOf(PlanningError);
-    expect((err as PlanningError).code).toBe('budget');
+    expect((err as PlanningError).code).toBe('not_determined');
+    expect((err as PlanningError).cause).toBe('deadline');
   });
 });

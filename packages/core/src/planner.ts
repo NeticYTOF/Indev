@@ -16,10 +16,11 @@ import { cumulativeKm } from './geo.js';
 import { scanCorridor, type CorridorCandidate } from './corridor.js';
 import { classifyPlug, summarizeCcs2, type Ccs2Summary } from './plugs.js';
 import { detectBrand } from './brands.js';
-import { pMap, UpstreamBudgetError } from './utils.js';
+import { pMap } from './utils.js';
 import { chargeTimeMin, kwhForSocDelta, socAfterDriving, socRequiredForArrival, HARIER_EV_75, type VehicleConfig } from './vehicle.js';
 import type { OsrmRouter } from './router.js';
-import { isAbortLike, type StatiqClient } from './statiq.js';
+import { isAbortLike, StatiqRunFatalError, type StatiqClient } from './statiq.js';
+import { UpstreamBudget, UpstreamRunStoppedError } from './upstream-budget.js';
 import type { StatiqStationDetail } from './types.js';
 import { resolveVehicle, type ResolvedVehicle } from './vehicle-catalog.js';
 import {
@@ -74,6 +75,15 @@ interface ChosenStop {
 
 export type { ChosenStop };
 
+/** Fine-grained cause carried on not_determined outcomes (audit + UI). */
+export type NotDeterminedCause =
+  | 'throttled' // run-level first 429 (client budget stop)
+  | 'auth' // 401/403: upstream rejected credentials
+  | 'budget-exhausted' // hard attempt cap reached before full coverage
+  | 'deadline' // time budget reached; run cancelled
+  | 'sample-throttled' // a corridor sample saw a 429 (fail-closed scan)
+  | 'scan-coverage'; // too many failed samples: coverage incomplete
+
 export class PlanningError extends Error {
   /** Machine-readable outcome for UI/MCP: not_determined is never a plan. */
   constructor(
@@ -81,8 +91,9 @@ export class PlanningError extends Error {
     readonly code:
       | 'not_determined'
       | 'no_route'
-      | 'budget'
       | 'infeasible' = 'infeasible',
+    /** Optional fine-grained cause (used for not_determined audit outcomes). */
+    readonly cause?: NotDeterminedCause,
   ) {
     super(message);
     this.name = 'PlanningError';
@@ -152,52 +163,52 @@ export async function planTripDetailed(
     realWorldRangeKm: resolvedVehicle.realWorldRangeKm,
   };
 
-  // Bounded run: overall deadline + upstream-call budget, cancelled cleanly.
-  const budget = opts.runBudget ?? DEFAULT_RUN_BUDGET;
+  // Bounded run: overall deadline + a HARD shared attempt budget.
+  // The budget is enforced at the TRANSPORT level when the client supports
+  // it (real StatiqClient: every attempt incl. retries counts, and the first
+  // 429/401/403 stops the run); duck-typed statiq doubles fall back to
+  // logical per-dispatch counting. Either way the planner converts run
+  // stops into an honest not_determined with coverage evidence - never a
+  // verdict on the route, never silent confidence.
+  const runBudgetSpec = opts.runBudget ?? DEFAULT_RUN_BUDGET;
   const deadlineController = new AbortController();
   const deadlineTimer = setTimeout(
     () => deadlineController.abort(),
-    Math.max(50, budget.deadlineMs),
+    Math.max(50, runBudgetSpec.deadlineMs),
   );
-  let upstreamCalls = 0;
-  const countCall = () => {
-    if (++upstreamCalls > budget.maxUpstreamCalls) {
-      throw new UpstreamBudgetError(budget.maxUpstreamCalls);
-    }
+  const runBudget = new UpstreamBudget(runBudgetSpec.maxUpstreamCalls);
+  const stats: RunProgressStats = {
+    samplesAttempted: 0,
+    samplesOk: 0,
+    samplesFailed: 0,
+    candidatesDiscovered: 0,
+    candidatesDetailed: 0,
   };
-  /** Guard wrapper: counts calls, enforces budget, and threads the deadline. */
-  const guardedStatiq = {
-    markers: (lat: number, lon: number) => {
-      countCall();
-      return deps.statiq.markers(lat, lon, deadlineController.signal);
-    },
-    detailsWithMeta: (stationId: number) => {
-      countCall();
-      return deps.statiq.detailsWithMeta(stationId, deadlineController.signal);
-    },
+
+  let clientBudgeted = false;
+  if (typeof deps.statiq.attachRunBudget === 'function') {
+    deps.statiq.attachRunBudget(runBudget);
+    clientBudgeted = true;
+  }
+  const hooks: GuardHooks = {
+    // Logical fallback only for statiq doubles without budget enforcement.
+    reserveCall: clientBudgeted ? undefined : () => runBudget.reserveAttempt(),
+    budget: runBudget,
+    stats,
+    signal: deadlineController.signal,
   };
 
   try {
-  const bundle = await planCore(deps, origin, destination, opts, vehicle, vehicleMeta, {
-    countCall,
-    signal: deadlineController.signal,
-  });
+  const bundle = await planCore(deps, origin, destination, opts, vehicle, vehicleMeta, hooks);
   return bundle;
   } catch (err) {
   if (err instanceof PlanningError) throw err;
-  if (err instanceof UpstreamBudgetError) {
-    throw new PlanningError(
-      `Planning stopped: the run exceeded its budget of ${budget.maxUpstreamCalls} upstream calls. ` +
-        'No plan was produced; please retry.',
-      'budget',
-    );
+  // Run-fatal upstream stops (first throttle/auth, exhausted attempt cap)
+  if (err instanceof UpstreamRunStoppedError || err instanceof StatiqRunFatalError) {
+    throw notDeterminedFromStop(runBudget, stats);
   }
   if (isAbortLike(err)) {
-    throw new PlanningError(
-      'Planning stopped: the run exceeded its time budget and was cancelled. ' +
-        'No plan was produced; please retry.',
-      'budget',
-    );
+    throw notDeterminedDeadline(runBudget, stats);
   }
   throw err;
   } finally {
@@ -208,9 +219,86 @@ export async function planTripDetailed(
   }
 }
 
+/** Progress markers so a failed run can report honest coverage evidence. */
+export interface RunProgressStats {
+  samplesAttempted: number;
+  samplesOk: number;
+  samplesFailed: number;
+  candidatesDiscovered: number;
+  candidatesDetailed: number;
+}
+
+/** Human-readable coverage line for not_determined evidence. */
+function coverageEvidence(stats: RunProgressStats): string {
+  const bits: string[] = [];
+  if (stats.samplesAttempted > 0) {
+    bits.push(
+      `route samples covered ${stats.samplesOk}/${stats.samplesAttempted}` +
+        (stats.samplesFailed > 0 ? ` (${stats.samplesFailed} failed)` : ''),
+    );
+  }
+  if (stats.candidatesDiscovered > 0) {
+    bits.push(`candidate details fetched ${stats.candidatesDetailed}/${stats.candidatesDiscovered}`);
+  }
+  return bits.length > 0 ? ` ${bits.join('; ')}.` : '';
+}
+
+/** Map a stopped budget (throttle/auth/exhausted) to an honest not_determined. */
+function notDeterminedFromStop(budget: UpstreamBudget, stats: RunProgressStats): PlanningError {
+  const coverage = coverageEvidence(stats);
+  const attempts = `after ${budget.attemptsMade} of ${budget.maxAttempts} upstream attempts`;
+  if (budget.stopped === 'throttled') {
+    const wait =
+      budget.retryAfterMs != null
+        ? ` The API asked to wait ${Math.ceil(budget.retryAfterMs / 1000)}s before any future request.`
+        : '';
+    return new PlanningError(
+      `Plan not determined: the charger API throttled this run (429) ${attempts}.${coverage}` +
+        ' No plan was produced, nothing is verified and no trip was saved - this is not a verdict on the route.' +
+        wait,
+      'not_determined',
+      'throttled',
+    );
+  }
+  if (budget.stopped === 'auth') {
+    return new PlanningError(
+      `Plan not determined: the charger API rejected this run's credentials (401/403) ${attempts}.${coverage}` +
+        " No plan was produced and no trip was saved. Check the server's STATIQ_API_TOKEN.",
+      'not_determined',
+      'auth',
+    );
+  }
+  // budget-exhausted: coverage is undetermined - never a route-impossibility
+  // claim, never silent confidence.
+  return new PlanningError(
+    `Plan not determined: the run exhausted its budget of ${budget.maxAttempts} upstream attempts` +
+      ` before the whole route could be scanned.${coverage}` +
+      ' Coverage is incomplete - this is NOT a verdict that the route is impossible, and no trip was saved.' +
+      ' Retry, or raise the run budget for long routes.',
+    'not_determined',
+    'budget-exhausted',
+  );
+}
+
+/** Deadline expiry (cancellation) is also an honest not_determined. */
+function notDeterminedDeadline(budget: UpstreamBudget, stats: RunProgressStats): PlanningError {
+  return new PlanningError(
+    `Plan not determined: the run exceeded its time budget (${budget.attemptsMade}` +
+      ` of ${budget.maxAttempts} upstream attempts used) and was cancelled before the route could be verified.` +
+      `${coverageEvidence(stats)} No plan was produced and no trip was saved; nothing here is verified.`,
+    'not_determined',
+    'deadline',
+  );
+}
+
 /** Inner planning core: everything that runs inside the bounded budget. */
 interface GuardHooks {
-  countCall: () => void;
+  /** Logical-dispatch reserve (fallback; real clients enforce per attempt). */
+  reserveCall?: () => void;
+  /** The shared run budget (coverage evidence on failure). */
+  budget: UpstreamBudget;
+  /** Progress stats updated by planCore for honest failure evidence. */
+  stats: RunProgressStats;
   signal: AbortSignal;
 }
 
@@ -223,14 +311,16 @@ async function planCore(
   vehicleMeta: PlanVehicleMeta,
   hooks: GuardHooks,
 ): Promise<PlanBundle> {
-  /** Guard wrapper: counts calls, enforces budget, and threads the deadline. */
+  /** Wrapper threads the deadline; budget enforcement lives in the client
+   *  for real statiq deps (per transport attempt) or in reserveCall for
+   *  duck-typed doubles (per logical dispatch). */
   const guardedStatiq = {
     markers: (lat: number, lon: number) => {
-      hooks.countCall();
+      hooks.reserveCall?.();
       return deps.statiq.markers(lat, lon, hooks.signal);
     },
     detailsWithMeta: (stationId: number) => {
-      hooks.countCall();
+      hooks.reserveCall?.();
       return deps.statiq.detailsWithMeta(stationId, hooks.signal);
     },
   };
@@ -246,6 +336,11 @@ async function planCore(
     signal: hooks.signal,
   });
   const warnings: string[] = [...corridor.warnings];
+  // Progress stats for honest failure evidence (what the run covered so far).
+  hooks.stats.samplesAttempted = corridor.samplesAttempted;
+  hooks.stats.samplesOk = corridor.samples;
+  hooks.stats.samplesFailed = corridor.failedSamples.length;
+  hooks.stats.candidatesDiscovered = corridor.candidates.length;
 
   // FAIL CLOSED: persistent throttling or a scan with too many holes can
   // never be presented as a verified plan.
@@ -257,6 +352,7 @@ async function planCore(
       'Plan not determined: the charger API is throttling requests (429). ' +
         'Nothing here is verified - please retry in a minute. No trip was saved.',
       'not_determined',
+      'sample-throttled',
     );
   }
   if (failedFrac > 0.05) {
@@ -264,6 +360,7 @@ async function planCore(
       `Plan not determined: ${corridor.failedSamples.length} of ${corridor.samplesAttempted} route samples ` +
         'could not be scanned. Charger coverage is incomplete; refusing to present this as a verified plan.',
       'not_determined',
+      'scan-coverage',
     );
   }
 
@@ -291,9 +388,17 @@ async function planCore(
         summary: summarizeCcs2(response.station),
         view: toStationView(response.station, fetchedAt),
       });
+      hooks.stats.candidatesDetailed = detailCache.size;
     } catch (err) {
-      // deadline/budget cancellations unwind the run; they are not skips
-      if (isAbortLike(err) || (err instanceof PlanningError && err.code === 'budget')) throw err;
+      // run-fatal stops (budget gate, first throttle/auth) and deadline
+      // aborts unwind the run; they are not per-candidate skips
+      if (
+        isAbortLike(err) ||
+        err instanceof UpstreamRunStoppedError ||
+        err instanceof StatiqRunFatalError
+      ) {
+        throw err;
+      }
       warnings.push(`Skipping "${c.name}" (${c.stationId}): live details unavailable.`);
     }
   };

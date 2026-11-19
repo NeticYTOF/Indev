@@ -10,13 +10,15 @@
  *
  * FAIL-CLOSED INTEGRITY: every failed sample is recorded with its cause.
  * Persistent throttling (429) never produces a confident-looking result:
- * the planner turns those into a "plan not determined" outcome. Abort-like
- * errors (deadline/budget cancellation) are rethrown immediately, never
- * swallowed as "skipped samples".
+ * the planner turns those into a "plan not determined" outcome. Run-fatal
+ * errors (budget gate, first throttle/auth stop, abort-like deadline
+ * cancellation) are rethrown immediately, never swallowed as
+ * "skipped samples".
  */
 import { cumulativeKm, pointAtChainage, projectOntoPolyline, type Coords } from './geo.js';
-import { pMap, UpstreamBudgetError } from './utils.js';
-import { isAbortLike, StatiqApiError } from './statiq.js';
+import { pMap } from './utils.js';
+import { isAbortLike, StatiqApiError, StatiqRunFatalError } from './statiq.js';
+import { UpstreamRunStoppedError } from './upstream-budget.js';
 import type { StatiqMarker, StatiqMarkersResponse } from './types.js';
 
 /** The marker-fetching surface the corridor needs (for guards in tests). */
@@ -78,7 +80,10 @@ interface ResolvedCorridorOptions {
 const DEFAULTS: ResolvedCorridorOptions = {
   stepKm: 12,
   maxOffRouteKm: 5,
-  concurrency: 2,
+  // Dispatchers queue at the client's rolling limiter: concurrency only
+  // keeps the limiter fed (no dead time between batch waves); the limiter
+  // still enforces the 2s gaps and the 25/60s cap. It never raises QPS.
+  concurrency: 4,
 };
 
 export async function scanCorridor(
@@ -122,9 +127,15 @@ export async function scanCorridor(
         if (!seen.has(s.stationId)) seen.set(s.stationId, s);
       }
     } catch (err) {
-      // Cancellation and budget control-flow unwind the whole run; they
-      // must never masquerade as skipped samples.
-      if (isAbortLike(err) || err instanceof UpstreamBudgetError) throw err;
+      // Run-fatal errors unwind the whole run; they must never masquerade
+      // as skipped samples (budget gate, first throttle/auth, deadlines).
+      if (
+        isAbortLike(err) ||
+        err instanceof UpstreamRunStoppedError ||
+        err instanceof StatiqRunFatalError
+      ) {
+        throw err;
+      }
       const cause: SampleFailCause =
         err instanceof StatiqApiError && (err.status === 429 || err.status === 400 && err.body.includes('wait'))
           ? 'throttled'
