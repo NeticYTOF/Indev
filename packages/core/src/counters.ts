@@ -24,10 +24,17 @@ export class CountersStore {
   async load(): Promise<CountersState> {
     try {
       const text = await readFile(this.filePath, 'utf8');
-      const parsed = JSON.parse(text) as Partial<CountersState>;
-      return { chargersSeen: Number(parsed.chargersSeen) || 0 };
-    } catch {
-      return { chargersSeen: 0 };
+      const parsed = JSON.parse(text) as Partial<CountersState> | null;
+      if (!parsed || typeof parsed !== 'object' ||
+          !Number.isSafeInteger(parsed.chargersSeen) || (parsed.chargersSeen as number) < 0) {
+        throw new Error('Counter file must contain a nonnegative safe integer chargersSeen');
+      }
+      return { chargersSeen: parsed.chargersSeen as number };
+    } catch (err) {
+      // Only a missing file is a new counter. Never overwrite existing
+      // unreadable/corrupt history by pretending its value was zero.
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return { chargersSeen: 0 };
+      throw err;
     }
   }
 
@@ -47,5 +54,18 @@ export class CountersStore {
     const next = this.writeQueue.then(update, update);
     this.writeQueue = next.catch(() => {});
     return next;
+  }
+}
+
+/** Counter telemetry must never erase or withhold an otherwise valid plan.
+ * Keep write failures visible without claiming the count was persisted. */
+export async function recordPlanCounter(
+  store: CountersStore,
+  plan: { stationsSeen: number; warnings: string[] },
+): Promise<void> {
+  try {
+    await store.addChargersSeen(plan.stationsSeen);
+  } catch {
+    plan.warnings.push('Charger counter unavailable: this run was not added to the saved running count. The trip plan is still available.');
   }
 }

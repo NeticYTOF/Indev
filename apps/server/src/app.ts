@@ -14,6 +14,7 @@
 import { Hono } from 'hono';
 import {
   CountersStore,
+  recordPlanCounter,
   OsrmRouter,
   PhotonGeocoder,
   PlanningError,
@@ -118,11 +119,12 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   app.get('/api/health', async (c) => {
-    const counters = await deps.counters.load();
+    const counters = await deps.counters.load().catch(() => null);
     return c.json({
       ok: true,
       mock: deps.mock,
-      chargersSeen: counters.chargersSeen,
+      chargersSeen: counters?.chargersSeen ?? null,
+      counterAvailable: counters !== null,
       ai: Boolean(deps.ai),
       // INSTANCE PROVENANCE: the launcher-generated launch id echoed back so
       // a launcher can prove this health answer came from its OWN child (a
@@ -204,7 +206,7 @@ export function createApp(deps: AppDeps): Hono {
 
     if (deps.mock) {
       const plan = mockPlan(origin, destination, resolved);
-      await deps.counters.addChargersSeen(plan.stationsSeen);
+      await recordPlanCounter(deps.counters, plan);
       // synthetic plans make zero upstream calls; the run audit stays honest
       deps.onRunComplete?.('ok', 0);
       return c.json({ plan });
@@ -223,7 +225,7 @@ export function createApp(deps: AppDeps): Hono {
         options,
       );
       // Persist only the running count of chargers seen; never station data.
-      await deps.counters.addChargersSeen(plan.stationsSeen);
+      await recordPlanCounter(deps.counters, plan);
       deps.onRunComplete?.('ok', statiq.upstreamCallsMade());
       return c.json({ plan });
     } catch (err) {
@@ -263,7 +265,7 @@ export function createApp(deps: AppDeps): Hono {
     // Serve the same synthetic plan /api/plan would, with an honest label.
     if (deps.mock) {
       const plan = mockPlan(origin, destination, resolved);
-      await deps.counters.addChargersSeen(plan.stationsSeen);
+      await recordPlanCounter(deps.counters, plan);
       deps.onRunComplete?.('ok', 0);
       return c.json({
         plan,
@@ -311,7 +313,7 @@ export function createApp(deps: AppDeps): Hono {
       deps.onRunComplete?.(auditOutcomeFor(err), statiq.upstreamCallsMade());
       throw err;
     }
-    await deps.counters.addChargersSeen(bundle.plan.stationsSeen);
+    await recordPlanCounter(deps.counters, bundle.plan);
 
     // 2) ask the model to pick the stop sequence from the candidates
     const system =

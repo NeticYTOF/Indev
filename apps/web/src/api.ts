@@ -7,7 +7,8 @@ import type { SavedTrip, TripPlan, VehicleCatalogEntry, GeocodeHit } from '@inde
 export interface HealthInfo {
   ok: boolean;
   mock: boolean;
-  chargersSeen: number;
+  chargersSeen: number | null;
+  counterAvailable?: boolean;
   /** AI planning is only shown in the UI when this is true. */
   ai: boolean;
 }

@@ -11,6 +11,7 @@
  */
 import {
   CountersStore,
+  recordPlanCounter,
   OsrmRouter,
   PhotonGeocoder,
   PlanningError,
@@ -134,7 +135,7 @@ export async function planTripHandler(
   );
 
   // Running chargers-seen count only; no station data ever persisted.
-  await deps.counters.addChargersSeen(plan.stationsSeen);
+  await recordPlanCounter(deps.counters, plan);
 
   let savedTripId: string | undefined;
   if (args.save?.trim()) {
