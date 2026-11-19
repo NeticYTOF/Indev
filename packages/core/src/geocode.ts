@@ -74,7 +74,22 @@ export class PhotonGeocoder {
       lon: String(this.bias.lon),
     });
     const json = await this.getJson<PhotonResponse>(`${this.base}/api?${params.toString()}`);
-    return (json.features ?? []).map((f) => toHit(f.properties ?? {}, f.geometry.coordinates));
+    const features = json?.features ?? [];
+    if (!Array.isArray(features) || features.some((feature) => {
+      const coordinates = feature?.geometry?.coordinates;
+      const properties = feature?.properties;
+      return !Array.isArray(coordinates) || coordinates.length < 2 ||
+        !Number.isFinite(coordinates[0]) || Math.abs(coordinates[0]) > 180 ||
+        !Number.isFinite(coordinates[1]) || Math.abs(coordinates[1]) > 90 ||
+        (properties != null && (typeof properties !== 'object' || Array.isArray(properties) ||
+          ['name', 'street', 'city', 'state', 'country'].some((key) => {
+            const value = (properties as Record<string, unknown>)[key];
+            return value != null && typeof value !== 'string';
+          })));
+    })) {
+      throw new Error('Invalid geocoding response');
+    }
+    return features.map((f) => toHit(f.properties ?? {}, f.geometry.coordinates));
   }
 
   private async getJson<T>(url: string): Promise<T> {
