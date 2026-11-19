@@ -407,6 +407,36 @@ describe('planTrip invariants (randomized worlds)', () => {
   });
 });
 
+describe('station details identity integrity', () => {
+  it.each(['wrong-id', 'not-ok'] as const)('does not attach %s details to a corridor station', async (kind) => {
+    const specs: StationSpec[] = Array.from({ length: 14 }, (_, i) => ({
+      id: 900 + i, name: `Statiq Identity ${i}`, chainageKm: 50 * (i + 1),
+    }));
+    const base = fakeStatiq(specs);
+    const fetchedIds: number[] = [];
+    const mismatched = {
+      ...base,
+      detailsWithMeta: async (id: number) => {
+        fetchedIds.push(id);
+        const result = await base.detailsWithMeta(id);
+        return {
+          ...result,
+          response: {
+            ...result.response,
+            ok: kind !== 'not-ok',
+            station: { ...result.response.station!, stationId: kind === 'wrong-id' ? id + 1000 : id },
+          },
+        };
+      },
+    } as unknown as StatiqClient;
+    const err = await planTrip({ router: fakeRouter(700), statiq: mismatched }, O, D(700)).catch(e => e);
+    expect(fetchedIds).toHaveLength(14);
+    expect(new Set(fetchedIds).size).toBe(14);
+    expect(err).toBeInstanceOf(PlanningError);
+    expect((err as PlanningError).code).toBe('not_determined');
+  });
+});
+
 describe('live details exhaustiveness (whole-batch candidate fetch)', () => {
   it('fetches details for EVERY candidate in both detour bands, each exactly once', async () => {
     // primary-band stations at 0 km off-route every 50 km...
