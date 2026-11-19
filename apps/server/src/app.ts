@@ -285,6 +285,14 @@ export function createApp(deps: AppDeps): Hono {
       typeof b?.request === 'string' && b.request.trim() ? b.request.trim().slice(0, 2000) : undefined;
 
     const statiq = deps.createStatiq({ retries: statiqRetries });
+    // Keep the request's starting charge through validation and rebuilding.
+    // Omit undefined so the core's default100% remains the default only
+    // when no valid starting charge was supplied.
+    const startSocPct = clampSoc(b?.startSocPct);
+    const planOptions: PlanOptions = {
+      runBudget,
+      ...(startSocPct === undefined ? {} : { startSocPct }),
+    };
     // 1) base plan + AI-safe candidates (no occupancy anywhere).
     //    Audit the base-plan run on failure too: a not_determined base plan
     //    (throttle/budget/deadline) must surface in the run audit, not vanish.
@@ -295,8 +303,7 @@ export function createApp(deps: AppDeps): Hono {
         origin,
         destination,
         {
-          startSocPct: clampSoc(b?.startSocPct),
-          runBudget,
+          ...planOptions,
           includeCandidates: true,
         },
       );
@@ -350,7 +357,7 @@ export function createApp(deps: AppDeps): Hono {
         });
       }
 
-      const validation = validateAiChoice(bundle, { stationIds, notes }, {}, resolved.config);
+      const validation = validateAiChoice(bundle, { stationIds, notes }, planOptions, resolved.config);
       if (!validation.ok) {
         deps.onRunComplete?.('ai-invalid', statiq.upstreamCallsMade());
         return c.json({
@@ -359,7 +366,7 @@ export function createApp(deps: AppDeps): Hono {
         });
       }
 
-      const rebuilt = assembleAiPlan(bundle, validation.seq, { applied: true, notes }, {}, resolved.config);
+      const rebuilt = assembleAiPlan(bundle, validation.seq, { applied: true, notes }, planOptions, resolved.config);
       deps.onRunComplete?.('ok', statiq.upstreamCallsMade());
       return c.json({ plan: rebuilt, ai: { applied: true, notes } });
     } catch (err) {
