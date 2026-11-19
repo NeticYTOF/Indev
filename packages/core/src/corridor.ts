@@ -40,12 +40,14 @@ export interface CorridorResult {
   samples: number;
   /** Unique stations seen in this run (before off-route filtering). */
   stationsSeen: number;
+  /** Non-fatal problems: skipped samples leave partial blind spots. */
+  warnings: string[];
 }
 
 const DEFAULTS: Required<CorridorOptions> = {
   stepKm: 12,
   maxOffRouteKm: 5,
-  concurrency: 4,
+  concurrency: 2,
 };
 
 export async function scanCorridor(
@@ -55,22 +57,36 @@ export async function scanCorridor(
 ): Promise<CorridorResult> {
   const { stepKm, maxOffRouteKm, concurrency } = { ...DEFAULTS, ...opts };
   if (routeGeometry.length < 2) {
-    return { candidates: [], samples: 0, stationsSeen: 0 };
+    return { candidates: [], samples: 0, stationsSeen: 0, warnings: [] };
   }
   const cum = cumulativeKm(routeGeometry);
   const totalKm = cum[cum.length - 1] as number;
 
   const samplePoints: Coords[] = [];
+  const sampleChainages: number[] = [];
   for (let d = 0; d < totalKm; d += stepKm) {
     samplePoints.push(pointAtChainage(routeGeometry, cum, d));
+    sampleChainages.push(d);
   }
   samplePoints.push(pointAtChainage(routeGeometry, cum, totalKm)); // destination end
+  sampleChainages.push(totalKm);
 
   const seen = new Map<number, StatiqMarker>();
-  await pMap(samplePoints, concurrency, async (p) => {
-    const res = await statiq.markers(p.lat, p.lon);
-    for (const s of res.stations ?? []) {
-      if (!seen.has(s.stationId)) seen.set(s.stationId, s);
+  const warnings: string[] = [];
+  let skipped = 0;
+  await pMap(samplePoints, concurrency, async (p, i) => {
+    try {
+      const res = await statiq.markers(p.lat, p.lon);
+      for (const s of res.stations ?? []) {
+        if (!seen.has(s.stationId)) seen.set(s.stationId, s);
+      }
+    } catch {
+      // A failed sample leaves a partial blind spot (neighbouring samples
+      // overlap ~half of it): carry on, but surface the hole honestly.
+      skipped++;
+      warnings.push(
+        `Charger scan skipped the sample near ${(sampleChainages[i] ?? 0).toFixed(0)} km (upstream unavailable); coverage there may be partial.`,
+      );
     }
   });
 
@@ -90,5 +106,5 @@ export async function scanCorridor(
     }
   }
   candidates.sort((a, b) => a.chainageKm - b.chainageKm);
-  return { candidates, samples: samplePoints.length, stationsSeen: seen.size };
+  return { candidates, samples: samplePoints.length - skipped, stationsSeen: seen.size, warnings };
 }

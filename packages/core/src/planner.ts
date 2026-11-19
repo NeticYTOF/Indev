@@ -107,10 +107,10 @@ export async function planTrip(
   const corridor = await scanCorridor(deps.statiq, route.geometry, {
     maxOffRouteKm: opts.fallbackDetourKm,
   });
+  const warnings: string[] = [...corridor.warnings];
 
   // 3) Live details + CCS2 DC classification per candidate.
   const resolved: Candidate[] = [];
-  const warnings: string[] = [];
   await pMap(corridor.candidates, 6, async (c) => {
     try {
       const { response, fetchedAt } = await deps.statiq.detailsWithMeta(c.stationId);
