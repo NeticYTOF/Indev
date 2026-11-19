@@ -31,6 +31,35 @@ export interface ServerEnv {
   aiBaseUrl: string | undefined;
   aiApiKey: string | undefined;
   aiModel: string | undefined;
+  /**
+   * EXPLICIT per-launch planning-budget overrides (operator-supplied, e.g.
+   * for a coordinated acceptance). ABSENT = undefined = the defaults are
+   * byte-identical to before; PRESENT but malformed = LOUD failure at boot.
+   * Never silently clamped.
+   */
+  planMaxCalls: number | undefined;
+  planDeadlineMs: number | undefined;
+  planRetries: number | undefined;
+}
+
+/**
+ * Strictly validate an explicit integer override: absent -> undefined;
+ * present must be an integer within [min, max] or the boot FAILS LOUDLY.
+ * (No silent clamping: a fat-fingered override must never quietly
+ * reshape a run's budget.)
+ */
+function parseIntOverride(
+  name: string,
+  raw: string | undefined,
+  min: number,
+  max: number,
+): number | undefined {
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${name} must be an integer between ${min} and ${max} (got "${raw}")`);
+  }
+  return value;
 }
 
 /**
@@ -65,6 +94,10 @@ export function loadEnv(
     aiBaseUrl: merged.AI_BASE_URL || undefined,
     aiApiKey: merged.AI_API_KEY || undefined,
     aiModel: merged.AI_MODEL || undefined,
+    // Explicit bounded overrides; absent = defaults, malformed = loud boot failure
+    planMaxCalls: parseIntOverride('INDEV_PLAN_MAX_CALLS', merged.INDEV_PLAN_MAX_CALLS, 1, 10_000),
+    planDeadlineMs: parseIntOverride('INDEV_PLAN_DEADLINE_MS', merged.INDEV_PLAN_DEADLINE_MS, 10_000, 6 * 60 * 60_000),
+    planRetries: parseIntOverride('INDEV_PLAN_RETRIES', merged.INDEV_PLAN_RETRIES, 0, 3),
   };
 }
 

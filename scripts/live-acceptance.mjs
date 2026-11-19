@@ -40,9 +40,23 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Server-side run budget (apps/server/src/app.ts) the fetch window aligns to. */
 const SERVER_RUN_BUDGET_MS = 4 * 60_000;
-/** Fetch wall: slightly above the server budget so the server's honest
- *  not_determined body lands before any local timeout fires. */
-const FETCH_WALL_MS = SERVER_RUN_BUDGET_MS + 30_000;
+/** Default fetch wall: slightly above the server budget so the server's
+ *  honest not_determined body lands before any local timeout fires. */
+const DEFAULT_FETCH_WALL_MS = SERVER_RUN_BUDGET_MS + 30_000;
+
+/**
+ * The runner's fetch wall: the server's EFFECTIVE planning deadline plus a
+ * slack, when an explicit per-launch override (INDEV_PLAN_DEADLINE_MS) is
+ * present in the environment; else the default. INERT unless a coordinated
+ * acceptance explicitly supplies the override - the default wall is exactly
+ * what it was before.
+ */
+export function fetchWallMs(planDeadlineMs, defaultMs = DEFAULT_FETCH_WALL_MS) {
+  if (Number.isFinite(planDeadlineMs) && planDeadlineMs > 0) {
+    return planDeadlineMs + 30_000;
+  }
+  return defaultMs;
+}
 
 /**
  * Mode-exclusive child environment. Strips EVERY mode-sensitive variable
@@ -102,6 +116,10 @@ class RunnerFail extends Error {
 async function main() {
   const MOCK = process.argv.includes('--mock');
   const PORT = Number(process.env.LIVE_PORT || (MOCK ? 8798 : 8799));
+  // The fetch wall adapts ONLY when the explicit per-launch override is
+  // present (a coordinated acceptance with a larger wall); otherwise the
+  // default wall applies, exactly as before.
+  const WALL_MS = fetchWallMs(Number(process.env.INDEV_PLAN_DEADLINE_MS));
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const runDir = join(ROOT, `.tmp-live-run-${stamp}`);
@@ -213,7 +231,7 @@ async function main() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body,
-      signal: AbortSignal.timeout(FETCH_WALL_MS),
+      signal: AbortSignal.timeout(WALL_MS),
     });
     const text = await res.text();
     return { httpStatus: res.status, ok: res.ok, text, ms: Date.now() - started };
@@ -320,7 +338,7 @@ async function main() {
       {
         runDir: runDir,
         mode: MOCK ? 'mock' : 'live',
-        fetchWallMs: FETCH_WALL_MS,
+        fetchWallMs: WALL_MS,
         health,
         ...outcome,
         files: { plan: 'plan.json', serverLog: 'server.log', serverErr: 'server-stderr.log' },

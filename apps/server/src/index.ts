@@ -29,6 +29,18 @@ const app = createApp({
   counters,
   router: new OsrmRouter(),
   geocoder: new PhotonGeocoder(),
+  // EXPLICIT bounded planning-budget override (coordinated acceptance):
+  // present vars were validated at boot (malformed ones failed LOUDLY);
+  // absent vars keep the SERVER_RUN_BUDGET defaults byte-identical.
+  ...(env.planMaxCalls !== undefined || env.planDeadlineMs !== undefined
+    ? {
+        planRunBudget: {
+          maxUpstreamCalls: env.planMaxCalls ?? SERVER_RUN_BUDGET.maxUpstreamCalls,
+          deadlineMs: env.planDeadlineMs ?? SERVER_RUN_BUDGET.deadlineMs,
+        },
+      }
+    : {}),
+  ...(env.planRetries !== undefined ? { statiqRetries: env.planRetries } : {}),
   // Fresh client per planning run (single-run memo policy), armed with the
   // same deadline so Retry-After waits that cannot fit fail as throttled.
   // Sanitized upstream audit: endpoint + status + time + running count only.

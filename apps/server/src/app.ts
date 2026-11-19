@@ -26,6 +26,7 @@ import {
   summarizeCcs2,
   DEFAULT_HARRIER_ENTRY_ID,
   type PlanOptions,
+  type PlanRunBudget,
   type ResolvedVehicle,
   type TripPlan,
   type VehicleSelection,
@@ -34,8 +35,10 @@ import { planTripDetailed, validateAiChoice, assembleAiPlan, type PlanBundle } f
 import { chatCompletion, parseChoiceJson, AiProviderError } from './ai-provider.js';
 
 export interface AppDeps {
-  /** Creates a fresh Statiq client for one planning run. */
-  createStatiq: () => StatiqClient;
+  /** Creates a fresh Statiq client for one planning run. The optional
+   *  opts carry an EXPLICIT per-launch retry override (env-configured);
+   *  implementations accept and ignore extras for compatibility. */
+  createStatiq: (opts?: { retries?: number }) => StatiqClient;
   router: OsrmRouter;
   geocoder: PhotonGeocoder;
   trips: TripsStore;
@@ -47,6 +50,16 @@ export interface AppDeps {
   ai?: { baseUrl: string; apiKey: string; model: string };
   /** Injectable for tests; defaults to the real provider call. */
   aiCall?: (messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>) => Promise<string>;
+  /**
+   * EXPLICIT bounded planning-budget override (operator-supplied, e.g. for
+   * a coordinated acceptance). Absent = SERVER_RUN_BUDGET defaults,
+   * byte-identical to before; present = validated by loadEnv at boot.
+   * Never raised automatically - only an explicit launch choice.
+   */
+  planRunBudget?: PlanRunBudget;
+  /** Explicit per-launch client retry override (0..3, validated); the
+   *  StatiqClient default (2) applies when absent. */
+  statiqRetries?: number;
 }
 
 /** Server-side bounds for a planning request. */
@@ -72,6 +85,10 @@ function auditOutcomeFor(err: unknown): string {
 
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
+  // The EFFECTIVE planning budget: the explicit bounded override when the
+  // operator supplied one (validated at boot), else the server default.
+  const runBudget = deps.planRunBudget ?? SERVER_RUN_BUDGET;
+  const statiqRetries = deps.statiqRetries;
 
   app.onError((err, c) => {
     if (err instanceof PlanningError) {
@@ -92,6 +109,13 @@ export function createApp(deps: AppDeps): Hono {
       mock: deps.mock,
       chargersSeen: counters.chargersSeen,
       ai: Boolean(deps.ai),
+      // Sanitized introspection (no secrets): the effective planning
+      // envelope this server was launched with
+      runBudget: {
+        maxUpstreamCalls: runBudget.maxUpstreamCalls,
+        deadlineMs: runBudget.deadlineMs,
+        retries: statiqRetries ?? 2, // 2 = the StatiqClient default
+      },
     });
   });
 
@@ -167,10 +191,10 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ plan });
     }
 
-    const statiq = deps.createStatiq();
+    const statiq = deps.createStatiq({ retries: statiqRetries });
     const options: PlanOptions = {
       startSocPct: clampSoc(b.startSocPct),
-      runBudget: SERVER_RUN_BUDGET,
+      runBudget,
     };
     try {
       const plan = await planTrip(
@@ -241,7 +265,7 @@ export function createApp(deps: AppDeps): Hono {
     const customRequest =
       typeof b?.request === 'string' && b.request.trim() ? b.request.trim().slice(0, 2000) : undefined;
 
-    const statiq = deps.createStatiq();
+    const statiq = deps.createStatiq({ retries: statiqRetries });
     // 1) base plan + AI-safe candidates (no occupancy anywhere).
     //    Audit the base-plan run on failure too: a not_determined base plan
     //    (throttle/budget/deadline) must surface in the run audit, not vanish.
@@ -253,7 +277,7 @@ export function createApp(deps: AppDeps): Hono {
         destination,
         {
           startSocPct: clampSoc(b?.startSocPct),
-          runBudget: SERVER_RUN_BUDGET,
+          runBudget,
           includeCandidates: true,
         },
       );
@@ -398,7 +422,9 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ station: mockStation(id) });
     }
     // Always a FRESH client: station views must never come from a memo.
-    const statiq = deps.createStatiq();
+    // Per-launch retry override applies here too (client behavior); the
+    // plan budget override does not (single-call revalidation has no run).
+    const statiq = deps.createStatiq({ retries: statiqRetries });
     const { response, fetchedAt } = await statiq.detailsWithMeta(id);
     if (!response.station) {
       return c.json({ error: 'Station not found', code: 'not_found' }, 404);

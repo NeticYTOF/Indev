@@ -11,7 +11,7 @@
  *   run) must never return.
  */
 import { describe, expect, it } from 'vitest';
-import { buildChildEnv, exitCodeFor } from '../../../scripts/live-acceptance.mjs';
+import { buildChildEnv, exitCodeFor, fetchWallMs } from '../../../scripts/live-acceptance.mjs';
 
 describe('buildChildEnv (mode-exclusive acceptance env)', () => {
   it('mock mode is tokenless by construction and skips the repo .env', () => {
@@ -94,5 +94,20 @@ describe('exitCodeFor (fail-closed exit status)', () => {
   it('returns non-zero for a missing outcome', () => {
     expect(exitCodeFor(undefined)).not.toBe(0);
     expect(exitCodeFor(null)).not.toBe(0);
+  });
+});
+
+describe('fetchWallMs (inert unless an explicit override is supplied)', () => {
+  it('default: exactly the previous wall (server budget + 30s slack)', () => {
+    expect(fetchWallMs(undefined)).toBe(4 * 60_000 + 30_000);
+    expect(fetchWallMs(Number.NaN)).toBe(4 * 60_000 + 30_000);
+    expect(fetchWallMs(0)).toBe(4 * 60_000 + 30_000);
+    expect(fetchWallMs(-1)).toBe(4 * 60_000 + 30_000);
+  });
+
+  it('an explicit per-launch deadline grows the wall (deadline + 30s slack)', () => {
+    // a coordinated 20-minute acceptance must not be spuriously aborted at
+    // the old 4.5-minute local wall
+    expect(fetchWallMs(20 * 60_000)).toBe(20 * 60_000 + 30_000);
   });
 });

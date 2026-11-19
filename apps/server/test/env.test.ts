@@ -99,3 +99,69 @@ describe('loadEnv precedence (fixture .env, no API calls)', () => {
     expect(env.mock).toBe(false); // nothing filled: not mock
   });
 });
+
+describe('explicit bounded planning-budget overrides (defaults preserved)', () => {
+  it('ABSENT overrides = defaults byte-identical: undefined fields', () => {
+    const env = loadEnv(fixtureDir, {});
+    expect(env.planMaxCalls).toBeUndefined();
+    expect(env.planDeadlineMs).toBeUndefined();
+    expect(env.planRetries).toBeUndefined();
+  });
+
+  it('PRESENT + valid = parsed explicit overrides (a coordinated acceptance shape)', () => {
+    // the Delhi->Jaipur full-coverage shape: 421 calls min + slack, ~20 min
+    // wall, zero retries for exact accounting - supplied EXPLICITLY
+    const env = loadEnv(fixtureDir, {
+      INDEV_PLAN_MAX_CALLS: '450',
+      INDEV_PLAN_DEADLINE_MS: String(20 * 60_000),
+      INDEV_PLAN_RETRIES: '0',
+    });
+    expect(env.planMaxCalls).toBe(450);
+    expect(env.planDeadlineMs).toBe(20 * 60_000);
+    expect(env.planRetries).toBe(0);
+  });
+
+  it('MALFORMED overrides fail LOUDLY at boot (no silent clamping)', () => {
+    for (const [name, raw, min, max] of [
+      ['INDEV_PLAN_MAX_CALLS', '0', 1, 10_000],
+      ['INDEV_PLAN_MAX_CALLS', '-5', 1, 10_000],
+      ['INDEV_PLAN_MAX_CALLS', '100001', 1, 10_000],
+      ['INDEV_PLAN_MAX_CALLS', 'twelve', 1, 10_000],
+      ['INDEV_PLAN_DEADLINE_MS', '1000', 10_000, 6 * 60 * 60_000],
+      ['INDEV_PLAN_DEADLINE_MS', '99999999999', 10_000, 6 * 60 * 60_000],
+      ['INDEV_PLAN_RETRIES', '4', 0, 3],
+      ['INDEV_PLAN_RETRIES', '-1', 0, 3],
+      ['INDEV_PLAN_RETRIES', 'two', 0, 3],
+    ] as const) {
+      expect(() => loadEnv(fixtureDir, { [name]: raw })).toThrow(
+        new RegExp(`${name} must be an integer between ${min} and ${max}`),
+      );
+    }
+  });
+
+  it('the boundary values of each range are accepted', () => {
+    const env = loadEnv(fixtureDir, {
+      INDEV_PLAN_MAX_CALLS: '1',
+      INDEV_PLAN_DEADLINE_MS: '10000',
+      INDEV_PLAN_RETRIES: '3',
+    });
+    expect(env.planMaxCalls).toBe(1);
+    expect(env.planDeadlineMs).toBe(10_000);
+    expect(env.planRetries).toBe(3);
+  });
+
+  it('buildChildEnv passes the explicit overrides through (live + mock)', () => {
+    // a future coordinated acceptance supplies them via the launch env;
+    // the runner must not strip them from either mode's child
+    for (const mode of ['live', 'mock'] as const) {
+      const child = buildChildEnv(mode as string, {
+        INDEV_PLAN_MAX_CALLS: '450',
+        INDEV_PLAN_DEADLINE_MS: String(20 * 60_000),
+        INDEV_PLAN_RETRIES: '0',
+      });
+      expect(child.INDEV_PLAN_MAX_CALLS).toBe('450');
+      expect(child.INDEV_PLAN_DEADLINE_MS).toBe(String(20 * 60_000));
+      expect(child.INDEV_PLAN_RETRIES).toBe('0');
+    }
+  });
+});
