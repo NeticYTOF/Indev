@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   HARIER_EV_75,
   chargeTimeMin,
+  chargePowerKw,
   kwhForDistance,
   kwhForSocDelta,
   socAfterDriving,
@@ -10,6 +11,15 @@ import {
 } from '../src/vehicle.js';
 
 describe('vehicle model (Harrier EV 75 kWh)', () => {
+  it.each([7, 15, 22])('never invents power above a %s kW charger in the taper region', (chargerKw) => {
+    for (const soc of [80, 85, 90, 95, 100]) {
+      expect(chargePowerKw(soc, chargerKw)).toBeLessThanOrEqual(chargerKw);
+      expect(chargePowerKw(soc, chargerKw)).toBeGreaterThan(0);
+    }
+    const minimumMinutes = kwhForSocDelta(80, 100) / chargerKw * 60;
+    expect(chargeTimeMin(80, 100, chargerKw)).toBeGreaterThanOrEqual(minimumMinutes - 1e-9);
+  });
+
   it('usable energy is 95% of the pack', () => {
     expect(usableKwh(HARIER_EV_75)).toBeCloseTo(71.25, 2);
   });
