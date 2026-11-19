@@ -731,12 +731,15 @@ export function finalize(
 ): PlanStop[] {
   const stops: PlanStop[] = [];
   let etaMin = 0;
+  let departureSoc = opts.startSocPct;
 
   for (let i = 0; i < chosen.length; i++) {
     const cur = chosen[i] as ChosenStop;
-    const prev = i > 0 ? (chosen[i - 1] as ChosenStop) : undefined;
     const legKm = cur.legKm;
-    const arriveSocPct = cur.arriveSocPct;
+    // Selection reserves a conservative buffer. Final numbers must carry
+    // actual departure energy forward, including charge not needed at an
+    // early stop, rather than resetting every later arrival to that buffer.
+    const arriveSocPct = socAfterDriving(legKm, departureSoc, vehicle);
 
     // Charge at this stop covers the NEXT hop (or the final run to the destination).
     const nextChain = i + 1 < chosen.length ? (chosen[i + 1] as ChosenStop).cand.candidate.chainageKm : totalKm;
@@ -782,6 +785,7 @@ export function finalize(
       departureEtaMin: Math.round(etaMin + chargeMin),
     });
     etaMin += chargeMin;
+    departureSoc = leaveSoc;
   }
   return stops;
 }
