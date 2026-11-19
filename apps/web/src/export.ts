@@ -117,12 +117,19 @@ export function buildAnimatedExportSvg(plan: TripPlan): string {
     )
     .join('');
 
-  const routeTitle = escapeXml(`${plan.origin.label} → ${plan.destination.label}`);
-  const vehicleLine = escapeXml(
-    plan.vehicle.label + (plan.vehicle.realWorldRangeKm ? ` · real-world ${plan.vehicle.realWorldRangeKm} km` : ''),
-  );
+  // Bound both endpoints separately so a long origin cannot hide the
+  // destination. Keep complete labels in native SVG tooltip metadata.
+  const fullRouteTitle = `${plan.origin.label} → ${plan.destination.label}`;
+  const routeTitle = `${shortLabel(plan.origin.label, 36)} → ${shortLabel(plan.destination.label, 36)}`;
+  const fullVehicleLine = (
+    plan.vehicle.label + (plan.vehicle.realWorldRangeKm ? ` · real-world ${plan.vehicle.realWorldRangeKm} km` : '')
+  ) + (plan.source === 'synthetic' ? ' · SYNTHETIC DATA (MOCK) — SCHEMATIC GEOMETRY' : '');
+  const vehicleLine = shortLabel(plan.vehicle.label, 48)
+    + (plan.vehicle.realWorldRangeKm ? ` · real-world ${plan.vehicle.realWorldRangeKm} km` : '')
+    + (plan.source === 'synthetic' ? ' · SYNTHETIC DATA (MOCK) — SCHEMATIC GEOMETRY' : '');
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" font-family="Inter, sans-serif">
+  <title>${escapeXml(fullRouteTitle)}</title>
   <rect width="${W}" height="${H}" fill="#0E1626"/>
   <rect x="1" y="1" width="${W - 2}" height="${H - 2}" fill="none" stroke="#2C3D5C" stroke-width="2" rx="0"/>
 
@@ -134,8 +141,8 @@ export function buildAnimatedExportSvg(plan: TripPlan): string {
     text { user-select: none; }
   </style>
 
-  <text x="${padX}" y="52" font-size="30" font-weight="700" fill="#F1F5FB" letter-spacing="-0.5">${routeTitle}</text>
-  <text x="${padX}" y="76" font-size="15" fill="#A9B8CF">${vehicleLine}${plan.source === 'synthetic' ? ' · SYNTHETIC DATA (MOCK) — SCHEMATIC GEOMETRY' : ''}</text>
+  <text x="${padX}" y="52" font-size="30" font-weight="700" fill="#F1F5FB" letter-spacing="-0.5" ${fitHeaderText(routeTitle, 30, W - padX * 2)}><title>${escapeXml(fullRouteTitle)}</title>${escapeXml(routeTitle)}</text>
+  <text x="${padX}" y="76" font-size="15" fill="#A9B8CF" ${fitHeaderText(vehicleLine, 15, W - padX * 2)}><title>${escapeXml(fullVehicleLine)}</title>${escapeXml(vehicleLine)}</text>
 
   <!-- static base route: full path at low opacity so previews without
        SMIL/CSS animation still show the route -->
@@ -195,4 +202,20 @@ function escapeXml(s: string): string {
         return '&#39;';
     }
   });
+}
+
+/** Code-point slicing never splits a surrogate pair. */
+function shortLabel(label: string, max: number): string {
+  const chars = Array.from(label);
+  return chars.length <= max ? label : chars.slice(0, max - 1).join('') + '…';
+}
+
+/** SVG textLength enforces a real rendered bound, independent of fonts.
+ * Estimate only the comfortable spacing, not whether the bound is obeyed.
+ * Leave short headers in their natural spacing. */
+function fitHeaderText(text: string, fontSize: number, maxWidth: number): string {
+  const count = Array.from(text).length;
+  if (count * fontSize <= maxWidth) return '';
+  const width = Math.min(maxWidth, count * fontSize * 0.56);
+  return `textLength="${width.toFixed(1)}" lengthAdjust="spacingAndGlyphs"`;
 }
