@@ -105,10 +105,14 @@ export class TripsStore {
     try {
       const text = await readFile(this.filePath, 'utf8');
       const parsed = JSON.parse(text);
-      if (!Array.isArray(parsed)) return [];
+      if (!Array.isArray(parsed)) throw new Error('Saved trips file must contain an array');
       return parsed as SavedTrip[];
-    } catch {
-      return []; // missing file -> empty store
+    } catch (err) {
+      // A missing file is a new store. Any other failure must stop writes:
+      // treating corrupted or unreadable data as empty would overwrite it
+      // on the next save, destroying trips the user could still recover.
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
+      throw err;
     }
   }
 
