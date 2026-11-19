@@ -190,7 +190,7 @@ function renderSavedSummary(panel: HTMLElement, trip: SavedTrip): void {
             synthetic?: boolean;
             fetchedAt: string;
             ccs2: { usable: number; free: number; occupied: number; faulted: number; uncertain: number; maxKw: number | null; pricePerKwh: number | null };
-            chargers: Array<{ lastUsedOn: string | null; kw: number; type: string; pricePerKwh: number | null; connectors: Array<{ type: string; status: string; note: string | null }> };
+            chargers: Array<{ lastUsedOn: string | null; kw: number; type: string; pricePerKwh: number | null; connectors: Array<{ type: string; status: string; note: string | null }> }>;
           };
         };
         const lastUsed = station.chargers.map((c) => c.lastUsedOn).filter(Boolean).join(', ') || 'unknown';
