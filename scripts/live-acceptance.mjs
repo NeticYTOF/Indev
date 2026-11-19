@@ -60,6 +60,50 @@ export function fetchWallMs(planDeadlineMs, defaultMs = DEFAULT_FETCH_WALL_MS) {
 }
 
 /**
+ * Bounded STREAM-COMPLETE teardown wait for a spawned child (exported for
+ * the delayed-drain regression). The child's 'close' event is Node's
+ * canonical "process ended AND all stdio handles closed" signal - it fires
+ * only after EVERY data event of both streams has been delivered. The
+ * 'exit' event carries NO such guarantee: Node documents no ordering
+ * between 'exit' and stdio data delivery (the SIGCHLD reap path and the
+ * pipe-drain path are independent), so persisting at 'exit' could -
+ * intermittently and exactly as Linux's success-run empty server.log
+ * showed - write before the drained output arrived. Bounded: a teardown
+ * that never completes (hung handles) resolves via the timer with whatever
+ * has drained - the honest degraded persistence, never an indefinite hang.
+ */
+export function waitChildClose(child, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      settled = true;
+      resolve();
+    }, timeoutMs);
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    // Fast path: the child already wound down fully (exit state set AND
+    // both streams drained to end) - the 'close' event has already fired
+    // and a fresh listener would hang until the timer; settle now. If the
+    // exit state is set but the streams have NOT drained, the canonical
+    // 'close' below resolves exactly when the late delivery completes.
+    const stdoutDrained = !child.stdout || child.stdout.readableEnded || child.stdout.destroyed;
+    const stderrDrained = !child.stderr || child.stderr.readableEnded || child.stderr.destroyed;
+    if (
+      (child.exitCode !== null || child.signalCode !== null) &&
+      stdoutDrained &&
+      stderrDrained
+    ) {
+      return settle();
+    }
+    child.once('close', settle);
+  });
+}
+
+/**
  * Mode-exclusive child environment. Strips EVERY mode-sensitive variable
  * from the parent, then re-adds exactly what the mode needs:
  *  - live: EXPLICIT live + AI-off, pinned so the repo .env cannot
@@ -161,23 +205,11 @@ async function main() {
     process.stderr.write(`[server] ${s}`);
   });
 
-  /** Bounded wait for child exit (resolves even if the child hangs). */
-  function waitExit(child, timeoutMs) {
-    return new Promise((resolve) => {
-      if (child.exitCode !== null || child.signalCode !== null) return resolve();
-      const timer = setTimeout(() => resolve(), timeoutMs);
-      child.once('exit', () => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
-  }
-
   /**
    * Dual-safety persistence: the captured log is written SYNCHRONOUSLY
-   * here - never only via a child 'exit' callback racing process.exit -
-   * and again on the child exit listener if the child dies early. Both
-   * paths are idempotent.
+   * here - after the child's 'close' event (process ended AND all stdio
+   * drained), never at the bare 'exit' - and again on the child 'close'
+   * listener if the child dies early. Both paths are idempotent.
    */
   let logsPersisted = false;
   function persistLogs() {
@@ -187,13 +219,17 @@ async function main() {
 
   async function stopServerAndPersistLogs(timeoutMs = 10_000) {
     server.kill();
-    await waitExit(server, timeoutMs); // let the child flush its final output
+    // STREAM-COMPLETE drain: 'close' fires only after exit AND full stdio
+    // delivery - the persisted server.log can no longer race the pipe
+    // backlog (the intermittent EMPTY log on success runs).
+    await waitChildClose(server, timeoutMs);
     persistLogs();
     logsPersisted = true;
   }
 
-  // fallback only: if the child dies on its own before the runner stops it
-  server.on('exit', () => {
+  // fallback only: if the child dies on its own before the runner stops it;
+  // 'close' (not 'exit') so even this best-effort path waits for the drain
+  server.on('close', () => {
     if (!logsPersisted) {
       try {
         persistLogs();
