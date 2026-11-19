@@ -8,6 +8,7 @@ import {
   PhotonGeocoder,
   StatiqClient,
   TripsStore,
+  type TripPlan,
   type RouteResult,
   type StatiqDetailsResponse,
   type StatiqMarkersResponse,
@@ -15,6 +16,7 @@ import {
 } from '@indeev/core';
 import {
   getStationHandler,
+  planToStructured,
   listSavedTripsHandler,
   planTripHandler,
   type McpToolDeps,
@@ -281,5 +283,21 @@ describe('list_saved_trips handler (shared store)', () => {
     expect(rawJson).not.toContain('rating');
     expect(rawJson).not.toContain('chargers');
     expect(rawJson).not.toContain('reliability');
+  });
+});
+
+describe('structured plan last-used dates', () => {
+  it.each([
+    [['31/10/2026', '01/11/2026'], '01/11/2026'],
+    [['31/12/2025', '01/01/2026'], '01/01/2026'],
+    [['unknown', '28/02/2026', '31/02/2026'], '28/02/2026'],
+    [[null, null], null],
+  ])('uses the same latest-date evidence as station summaries for %j', (dates, expected) => {
+    const plan = {
+      id: 'fixture', origin: {}, destination: {}, geometry: [], totals: {}, warnings: [],
+      stops: [{ station: { stationId: 42, name: 'Fixture', chargers: dates.map(lastUsedOn => ({ lastUsedOn })) } }],
+    } as unknown as TripPlan;
+    const result = planToStructured(plan) as { stops: Array<{ lastUsedOn: string | null }> };
+    expect(result.stops[0]!.lastUsedOn).toBe(expected);
   });
 });
