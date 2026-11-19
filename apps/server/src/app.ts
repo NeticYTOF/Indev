@@ -30,7 +30,7 @@ import {
   type TripPlan,
   type VehicleSelection,
 } from '@indeev/core';
-import { planTripDetailed, validateAiChoice, assembleAiPlan } from '@indeev/core';
+import { planTripDetailed, validateAiChoice, assembleAiPlan, type PlanBundle } from '@indeev/core';
 import { chatCompletion, parseChoiceJson, AiProviderError } from './ai-provider.js';
 
 export interface AppDeps {
@@ -56,8 +56,19 @@ const PLANNING_CODE_TO_STATUS: Record<string, number> = {
   not_determined: 422,
   no_route: 422,
   infeasible: 422,
-  budget: 504,
 };
+
+/**
+ * Fine-grained audit outcome for a planning error: code plus cause when we
+ * have one (e.g. not_determined:throttled, not_determined:budget-exhausted)
+ * so throttled runs stay distinguishable from coverage holes afterwards.
+ */
+function auditOutcomeFor(err: unknown): string {
+  if (err instanceof PlanningError) {
+    return err.cause ? `${err.code}:${err.cause}` : err.code;
+  }
+  return 'error';
+}
 
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
@@ -173,8 +184,7 @@ export function createApp(deps: AppDeps): Hono {
       deps.onRunComplete?.('ok', statiq.upstreamCallsMade());
       return c.json({ plan });
     } catch (err) {
-      const code = err instanceof PlanningError ? err.code : 'error';
-      deps.onRunComplete?.(code, statiq.upstreamCallsMade());
+      deps.onRunComplete?.(auditOutcomeFor(err), statiq.upstreamCallsMade());
       throw err;
     }
   });
@@ -232,17 +242,25 @@ export function createApp(deps: AppDeps): Hono {
       typeof b?.request === 'string' && b.request.trim() ? b.request.trim().slice(0, 2000) : undefined;
 
     const statiq = deps.createStatiq();
-    // 1) base plan + AI-safe candidates (no occupancy anywhere)
-    const bundle = await planTripDetailed(
-      { router: deps.router, statiq, vehicle: resolved.config, resolvedVehicle: resolved },
-      origin,
-      destination,
-      {
-        startSocPct: clampSoc(b?.startSocPct),
-        runBudget: SERVER_RUN_BUDGET,
-        includeCandidates: true,
-      },
-    );
+    // 1) base plan + AI-safe candidates (no occupancy anywhere).
+    //    Audit the base-plan run on failure too: a not_determined base plan
+    //    (throttle/budget/deadline) must surface in the run audit, not vanish.
+    let bundle: PlanBundle;
+    try {
+      bundle = await planTripDetailed(
+        { router: deps.router, statiq, vehicle: resolved.config, resolvedVehicle: resolved },
+        origin,
+        destination,
+        {
+          startSocPct: clampSoc(b?.startSocPct),
+          runBudget: SERVER_RUN_BUDGET,
+          includeCandidates: true,
+        },
+      );
+    } catch (err) {
+      deps.onRunComplete?.(auditOutcomeFor(err), statiq.upstreamCallsMade());
+      throw err;
+    }
     await deps.counters.addChargersSeen(bundle.plan.stationsSeen);
 
     // 2) ask the model to pick the stop sequence from the candidates
