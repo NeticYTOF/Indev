@@ -87,7 +87,8 @@ export type NotDeterminedCause =
   | 'budget-exhausted' // hard attempt cap reached before full coverage
   | 'deadline' // time budget reached; run cancelled
   | 'sample-throttled' // a corridor sample saw a 429 (fail-closed scan)
-  | 'scan-coverage'; // too many failed samples: coverage incomplete
+  | 'scan-coverage' // too many failed samples: coverage incomplete
+  | 'candidate-holes'; // per-station lookups failed: impossibility claims unsafe
 
 export class PlanningError extends Error {
   /** Machine-readable outcome for UI/MCP: not_determined is never a plan. */
@@ -447,6 +448,11 @@ async function planCore(
   //    decides pace (25/60s + 2s are conservative PROJECT SAFETY DEFAULTS,
   //    not a provider contract).
   const detailCache = new Map<number, Candidate>();
+  /** Candidates whose per-station lookup completed WITHOUT data (fetch
+   *  error or a 200 with a null station): UNKNOWN - unlike known-unusable
+   *  stations (all-faulted plugs), an unknown candidate could have been
+   *  usable, so impossibility claims must respect it (see selection). */
+  const unknownCandidates = new Set<number>();
   const fetchCandidate = async (c: CorridorCandidate): Promise<void> => {
     if (detailCache.has(c.stationId)) return;
     try {
@@ -458,6 +464,11 @@ async function planCore(
           view: toStationView(response.station, fetchedAt),
         });
         hooks.stats.candidatesDetailed = detailCache.size;
+      } else {
+        // 200 with a null station: data inconsistency - an unknown, not a
+        // verdict; leave a visible hole instead of passing silently
+        unknownCandidates.add(c.stationId);
+        warnings.push(`Skipping "${c.name}" (${c.stationId}): the station returned no data.`);
       }
     } catch (err) {
       // run-fatal stops (budget gate, first throttle/auth) and deadline
@@ -469,6 +480,7 @@ async function planCore(
       ) {
         throw err;
       }
+      unknownCandidates.add(c.stationId);
       warnings.push(`Skipping "${c.name}" (${c.stationId}): live details unavailable.`);
     }
     // processed counts every COMPLETED per-station lookup (fetched, empty
@@ -500,6 +512,18 @@ async function planCore(
 
   const destLegKm = Math.max(0, totalKm - cursor.chainageKm);
   if (usable.length === 0 && socAfterDriving(destLegKm, cursor.socPct, vehicle) < opts.minArrivalSocPct) {
+    // IMPOSSIBILITY CLAIMS NEED COMPLETE KNOWLEDGE: any UNKNOWN candidate
+    // (lookup failed / empty response) could have been the usable one, so
+    // 'no usable station' cannot be certified over holes.
+    if (unknownCandidates.size > 0) {
+      throw new PlanningError(
+        `Plan not determined: ${unknownCandidates.size} candidate charger lookups returned no data,` +
+          ` so "no usable station on this route" cannot be certified over incomplete coverage.` +
+          ' This is not a route verdict; no trip was saved. Retry.',
+        'not_determined',
+        'candidate-holes',
+      );
+    }
     throw new PlanningError(
       'No usable CCS2 DC charging stations were found along this route within the detour limit.',
       'no_route',
@@ -522,6 +546,26 @@ async function planCore(
     }
     let next = chooseNextStop(usable, cursor, opts, vehicle, warnings);
     if (!next) {
+      // IMPOSSIBILITY CLAIMS NEED COMPLETE KNOWLEDGE of the window being
+      // claimed: an UNKNOWN candidate inside (cursor, cursor+maxLeg] could
+      // have covered this gap, so 'no charger within N km' cannot be
+      // certified over a hole in exactly that window.
+      const unknownInWindow = corridor.candidates.filter(
+        (c) =>
+          unknownCandidates.has(c.stationId) &&
+          c.chainageKm > cursor.chainageKm + 1 &&
+          c.chainageKm <= cursor.chainageKm + opts.maxLegKm,
+      );
+      if (unknownInWindow.length > 0) {
+        throw new PlanningError(
+          `Plan not determined: ${unknownInWindow.length} candidate charger${unknownInWindow.length === 1 ? '' : 's'} within the ` +
+            `${opts.maxLegKm} km past the ${cursor.chainageKm.toFixed(0)} km mark returned no data,` +
+            ' so this highway gap cannot be certified impossible over incomplete coverage.' +
+            ' This is not a route verdict; no trip was saved. Retry.',
+          'not_determined',
+          'candidate-holes',
+        );
+      }
       throw new PlanningError(
         `No usable charger within ${opts.maxLegKm} km past the ${cursor.chainageKm.toFixed(0)} km mark. ` +
           `The highway gap exceeds the ${opts.maxLegKm} km safe running range.`,

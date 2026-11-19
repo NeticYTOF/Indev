@@ -544,3 +544,151 @@ describe('fail-closed scan integrity', () => {
     expect((err as PlanningError).cause).toBe('deadline');
   });
 });
+
+/**
+ * INCOMPLETE CANDIDATE DATA NEVER BECOMES AN IMPOSSIBILITY CLAIM.
+ *
+ * A per-station lookup that fails (transport error / non-2xx-shaped skip)
+ * or returns a 200 with a null station leaves an UNKNOWN: unlike a
+ * known-unusable station (all plugs faulted), an unknown candidate could
+ * have been usable. The final live endpoint audit observed exactly this
+ * shape (74 details 200, 1 details 400 -> skip-with-warning), so the
+ * boundary is reachable in production.
+ *
+ * Guard (scoped, policy-preserving):
+ * - a 'no usable station on this route' (no_route) claim requires ZERO
+ *   unknown candidates;
+ * - a 'nocharger within N km past X' (infeasible) claim requires zero
+ *   unknowns INSIDE the claimed window (cursor, cursor+maxLeg];
+ * unknowns elsewhere never poison a claim they cannot disprove (and a
+ * trip that needs no claim still plans, with visible warnings).
+ */
+describe('incomplete candidate data never becomes an impossibility claim', () => {
+  /** Wrap fakeStatiq so the given station's details lookup THROWS (unknown). */
+  function statiqWithFailingDetails(
+    specs: StationSpec[],
+    failingIds: number[],
+  ): StatiqClient {
+    const base = fakeStatiq(specs);
+    return {
+      ...base,
+      detailsWithMeta: async (id: number) => {
+        if (failingIds.includes(id)) {
+          throw new StatiqApiError(400, '/stations/details', '{"error":"bad request"}');
+        }
+        return (base as unknown as { detailsWithMeta: (id: number) => Promise<unknown> }).detailsWithMeta(id);
+      },
+    } as unknown as StatiqClient;
+  }
+
+  /** Wrap fakeStatiq so the given station's lookup returns a NULL station. */
+  function statiqWithNullDetails(
+    specs: StationSpec[],
+    nullIds: number[],
+  ): StatiqClient {
+    const base = fakeStatiq(specs);
+    return {
+      ...base,
+      detailsWithMeta: async (id: number) => {
+        if (nullIds.includes(id)) {
+          return {
+            response: { ok: true, live: true, retained: false, source: 'test', station: null },
+            fetchedAt: new Date(),
+          };
+        }
+        return (base as unknown as { detailsWithMeta: (id: number) => Promise<unknown> }).detailsWithMeta(id);
+      },
+    } as unknown as StatiqClient;
+  }
+
+  it('a window gap whose only candidate is UNKNOWN fails as not_determined, not infeasible', async () => {
+    // A@100 usable; B@350 unreachable-past (its lookup throws). From A the
+    // (100, 400] window contains exactly B - unknown - so "gap exceeds the
+    // safe running range" cannot be certified.
+    const specs: StationSpec[] = [
+      { id: 1, name: 'Statiq A', chainageKm: 100 },
+      { id: 2, name: 'Statiq B', chainageKm: 350 },
+    ];
+    const err = await planTrip(
+      { router: fakeRouter(700), statiq: statiqWithFailingDetails(specs, [2]) },
+      O,
+      D(700),
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(PlanningError);
+    expect((err as PlanningError).code).toBe('not_determined');
+    expect((err as PlanningError).cause).toBe('candidate-holes');
+    expect((err as PlanningError).message).toContain('cannot be certified impossible');
+    expect((err as PlanningError).message).toContain('1 candidate charger');
+  });
+
+  it('the SAME geometry with KNOWN-unusable (faulted) data stays an honest infeasible claim', async () => {
+    // Control for the policy distinction: unknown != known-unusable. B is
+    // fetched cleanly and its plugs are genuinely faulted - complete data,
+    // so the gap claim stands.
+    const specs: StationSpec[] = [
+      { id: 1, name: 'Statiq A', chainageKm: 100 },
+      {
+        id: 2,
+        name: 'Statiq B',
+        chainageKm: 350,
+        plugs: [{ status: 'faulted', available: false, note: 'Faulted' }],
+      },
+    ];
+    const err = await planTrip(
+      { router: fakeRouter(700), statiq: fakeStatiq(specs) },
+      O,
+      D(700),
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(PlanningError);
+    expect((err as PlanningError).code).toBe('infeasible');
+  });
+
+  it('a 200-with-null-station lookup is an unknown too (visible warning, no_route guarded)', async () => {
+    // the entire route has ONE candidate and its lookup returns no data:
+    // 'no usable station' cannot be certified; also proves the previously
+    // SILENT null-station path now leaves a visible warning
+    const specs: StationSpec[] = [{ id: 1, name: 'Vanishing Statiq', chainageKm: 100 }];
+    const err = await planTrip(
+      { router: fakeRouter(700), statiq: statiqWithNullDetails(specs, [1]) },
+      O,
+      D(700),
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(PlanningError);
+    expect((err as PlanningError).code).toBe('not_determined');
+    expect((err as PlanningError).cause).toBe('candidate-holes');
+    expect((err as PlanningError).message).toContain('cannot be certified');
+  });
+
+  it('no usable station IS claimable when every lookup completed (control)', async () => {
+    const specs: StationSpec[] = [
+      {
+        id: 1,
+        name: 'All-Faulted Statiq',
+        chainageKm: 100,
+        plugs: [{ status: 'faulted', available: false, note: 'Faulted' }],
+      },
+    ];
+    const err = await planTrip(
+      { router: fakeRouter(700), statiq: fakeStatiq(specs) },
+      O,
+      D(700),
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(PlanningError);
+    expect((err as PlanningError).code).toBe('no_route');
+  });
+
+  it('an unknown candidate on a trip that makes NO claims never poisons the plan', async () => {
+    // 250 km from 100% SoC needs no stops, so the greedy selection never
+    // runs and no impossibility claim is ever made; the unknown candidate
+    // (its lookup throws) only leaves a visible hole in the warnings
+    const specs: StationSpec[] = [{ id: 1, name: 'Unreachable Statiq', chainageKm: 125 }];
+    const plan = await planTrip(
+      { router: fakeRouter(250), statiq: statiqWithFailingDetails(specs, [1]) },
+      O,
+      D(250),
+    );
+    expect(plan.status).toBe('ok');
+    expect(plan.stops).toHaveLength(0);
+    expect(plan.warnings.some((w) => w.includes('live details unavailable'))).toBe(true);
+  });
+});
