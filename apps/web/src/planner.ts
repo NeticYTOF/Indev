@@ -87,6 +87,8 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
   form.appendChild(routeFields);
 
   swap.addEventListener('click', () => {
+    originField.invalidateSuggestions();
+    destField.invalidateSuggestions();
     const tmp = origin.hit;
     origin.hit = destination.hit;
     destination.hit = tmp;
@@ -497,7 +499,7 @@ function makeSearchField(
   placeholder: string,
   field: 'origin' | 'destination',
   onPicked: (hit: GeocodeHit | null) => void,
-): { wrap: HTMLElement; input: HTMLInputElement } {
+): { wrap: HTMLElement; input: HTMLInputElement; invalidateSuggestions: () => void } {
   const letter = field === 'origin' ? 'A' : 'B';
   const wrap = el(`
     <div class="search-field" data-field="${field}">
@@ -520,15 +522,20 @@ function makeSearchField(
   // geocode-session.test.ts for the deterministic ordering regressions.
   const session = new GeocodeSession();
 
-  input.addEventListener('input', () => {
-    onPicked(null);
-    session.invalidate(); // any in-flight response is now stale
-    // Old choices belong to the previous query, not the text now shown.
-    // Clear immediately, including the debounce and network wait window.
+  // Swap changes the field without emitting input. Cancel both pending
+  // debounce and response ownership without touching its picked coordinates.
+  const invalidateSuggestions = (): void => {
+    session.invalidate();
+    if (debounce) clearTimeout(debounce);
+    debounce = null;
     list.replaceChildren();
     list.classList.add('hidden');
     activeIndex = -1;
-    if (debounce) clearTimeout(debounce);
+  };
+
+  input.addEventListener('input', () => {
+    onPicked(null);
+    invalidateSuggestions(); // old query choices and responses are stale
     const q = input.value.trim();
     if (q.length < 2) {
       list.classList.add('hidden');
@@ -620,7 +627,7 @@ function makeSearchField(
     }
   });
 
-  return { wrap, input };
+  return { wrap, input, invalidateSuggestions };
 }
 
 function showError(box: HTMLElement, message: string): void {
