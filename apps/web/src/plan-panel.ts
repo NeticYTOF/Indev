@@ -78,9 +78,6 @@ export function renderPlanPanel(
   results.appendChild(actions);
 
   wirePlanActions(actions as HTMLElement, plan);
-  results.querySelectorAll<HTMLElement>('[data-refresh]').forEach((btn) => {
-    btn.addEventListener('click', () => void revalidateStop(btn, plan));
-  });
 
   // ---- stops timeline ----
   const stopsWrap = el('<div class="stops"></div>');
@@ -91,6 +88,10 @@ export function renderPlanPanel(
     stopsWrap.appendChild(renderStopCard(stop, i));
   });
   results.appendChild(stopsWrap);
+  // Bind after the cards exist: before append, this query matched nothing.
+  results.querySelectorAll<HTMLElement>('[data-refresh]').forEach((btn) => {
+    btn.addEventListener('click', () => void revalidateStop(btn, plan));
+  });
 }
 
 function wirePlanActions(actions: HTMLElement, plan: TripPlan): void {
