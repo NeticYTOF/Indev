@@ -93,12 +93,16 @@ export interface PlanVehicleMeta {
   realWorldRangeKm: number | null;
 }
 
+/** Scan integrity of the plan: degraded plans carry visible holes. */
+export type PlanStatus = 'ok' | 'degraded';
+
 export interface TripPlan {
   id: string;
   createdAt: string;
   origin: PlaceRef;
   destination: PlaceRef;
   vehicle: PlanVehicleMeta;
+  status: PlanStatus;
   routeDistanceKm: number;
   routeDurationMin: number;
   geometry: Coords[];
@@ -109,8 +113,17 @@ export interface TripPlan {
   warnings: string[];
 }
 
+export interface PlanRunBudget {
+  /** Overall wall-clock budget for the entire planning run, ms. */
+  deadlineMs: number;
+  /** Hard cap on upstream (Statiq) calls in this run (marker + details). */
+  maxUpstreamCalls: number;
+}
+
 export interface PlanOptions {
   startSocPct?: number;
+  /** Bounded-run controls: deadline + request budget with cancellation. */
+  runBudget?: PlanRunBudget;
   /** Minimum SoC the plan promises on arrival anywhere. */
   minArrivalSocPct?: number;
   /** SoC ceiling per stop (past this the DC curve tapers hard). */
@@ -144,6 +157,10 @@ export const DEFAULT_PLAN_OPTIONS: Required<PlanOptions> = {
   fallbackDetourKm: 5,
   brandClusterKm: 15,
   avgSpeedKmh: 62,
+  runBudget: {
+    deadlineMs: 5 * 60_000,
+    maxUpstreamCalls: 220,
+  },
 };
 /*
  * Only battery size (75 kWh) and the 300 km safe running range are

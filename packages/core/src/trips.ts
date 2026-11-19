@@ -38,6 +38,8 @@ export interface SavedTrip {
   origin: { label: string; lat: number; lon: number };
   destination: { label: string; lat: number; lon: number };
   vehicle: TripPlan['vehicle'];
+  /** Scan integrity at planning time (degraded plans show visible holes). */
+  status: TripPlan['status'];
   routeDistanceKm: number;
   routeDurationMin: number;
   /** Route geometry: [lat, lon] pairs, kept so the map can redraw the path. */
@@ -55,6 +57,7 @@ export function toSavedTrip(plan: TripPlan, name?: string): SavedTrip {
     origin: plan.origin,
     destination: plan.destination,
     vehicle: plan.vehicle,
+    status: plan.status,
     routeDistanceKm: plan.routeDistanceKm,
     routeDurationMin: plan.routeDurationMin,
     geometry: plan.geometry.map((p) => [p.lat, p.lon] as [number, number]),

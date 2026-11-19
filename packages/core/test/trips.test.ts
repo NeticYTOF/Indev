@@ -24,6 +24,7 @@ function fakePlan(overrides: Partial<TripPlan> = {}): TripPlan {
     createdAt: '2026-11-19T10:00:00.000Z',
     origin: { label: 'Delhi', lat: 28.6, lon: 77.2 },
     destination: { label: 'Jaipur', lat: 26.9, lon: 75.8 },
+    status: 'ok',
     vehicle: {
       label: 'Tata Harrier EV (75 kWh)',
       catalogId: 'tata-harrier-ev-75',

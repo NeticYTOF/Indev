@@ -16,15 +16,17 @@ import { cumulativeKm } from './geo.js';
 import { scanCorridor, type CorridorCandidate } from './corridor.js';
 import { classifyPlug, summarizeCcs2, type Ccs2Summary } from './plugs.js';
 import { detectBrand } from './brands.js';
-import { pMap } from './utils.js';
+import { pMap, UpstreamBudgetError } from './utils.js';
 import { chargeTimeMin, kwhForSocDelta, socAfterDriving, socRequiredForArrival, HARIER_EV_75, type VehicleConfig } from './vehicle.js';
-import type { StatiqClient } from './statiq.js';
 import type { OsrmRouter } from './router.js';
+import { isAbortLike, type StatiqClient } from './statiq.js';
 import type { StatiqStationDetail } from './types.js';
 import { resolveVehicle, type ResolvedVehicle } from './vehicle-catalog.js';
 import {
   DEFAULT_PLAN_OPTIONS,
   type PlanOptions,
+  type PlanRunBudget,
+  type PlanStatus,
   type PlanStop,
   type PlanTotals,
   type PlanVehicleMeta,
@@ -62,7 +64,15 @@ interface ChosenStop {
 }
 
 export class PlanningError extends Error {
-  constructor(message: string) {
+  /** Machine-readable outcome for UI/MCP: not_determined is never a plan. */
+  constructor(
+    message: string,
+    readonly code:
+      | 'not_determined'
+      | 'no_route'
+      | 'budget'
+      | 'infeasible' = 'infeasible',
+  ) {
     super(message);
     this.name = 'PlanningError';
   }
@@ -81,6 +91,11 @@ function legKmBetween(prev: Cursor, chainageKm: number, detourKm: number): numbe
   return chainageKm - prev.chainageKm + prev.detourKm + detourKm;
 }
 
+export const DEFAULT_RUN_BUDGET: PlanRunBudget = {
+  deadlineMs: 5 * 60_000,
+  maxUpstreamCalls: 220,
+};
+
 export async function planTrip(
   deps: PlannerDeps,
   origin: { label: string; lat: number; lon: number },
@@ -98,29 +113,135 @@ export async function planTrip(
     realWorldRangeKm: resolvedVehicle.realWorldRangeKm,
   };
 
+  // Bounded run: overall deadline + upstream-call budget, cancelled cleanly.
+  const budget = opts.runBudget ?? DEFAULT_RUN_BUDGET;
+  const deadlineController = new AbortController();
+  const deadlineTimer = setTimeout(
+    () => deadlineController.abort(),
+    Math.max(50, budget.deadlineMs),
+  );
+  let upstreamCalls = 0;
+  const countCall = () => {
+    if (++upstreamCalls > budget.maxUpstreamCalls) {
+      throw new UpstreamBudgetError(budget.maxUpstreamCalls);
+    }
+  };
+  /** Guard wrapper: counts calls, enforces budget, and threads the deadline. */
+  const guardedStatiq = {
+    markers: (lat: number, lon: number) => {
+      countCall();
+      return deps.statiq.markers(lat, lon, deadlineController.signal);
+    },
+    detailsWithMeta: (stationId: number) => {
+      countCall();
+      return deps.statiq.detailsWithMeta(stationId, deadlineController.signal);
+    },
+  };
+
+  try {
+  const plan = await planCore(deps, origin, destination, opts, vehicle, vehicleMeta, {
+    countCall,
+    signal: deadlineController.signal,
+  });
+  return plan;
+  } catch (err) {
+  if (err instanceof PlanningError) throw err;
+  if (err instanceof UpstreamBudgetError) {
+    throw new PlanningError(
+      `Planning stopped: the run exceeded its budget of ${budget.maxUpstreamCalls} upstream calls. ` +
+        'No plan was produced; please retry.',
+      'budget',
+    );
+  }
+  if (isAbortLike(err)) {
+    throw new PlanningError(
+      'Planning stopped: the run exceeded its time budget and was cancelled. ' +
+        'No plan was produced; please retry.',
+      'budget',
+    );
+  }
+  throw err;
+  } finally {
+  // Cancellation cleanup: never let a generous deadline hold the run.
+  clearTimeout(deadlineTimer);
+  // If the run is still in flight anywhere (exception paths), cancel it.
+  deadlineController.abort();
+  }
+}
+
+/** Inner planning core: everything that runs inside the bounded budget. */
+interface GuardHooks {
+  countCall: () => void;
+  signal: AbortSignal;
+}
+
+async function planCore(
+  deps: PlannerDeps,
+  origin: { label: string; lat: number; lon: number },
+  destination: { label: string; lat: number; lon: number },
+  opts: Required<PlanOptions>,
+  vehicle: VehicleConfig,
+  vehicleMeta: PlanVehicleMeta,
+  hooks: GuardHooks,
+): Promise<TripPlan> {
+  /** Guard wrapper: counts calls, enforces budget, and threads the deadline. */
+  const guardedStatiq = {
+    markers: (lat: number, lon: number) => {
+      hooks.countCall();
+      return deps.statiq.markers(lat, lon, hooks.signal);
+    },
+    detailsWithMeta: (stationId: number) => {
+      hooks.countCall();
+      return deps.statiq.detailsWithMeta(stationId, hooks.signal);
+    },
+  };
+
   // 1) Fastest route (free OSRM).
   const route = await deps.router.route(origin, destination);
   const cum = cumulativeKm(route.geometry);
   const totalKm = cum[cum.length - 1] as number;
 
   // 2) Live corridor scan for candidate stations.
-  const corridor = await scanCorridor(deps.statiq, route.geometry, {
+  const corridor = await scanCorridor(guardedStatiq, route.geometry, {
     maxOffRouteKm: opts.fallbackDetourKm,
+    signal: hooks.signal,
   });
   const warnings: string[] = [...corridor.warnings];
 
+  // FAIL CLOSED: persistent throttling or a scan with too many holes can
+  // never be presented as a verified plan.
+  const throttled = corridor.failedSamples.filter((f) => f.cause === 'throttled').length;
+  const failedFrac =
+    corridor.samplesAttempted > 0 ? corridor.failedSamples.length / corridor.samplesAttempted : 0;
+  if (throttled > 0) {
+    throw new PlanningError(
+      'Plan not determined: the charger API is throttling requests (429). ' +
+        'Nothing here is verified - please retry in a minute. No trip was saved.',
+      'not_determined',
+    );
+  }
+  if (failedFrac > 0.05) {
+    throw new PlanningError(
+      `Plan not determined: ${corridor.failedSamples.length} of ${corridor.samplesAttempted} route samples ` +
+        'could not be scanned. Charger coverage is incomplete; refusing to present this as a verified plan.',
+      'not_determined',
+    );
+  }
+
   // 3) Live details + CCS2 DC classification per candidate.
   const resolved: Candidate[] = [];
-  await pMap(corridor.candidates, 6, async (c) => {
+  await pMap(corridor.candidates, 3, async (c) => {
     try {
-      const { response, fetchedAt } = await deps.statiq.detailsWithMeta(c.stationId);
+      const { response, fetchedAt } = await guardedStatiq.detailsWithMeta(c.stationId);
       if (!response.station) return;
       resolved.push({
         candidate: c,
         summary: summarizeCcs2(response.station),
         view: toStationView(response.station, fetchedAt),
       });
-    } catch {
+    } catch (err) {
+      // deadline/budget cancellations unwind the run; they are not skips
+      if (isAbortLike(err) || (err instanceof PlanningError && err.code === 'budget')) throw err;
       warnings.push(`Skipping "${c.name}" (${c.stationId}): live details unavailable.`);
     }
   });
@@ -141,6 +262,7 @@ export async function planTrip(
   if (usable.length === 0 && socAfterDriving(destLegKm, cursor.socPct, vehicle) < opts.minArrivalSocPct) {
     throw new PlanningError(
       'No usable CCS2 DC charging stations were found along this route within the detour limit.',
+      'no_route',
     );
   }
 
@@ -153,13 +275,17 @@ export async function planTrip(
     ) < opts.minArrivalSocPct
   ) {
     if (++guard > 60) {
-      throw new PlanningError('Planner exceeded its stop budget; is the route chargeable at all?');
+      throw new PlanningError(
+        'Planner exceeded its stop budget; is the route chargeable at all?',
+        'infeasible',
+      );
     }
     const next = chooseNextStop(usable, cursor, opts, vehicle, warnings);
     if (!next) {
       throw new PlanningError(
         `No usable charger within ${opts.maxLegKm} km past the ${cursor.chainageKm.toFixed(0)} km mark. ` +
           `The highway gap exceeds the ${opts.maxLegKm} km safe running range.`,
+        'infeasible',
       );
     }
     chosen.push(next);
@@ -175,12 +301,14 @@ export async function planTrip(
   const stops = finalize(chosen, totalKm, route, opts, vehicle, warnings);
   const totals = computeTotals(stops, totalKm, route, opts, vehicle);
 
+  const status: PlanStatus = corridor.failedSamples.length > 0 ? 'degraded' : 'ok';
   return {
     id: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
     origin,
     destination,
     vehicle: vehicleMeta,
+    status,
     routeDistanceKm: route.distanceKm,
     routeDurationMin: route.durationMin,
     geometry: route.geometry,

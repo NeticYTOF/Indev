@@ -7,11 +7,22 @@
  * perpendicular detour distance.
  *
  * Nothing is persisted: candidates live only for the current planning run.
+ *
+ * FAIL-CLOSED INTEGRITY: every failed sample is recorded with its cause.
+ * Persistent throttling (429) never produces a confident-looking result:
+ * the planner turns those into a "plan not determined" outcome. Abort-like
+ * errors (deadline/budget cancellation) are rethrown immediately, never
+ * swallowed as "skipped samples".
  */
 import { cumulativeKm, pointAtChainage, projectOntoPolyline, type Coords } from './geo.js';
-import { pMap } from './utils.js';
-import type { StatiqClient } from './statiq.js';
-import type { StatiqMarker } from './types.js';
+import { pMap, UpstreamBudgetError } from './utils.js';
+import { isAbortLike, StatiqApiError } from './statiq.js';
+import type { StatiqMarker, StatiqMarkersResponse } from './types.js';
+
+/** The marker-fetching surface the corridor needs (for guards in tests). */
+export interface MarkerSource {
+  markers(lat: number, lon: number, signal?: AbortSignal): Promise<StatiqMarkersResponse>;
+}
 
 export interface CorridorCandidate {
   stationId: number;
@@ -32,32 +43,59 @@ export interface CorridorOptions {
   maxOffRouteKm?: number;
   /** Concurrent marker requests. */
   concurrency?: number;
+  /** Cancels the scan (run deadline / budget). */
+  signal?: AbortSignal;
+}
+
+export type SampleFailCause = 'throttled' | 'error';
+
+export interface SampleFailure {
+  chainageKm: number;
+  cause: SampleFailCause;
 }
 
 export interface CorridorResult {
   candidates: CorridorCandidate[];
-  /** Marker calls made (for diagnostics). */
+  /** Marker calls that succeeded. */
   samples: number;
+  /** Marker calls attempted. */
+  samplesAttempted: number;
   /** Unique stations seen in this run (before off-route filtering). */
   stationsSeen: number;
-  /** Non-fatal problems: skipped samples leave partial blind spots. */
+  /** Per-sample failures with causes (throttling fails CLOSED upstream). */
+  failedSamples: SampleFailure[];
+  /** Human-readable warnings for non-fatal holes. */
   warnings: string[];
 }
 
-const DEFAULTS: Required<CorridorOptions> = {
+interface ResolvedCorridorOptions {
+  stepKm: number;
+  maxOffRouteKm: number;
+  concurrency: number;
+  signal?: AbortSignal;
+}
+
+const DEFAULTS: ResolvedCorridorOptions = {
   stepKm: 12,
   maxOffRouteKm: 5,
   concurrency: 2,
 };
 
 export async function scanCorridor(
-  statiq: StatiqClient,
+  statiq: MarkerSource,
   routeGeometry: readonly Coords[],
   opts: CorridorOptions = {},
 ): Promise<CorridorResult> {
-  const { stepKm, maxOffRouteKm, concurrency } = { ...DEFAULTS, ...opts };
+  const { stepKm, maxOffRouteKm, concurrency, signal } = { ...DEFAULTS, ...opts } as ResolvedCorridorOptions;
   if (routeGeometry.length < 2) {
-    return { candidates: [], samples: 0, stationsSeen: 0, warnings: [] };
+    return {
+      candidates: [],
+      samples: 0,
+      samplesAttempted: 0,
+      stationsSeen: 0,
+      failedSamples: [],
+      warnings: [],
+    };
   }
   const cum = cumulativeKm(routeGeometry);
   const totalKm = cum[cum.length - 1] as number;
@@ -72,20 +110,30 @@ export async function scanCorridor(
   sampleChainages.push(totalKm);
 
   const seen = new Map<number, StatiqMarker>();
+  const failedSamples: SampleFailure[] = [];
   const warnings: string[] = [];
-  let skipped = 0;
+  let okSamples = 0;
+
   await pMap(samplePoints, concurrency, async (p, i) => {
     try {
-      const res = await statiq.markers(p.lat, p.lon);
+      const res = await statiq.markers(p.lat, p.lon, signal);
+      okSamples++;
       for (const s of res.stations ?? []) {
         if (!seen.has(s.stationId)) seen.set(s.stationId, s);
       }
-    } catch {
+    } catch (err) {
+      // Cancellation and budget control-flow unwind the whole run; they
+      // must never masquerade as skipped samples.
+      if (isAbortLike(err) || err instanceof UpstreamBudgetError) throw err;
+      const cause: SampleFailCause =
+        err instanceof StatiqApiError && (err.status === 429 || err.status === 400 && err.body.includes('wait'))
+          ? 'throttled'
+          : 'error';
+      failedSamples.push({ chainageKm: sampleChainages[i] ?? 0, cause });
       // A failed sample leaves a partial blind spot (neighbouring samples
-      // overlap ~half of it): carry on, but surface the hole honestly.
-      skipped++;
+      // overlap ~half of it): carry on for now, but record the hole honestly.
       warnings.push(
-        `Charger scan skipped the sample near ${(sampleChainages[i] ?? 0).toFixed(0)} km (upstream unavailable); coverage there may be partial.`,
+        `Charger scan could not read the sample near ${(sampleChainages[i] ?? 0).toFixed(0)} km (${cause === 'throttled' ? 'the charger API is throttling requests' : 'upstream unavailable'}); coverage there may be partial.`,
       );
     }
   });
@@ -106,5 +154,12 @@ export async function scanCorridor(
     }
   }
   candidates.sort((a, b) => a.chainageKm - b.chainageKm);
-  return { candidates, samples: samplePoints.length - skipped, stationsSeen: seen.size, warnings };
+  return {
+    candidates,
+    samples: okSamples,
+    samplesAttempted: samplePoints.length,
+    stationsSeen: seen.size,
+    failedSamples,
+    warnings,
+  };
 }

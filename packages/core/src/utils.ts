@@ -1,5 +1,17 @@
 /** Small async utilities shared by core modules. */
 
+/**
+ * Control-flow error: the planning run exceeded its upstream-call budget.
+ * Corridors rethrow it (never treat it as a failed sample); the planner
+ * converts it to PlanningError('budget').
+ */
+export class UpstreamBudgetError extends Error {
+  constructor(maxCalls: number) {
+    super(`Run exceeded its budget of ${maxCalls} upstream calls`);
+    this.name = 'UpstreamBudgetError';
+  }
+}
+
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

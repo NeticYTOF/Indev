@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { planTrip, PlanningError } from '../src/planner.js';
 import type { OsrmRouter, RouteResult } from '../src/router.js';
 import type { StatiqClient } from '../src/statiq.js';
-import type { StatiqMarkersResponse, StatiqDetailsResponse, StatiqStationDetail, StatiqCharger } from '../src/types.js';
+import { StatiqApiError } from '../src/statiq.js';
+import type { Coords } from '../src/geo.js';
+import type { StatiqDetailsResponse, StatiqMarkersResponse, StatiqStationDetail, StatiqCharger } from '../src/types.js';
 
 const KM_PER_DEG = 111.32;
 
@@ -353,5 +355,82 @@ describe('planTrip invariants (randomized worlds)', () => {
       // fewest-stops sanity: with 300 km legs, stop count is bounded
       expect(plan.stops.length).toBeLessThanOrEqual(Math.ceil(totalKm / 250) + 1);
     }
+  });
+});
+
+describe('fail-closed scan integrity', () => {
+  const stations: StationSpec[] = Array.from({ length: 14 }, (_, i) => ({
+    id: 500 + i,
+    name: `Statiq FC ${i}`,
+    chainageKm: 50 * (i + 1),
+  }));
+
+  it('any 429-driven sample failure fails CLOSED as not_determined', async () => {
+    const base = fakeStatiq(stations);
+    const throttled = {
+      ...base,
+      markers: async (lat: number): Promise<StatiqMarkersResponse> => {
+        // sample at ~km 180 throws 429; everything else succeeds
+        const centerKm = lat * KM_PER_DEG;
+        if (Math.abs(centerKm - 180) < 6) {
+          throw new StatiqApiError(429, '/stations/markers', '{"error":"Please wait a minute."}');
+        }
+        return base.markers(lat, 0);
+      },
+    } as unknown as StatiqClient;
+    const err = await planTrip({ router: fakeRouter(700), statiq: throttled }, O, D(700)).catch((e) => e);
+    expect(err).toBeInstanceOf(PlanningError);
+    expect((err as PlanningError).code). not.toBe('infeasible');
+    expect((err as PlanningError).code).toBe('not_determined');
+  });
+
+  it('isolated non-throttle failures degrade visibly instead of hiding', async () => {
+    const base = fakeStatiq(stations);
+    const flaky = {
+      ...base,
+      markers: async (lat: number): Promise<StatiqMarkersResponse> => {
+        const centerKm = lat * KM_PER_DEG;
+        if (Math.abs(centerKm - 180) < 6) {
+          throw new StatiqApiError(500, '/stations/markers', 'boom');
+        }
+        return base.markers(lat, 0);
+      },
+    } as unknown as StatiqClient;
+    const plan = await planTrip({ router: fakeRouter(700), statiq: flaky }, O, D(700));
+    expect(plan.status).toBe('degraded');
+    expect(plan.warnings.some((w) => w.includes('partial'))).toBe(true);
+  });
+
+  it('exceeding the upstream-call budget stops the run cleanly', async () => {
+    // build a viable world, then strangle the budget below what it needs
+    const err = await planTrip(
+      { router: fakeRouter(700), statiq: fakeStatiq(stations) },
+      O,
+      D(700),
+      { runBudget: { deadlineMs: 60_000, maxUpstreamCalls: 3 } },
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(PlanningError);
+    expect((err as PlanningError).code).toBe('budget');
+  });
+
+  it('deadline expiry cancels the run and reports budget failure', async () => {
+    // slow fake: every upstream call takes 30ms real time; deadline 40ms
+    const base = fakeStatiq(stations);
+    const slow = {
+      ...base,
+      markers: async (lat: number, lon: number, signal?: AbortSignal): Promise<StatiqMarkersResponse> => {
+        await new Promise((r) => setTimeout(r, 30));
+        if (signal?.aborted) throw new Error('This operation was aborted');
+        return base.markers(lat, lon);
+      },
+    } as unknown as StatiqClient;
+    const err = await planTrip(
+      { router: fakeRouter(700), statiq: slow },
+      O,
+      D(700),
+      { runBudget: { deadlineMs: 40, maxUpstreamCalls: 1_000 } },
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(PlanningError);
+    expect((err as PlanningError).code).toBe('budget');
   });
 });
