@@ -24,10 +24,65 @@ far for a brand, but it *consults* every fetched candidate.
 
 ### Examples
 
-| Route | Markers | Details (typical corridor) | Fits the 200-attempt budget? |
+| Route | Markers | Details (OBSERVED, a246950 markers-only discovery) | Fits the 200-call / 4-min budget? |
 |---|---|---|---|
-| Delhi → Jaipur (~284 km) | ~25 | ~10–40 | Yes, with headroom |
-| Mumbai → Prayagraj (~1432 km) | ~121 | ~40–80 | **No** — honest `not_determined: budget-exhausted` is the expected outcome until the operator raises the cap |
+| Delhi → Jaipur (~284 km) | 25 | **396 unique corridor candidates** (155 primary + 241 fallback) | **No** — fresh full coverage needs ≥ 421 calls (25 + 396, before retries), and at sustained pacing ~17.4 min; the honest outcome is `not_determined: budget-exhausted` / `deadline` |
+| Mumbai → Prayagraj (~1432 km) | ~121 | unobserved (fresh-every-run; expect at least proportionally more) | **No** |
+
+## Grounded discovery (Delhi → Jaipur, Linux markers-only run at a246950)
+
+25/25 marker calls returned HTTP 200 in 48.674s, discovering 640 unique
+listings → **396 corridor candidates** (155 primary + 241 fallback). Fresh
+FULL coverage of this route therefore needs **≥ 421 actual calls before any
+retry** (25 samples + 396 unique per-station lookups). That 396 is the
+observed N for THIS corridor - never permission to freeze or stale-reuse
+coverage: the every-candidate, live-only rule stands, and every run fetches
+fresh. Under the existing 25-per-~62s rolling window + 2s start gap, the
+421st dispatch arrives earliest at ~17 min 12.8 s - the current server
+budget (200 calls / 4 min) and the standalone default (220 / 5 min) cannot
+complete this work.
+
+## Advisory work estimates (reporting only - never gates)
+
+`work-estimate.ts` derives the remaining-work figures the planner appends to
+`not_determined` evidence (`rough estimate: ~N more upstream calls remain…`).
+Semantics, explicitly:
+
+- **ADVISORY REPORTING ONLY.** Nothing gates execution on them; the owner
+  policy is every-candidate-checked, and runs proceed until the budget /
+  deadline is hit. There is no early refusal, no derived cause, no dispatch
+  skipping.
+- The wall figure is a **rough sustained-pacing estimate, not a strict
+  finite-run bound**: the first dispatch is near-free and rolling-window
+  credits shift the true schedule either way.
+- Assumptions: one call per planned sample / unique candidate, zero retries
+  (the client default is 2 and only adds), latency/backoff excluded.
+- Model: `max(minCallGapMs, WINDOW_RETENTION_MS / maxCallsPerMinute)` =
+  max(2s, 62s/25) = **2.48 s/call**, shared with the limiter via the
+  exported `WINDOW_RETENTION_MS` so the two can never drift.
+
+## Explicit budget overrides (available - NOT enabled)
+
+A future coordinated acceptance can explicitly choose a bounded envelope
+after fresh N is known, via launch env (validated at boot, loud on error,
+never silently clamped):
+
+- `INDEV_PLAN_MAX_CALLS` (integer 1..10,000)
+- `INDEV_PLAN_DEADLINE_MS` (integer 10s..6h)
+- `INDEV_PLAN_RETRIES` (integer 0..3; zero-retry gives exact call accounting)
+
+Absent = the `SERVER_RUN_BUDGET` defaults, byte-identical to before. The
+acceptance runner's fetch wall adapts only when the deadline override is
+present (deadline + 30s slack). `/api/health` reports the effective envelope
+for introspection. Nothing is enabled by this mechanism alone - an owner-
+approved run must supply the values explicitly.
+
+**Preserved policy positions** (unchanged by the estimator work): a run
+whose call count fits but whose wall does not still ATTEMPTS until the
+authoritative deadline abort and reports `not_determined: deadline`, with
+the advisory estimate explaining the mismatch in the evidence; raising the
+envelope for a specific route is an explicit operator decision, never
+automatic.
 
 ## What the run budget counts
 
