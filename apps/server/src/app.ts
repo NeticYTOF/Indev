@@ -151,6 +151,8 @@ export function createApp(deps: AppDeps): Hono {
     if (deps.mock) {
       const plan = mockPlan(origin, destination, resolved);
       await deps.counters.addChargersSeen(plan.stationsSeen);
+      // synthetic plans make zero upstream calls; the run audit stays honest
+      deps.onRunComplete?.('ok', 0);
       return c.json({ plan });
     }
 
@@ -209,6 +211,7 @@ export function createApp(deps: AppDeps): Hono {
     if (deps.mock) {
       const plan = mockPlan(origin, destination, resolved);
       await deps.counters.addChargersSeen(plan.stationsSeen);
+      deps.onRunComplete?.('ok', 0);
       return c.json({
         plan,
         ai: {

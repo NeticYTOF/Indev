@@ -35,6 +35,7 @@ const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const runDir = join(ROOT, `.tmp-live-run-${stamp}`);
 mkdirSync(runDir, { recursive: true });
 const serverLogPath = join(runDir, 'server.log');
+const serverErrPath = join(runDir, 'server-stderr.log');
 const planPath = join(runDir, 'plan.json');
 const metaPath = join(runDir, 'meta.json');
 
@@ -57,12 +58,61 @@ const server = spawn(
 );
 
 let serverOut = '';
+let serverErr = '';
 server.stdout.on('data', (d) => {
   const s = String(d);
   serverOut += s;
   process.stdout.write(`[server] ${s}`);
 });
-server.stderr.on('data', (d) => process.stderr.write(`[server] ${d}`));
+server.stderr.on('data', (d) => {
+  const s = String(d);
+  serverErr += s;
+  process.stderr.write(`[server] ${s}`);
+});
+
+/** Bounded wait for child exit (resolves even if the child hangs). */
+function waitExit(child, timeoutMs) {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve();
+    const timer = setTimeout(() => resolve(), timeoutMs);
+    child.once('exit', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+/**
+ * Dual-safety persistence (empirically required): the captured log is
+ * written SYNCHRONOUSLY here - never via a child 'exit' callback racing
+ * process.exit - and again on the child exit listener if the child dies
+ * early. Both paths are idempotent.
+ */
+let logsPersisted = false;
+function persistLogs() {
+  writeFileSync(serverLogPath, serverOut);
+  writeFileSync(serverErrPath, serverErr);
+}
+
+function stopServerAndPersistLogs(timeoutMs = 10_000) {
+  return (async () => {
+    server.kill();
+    await waitExit(server, timeoutMs); // let the child flush its final output
+    persistLogs();
+    logsPersisted = true;
+  })();
+}
+
+// fallback only: if the child dies on its own before the runner stops it
+server.on('exit', () => {
+  if (!logsPersisted) {
+    try {
+      persistLogs();
+    } catch {
+    /* best effort */
+    }
+  }
+});
 
 /** ONE request; explicit http status + exit code; no retries ever. */
 async function runOnce() {
@@ -84,10 +134,10 @@ async function runOnce() {
 
 (async () => {
   let outcome;
+  let health = null;
   try {
     // wait for health (bounded)
     const deadline = Date.now() + 30_000;
-    let health = null;
     while (Date.now() < deadline) {
       try {
         const r = await fetch(`http://localhost:${PORT}/api/health`, { signal: AbortSignal.timeout(2000) });
@@ -101,7 +151,6 @@ async function runOnce() {
       await new Promise((r2) => setTimeout(r2, 500));
     }
     if (!health) throw new Error('server did not become healthy within 30s');
-    writeFileSync(metaPath, JSON.stringify({ mode: MOCK ? 'mock' : 'live', health, started: new Date().toISOString() }, null, 2));
     console.log(`[live-run] server healthy; mock=${health.mock} (expected ${MOCK})`);
 
     if (health.mock !== MOCK) {
@@ -141,27 +190,34 @@ async function runOnce() {
       error: err instanceof Error ? err.message : String(err),
     };
   } finally {
-    server.kill();
+    // Durability fix: kill, await the child's exit (bounded) so its final
+    // output flushes, THEN persist the captured log - before any RESULT
+    // line or process.exit. Success, failure and signals all flow here.
+    await stopServerAndPersistLogs(10_000);
   }
-  writeFileSync(metaPath, `${JSON.stringify({ ...outcome, serverLog: 'server.log' }, null, 2)}\n`);
+  writeFileSync(
+    metaPath,
+    `${JSON.stringify(
+      {
+        runDir: runDir,
+        mode: MOCK ? 'mock' : 'live',
+        health,
+        ...outcome,
+        files: { plan: 'plan.json', serverLog: 'server.log', serverErr: 'server-stderr.log' },
+      },
+      null,
+      2,
+    )}\n`,
+  );
 
-  const planMarker = planPath.endsWith('.json') ? 'plan.json' : 'plan.txt';
-  console.log(`[live-run] RESULT ${JSON.stringify({ ...outcome, planFile: planMarker })}`);
+  console.log(`[live-run] RESULT ${JSON.stringify(outcome)}`);
   console.log(`[live-run] artifacts: server.log -> ${serverLogPath}`);
   process.exit(0);
 })();
 
-// persist the server log in the unique run dir when the child exits or on SIGINT
-process.on('SIGINT', () => {
-  server.kill();
-  writeFileSync(serverLogPath, serverOut);
+// SIGINT: same durability, bounded tighter so interruption is snappy
+process.on('SIGINT', async () => {
+  await stopServerAndPersistLogs(3_000);
   console.log(`[live-run] interrupted; server log preserved at ${serverLogPath}`);
   process.exit(130);
-});
-server.on('exit', () => {
-  try {
-    writeFileSync(serverLogPath, serverOut);
-  } catch {
-    /* already written */
-  }
 });
