@@ -373,16 +373,17 @@ describe('planTrip invariants (randomized worlds)', () => {
   });
 });
 
-describe('live details efficiency (lazy fallback band)', () => {
-  it('fetches details only for primary-band stations until a window needs the fallback band', async () => {
+describe('live details exhaustiveness (whole-batch candidate fetch)', () => {
+  it('fetches details for EVERY candidate in both detour bands, each exactly once', async () => {
     // primary-band stations at 0 km off-route every 50 km...
     const specs: StationSpec[] = Array.from({ length: 14 }, (_, i) => ({
       id: 600 + i,
-      name: `Statiq Lazy ${i}`,
+      name: `Statiq Primary ${i}`,
       chainageKm: 50 * (i + 1),
       offRouteKm: 0,
     }));
-    // ...plus stations 3.5 km off-route (fallback band) that are never needed
+    // ...plus fallback-band stations 3.5 km off-route that are never needed
+    // for any stop: exhaustive coverage (owner directive) still fetches them.
     specs.push(
       ...Array.from({ length: 6 }, (_, i) => ({
         id: 700 + i,
@@ -391,42 +392,49 @@ describe('live details efficiency (lazy fallback band)', () => {
         offRouteKm: 3.5,
       })),
     );
-    let detailsCalls = 0;
+    const fetchedIds: number[] = [];
     const base = fakeStatiq(specs);
     const counting = {
       ...base,
       detailsWithMeta: async (id: number) => {
-        detailsCalls++;
+        fetchedIds.push(id);
         return (base as unknown as { detailsWithMeta: (id: number) => Promise<unknown> }).detailsWithMeta(id);
       },
     } as unknown as StatiqClient;
 
     const plan = await planTrip({ router: fakeRouter(700), statiq: counting }, O, D(700));
-    // primary band was sufficient everywhere: fallback stations never fetched
-    expect(detailsCalls).toBe(14);
+    // every candidate in BOTH bands was fetched, exactly once each
+    expect(fetchedIds.length).toBe(20);
+    expect(new Set(fetchedIds).size).toBe(20);
+    expect(fetchedIds).toEqual(expect.arrayContaining([700, 701, 702, 703, 704, 705]));
+    // selection still prefers the primary band when it can
     expect(plan.stops.every((s) => s.detourKm <= 2)).toBe(true);
   });
 
-  it('lazily fetches the fallback band only when a window has no primary option', async () => {
-    // gap in the primary band: only an off-route station can cover it
+  it('fetches the whole batch up front - including fallback stations no window needs', async () => {
+    // station 4 sits in a window that also has a primary option, so it is
+    // never NEEDED for a stop; exhaustive fetch still reads its details.
     const specs: StationSpec[] = [
       { id: 1, name: 'Statiq Near A', chainageKm: 100, offRouteKm: 0 },
+      { id: 4, name: 'Statiq Unneeded D', chainageKm: 250, offRouteKm: 3.2 },
       { id: 2, name: 'Statiq Offroute B', chainageKm: 390, offRouteKm: 3.2 },
       { id: 3, name: 'Statiq Near C', chainageKm: 600, offRouteKm: 0 },
     ];
-    let detailsCalls = 0;
+    const fetchedIds: number[] = [];
     const base = fakeStatiq(specs);
     const counting = {
       ...base,
       detailsWithMeta: async (id: number) => {
-        detailsCalls++;
+        fetchedIds.push(id);
         return (base as unknown as { detailsWithMeta: (id: number) => Promise<unknown> }).detailsWithMeta(id);
       },
     } as unknown as StatiqClient;
 
     const plan = await planTrip({ router: fakeRouter(700), statiq: counting }, O, D(700));
-    // all three stations fetched, the fallback one only when its window needed it
-    expect(detailsCalls).toBe(3);
+    // all four candidates fetched (window-based pruning would skip 4)
+    expect(fetchedIds.slice().sort((a, b) => a - b)).toEqual([1, 2, 3, 4]);
+    expect(new Set(fetchedIds).size).toBe(4);
+    // the off-route stop is still chosen honestly, with its warning
     expect(plan.stops.map((s) => s.station.name)).toContain('Statiq Offroute B');
     expect(plan.warnings.some((w) => w.includes('off-route'))).toBe(true);
   });

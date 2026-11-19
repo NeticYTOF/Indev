@@ -8,6 +8,9 @@
  *   safety buffer, so arrival SoC stays low and time is not wasted.
  * - Do not detour far for a preferred charger: stations beyond
  *   `primaryDetourKm` off-route are used only if the primary band fails.
+ * - Exhaustive candidate coverage (owner directive): details are fetched
+ *   for EVERY corridor candidate in both detour bands, in one bounded-
+ *   parallel batch - no window-based pruning.
  * - Brand preference Statiq > Tata > BPCL > HP > others breaks ties only
  *   inside a small chainage cluster, never at the cost of an extra stop.
  * - Charger data is fetched live during this run and never persisted.
@@ -364,19 +367,15 @@ async function planCore(
     );
   }
 
-  // 3) Live details + CCS2 DC classification.
-  //    LIVE-EFFICIENCY (found via the bounded live acceptance): details are
-  //    fetched EAGERLY only for candidates in the primary detour band
-  //    (<= primaryDetourKm, where stops are actually chosen). The wider
-  //    fallback band is fetched LAZILY - only when a selection window has
-  //    no primary-band option - so a dense corridor no longer costs one
-  //    details call per station along the whole route.
-  const primaryBand = corridor.candidates.filter(
-    (c) => c.offRouteKm <= opts.primaryDetourKm,
-  );
-  const fallbackBand = corridor.candidates.filter(
-    (c) => c.offRouteKm > opts.primaryDetourKm,
-  );
+  // 3) Live details + CCS2 DC classification for EVERY corridor candidate.
+  //    OWNER DIRECTIVE (urgent correction): exhaustive candidate coverage -
+  //    all candidates in BOTH detour bands are fetched in ONE bounded-
+  //    parallel batch; no window-based pruning, no lazy skips. Selection
+  //    still prefers the primary band and never detours far for a brand,
+  //    but it CONSULTS every fetched candidate. The batch dispatchers queue
+  //    at the client's rolling limiter: concurrency here does not raise
+  //    QPS (2s gaps, 25/60s cap), it only removes dead time between
+  //    dispatches so a whole batch overlaps its limiter waits.
   const detailCache = new Map<number, Candidate>();
   const fetchCandidate = async (c: CorridorCandidate): Promise<void> => {
     if (detailCache.has(c.stationId)) return;
@@ -403,12 +402,14 @@ async function planCore(
     }
   };
 
-  await pMap(primaryBand, 3, fetchCandidate);
-  const usableCandidates = (): Candidate[] =>
-    [...detailCache.values()]
-      .filter((r) => r.summary.isUsable)
-      .sort((a, b) => a.candidate.chainageKm - b.candidate.chainageKm);
-  let usable = usableCandidates();
+  // The WHOLE candidate batch, both detour bands, in one bounded-parallel
+  // pass. pMap keeps a few dispatchers waiting at the limiter so its 2s
+  // gaps stay saturated; the limiter alone decides actual pace.
+  const CANDIDATE_FETCH_CONCURRENCY = 4;
+  await pMap(corridor.candidates, CANDIDATE_FETCH_CONCURRENCY, fetchCandidate);
+  const usable: Candidate[] = [...detailCache.values()]
+    .filter((r) => r.summary.isUsable)
+    .sort((a, b) => a.candidate.chainageKm - b.candidate.chainageKm);
 
   // 4) Greedy stop selection with minimal-charge lookahead.
   let cursor: Cursor = {
@@ -443,21 +444,6 @@ async function planCore(
       );
     }
     let next = chooseNextStop(usable, cursor, opts, vehicle, warnings);
-    if (!next) {
-      // No primary-band option in this window: fetch the fallback band for
-      // THIS window on demand (lazy), then retry the selection once.
-      const windowBand = fallbackBand.filter(
-        (c) =>
-          c.chainageKm > cursor.chainageKm + 1 &&
-          c.chainageKm <= cursor.chainageKm + opts.maxLegKm &&
-          !detailCache.has(c.stationId),
-      );
-      if (windowBand.length > 0) {
-        await pMap(windowBand, 3, fetchCandidate);
-        usable = usableCandidates();
-        next = chooseNextStop(usable, cursor, opts, vehicle, warnings);
-      }
-    }
     if (!next) {
       throw new PlanningError(
         `No usable charger within ${opts.maxLegKm} km past the ${cursor.chainageKm.toFixed(0)} km mark. ` +
