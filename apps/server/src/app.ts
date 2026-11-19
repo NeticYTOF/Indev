@@ -39,6 +39,8 @@ export interface AppDeps {
   trips: TripsStore;
   counters: CountersStore;
   mock: boolean;
+  /** Sanitized run-completion hook: outcome + upstream call count only. */
+  onRunComplete?: (outcome: string, upstreamCalls: number) => void;
 }
 
 /** Server-side bounds for a planning request. */
@@ -136,16 +138,22 @@ export function createApp(deps: AppDeps): Hono {
       startSocPct: clampSoc(b.startSocPct),
       runBudget: SERVER_RUN_BUDGET,
     };
-    const plan = await planTrip(
-      { router: deps.router, statiq, vehicle: resolved.config, resolvedVehicle: resolved },
-      origin,
-      destination,
-      options,
-    );
-
-    // Persist only the running count of chargers seen; never station data.
-    await deps.counters.addChargersSeen(plan.stationsSeen);
-    return c.json({ plan });
+    try {
+      const plan = await planTrip(
+        { router: deps.router, statiq, vehicle: resolved.config, resolvedVehicle: resolved },
+        origin,
+        destination,
+        options,
+      );
+      // Persist only the running count of chargers seen; never station data.
+      await deps.counters.addChargersSeen(plan.stationsSeen);
+      deps.onRunComplete?.('ok', statiq.upstreamCallsMade());
+      return c.json({ plan });
+    } catch (err) {
+      const code = err instanceof PlanningError ? err.code : 'error';
+      deps.onRunComplete?.(code, statiq.upstreamCallsMade());
+      throw err;
+    }
   });
 
   app.get('/api/trips', async (c) => {

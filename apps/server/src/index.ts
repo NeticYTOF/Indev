@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { CountersStore, OsrmRouter, PhotonGeocoder, StatiqClient, TripsStore } from '@indeev/core';
 import { aiEnabled, loadEnv } from './env.js';
 import { createApp, SERVER_RUN_BUDGET } from './app.js';
+import type { UpstreamAuditEntry } from '@indeev/core';
 
 const root = process.cwd();
 const env = loadEnv(root);
@@ -30,11 +31,21 @@ const app = createApp({
   geocoder: new PhotonGeocoder(),
   // Fresh client per planning run (single-run memo policy), armed with the
   // same deadline so Retry-After waits that cannot fit fail as throttled.
-  createStatiq: () =>
-    new StatiqClient({
+  // Sanitized upstream audit: endpoint + status + time + running count only.
+  createStatiq: () => {
+    const client = new StatiqClient({
       token: env.statiqToken as string,
       runDeadlineAt: Date.now() + SERVER_RUN_BUDGET.deadlineMs,
-    }),
+      onUpstreamCall: (entry: UpstreamAuditEntry) => {
+        console.log(JSON.stringify({ type: 'upstream', ...entry }));
+      },
+    });
+    return client;
+  },
+  // Sanitized run summary: outcome + call count. No route data ever.
+  onRunComplete: (outcome, upstreamCalls) => {
+    console.log(JSON.stringify({ type: 'plan-run', outcome, upstreamCalls }));
+  },
 });
 
 const server = serve({ fetch: app.fetch, port: env.port }, (info) => {

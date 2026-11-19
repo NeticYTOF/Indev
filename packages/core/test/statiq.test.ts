@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { StatiqAbortError, StatiqApiError, StatiqClient } from '../src/statiq.js';
+import { StatiqAbortError, StatiqApiError, StatiqClient, type UpstreamAuditEntry } from '../src/statiq.js';
 import type { StatiqDetailsResponse, StatiqMarkersResponse } from '../src/types.js';
 
 const TOKEN = 'test-token-abc123';
@@ -172,10 +172,15 @@ describe('StatiqClient', () => {
 /** Deterministic harness: fake clock + recording transport. */
 function deterministicClient(
   opts: {
-    respond?: (call: { n: number; attempt: number }) => { status: number; body?: string; headers?: Record<string, string> };
+    respond?: (call: { n: number; attempt: number }) => {
+      status: number;
+      body?: string;
+      headers?: Record<string, string>;
+    };
     maxCallsPerMinute?: number;
     minCallGapMs?: number;
     retries?: number;
+    onUpstreamCall?: (entry: UpstreamAuditEntry) => void;
   } = {},
 ) {
   let nowMs = 0;
@@ -203,6 +208,7 @@ function deterministicClient(
     retries: opts.retries ?? 0,
     ...(opts.maxCallsPerMinute ? { maxCallsPerMinute: opts.maxCallsPerMinute } : {}),
     ...(opts.minCallGapMs ? { minCallGapMs: opts.minCallGapMs } : {}),
+    ...(opts.onUpstreamCall ? { onUpstreamCall: opts.onUpstreamCall } : {}),
   });
   return { client, transportTimes, now: () => nowMs };
 }
@@ -332,11 +338,80 @@ describe('rate limiter (mocked transport + mocked clock)', () => {
     // no early retry: the throttled error surfaces without a second call
     expect(transportTimes).toHaveLength(1);
   });
+});
+
+describe('sanitized audit logging (no private route data)', () => {
+  it('emits one entry per attempt with seq, endpoint, status, at - and nothing else', async () => {
+    const entries: UpstreamAuditEntry[] = [];
+    const { client, transportTimes } = deterministicClient({
+      retries: 1,
+      respond: ({ n }: { n: number }) =>
+        n === 0
+          ? { status: 429, body: '{"error":"wait"}', headers: { 'Retry-After': '1' } }
+          : { status: 200 },
+      onUpstreamCall: (e) => entries.push(e),
+    });
+    await client.markers(28.6139, 77.209);
+    expect(transportTimes).toHaveLength(2);
+    expect(entries).toHaveLength(2);
+    // strictly sanitized shape
+    for (const e of entries) {
+      expect(Object.keys(e).sort()).toEqual(['at', 'endpoint', 'seq', 'status']);
+      expect(e.endpoint).toBe('stations/markers');
+    }
+    expect(entries[0]?.status).toBe(429);
+    expect(entries[0]?.seq).toBe(1);
+    expect(entries[1]?.status).toBe(200);
+    expect(entries[1]?.seq).toBe(2);
+    expect(Number.isNaN(Date.parse(entries[0]?.at ?? ''))).toBe(false);
+    // the sanitized stream contains no coordinates, bodies or token
+    const json = JSON.stringify(entries);
+    expect(json).not.toContain('28.6139');
+    expect(json).not.toContain('77.209');
+    expect(json).not.toContain('Authorization');
+    expect(json).not.toContain('latitude');
+  });
+
+  it('audits transport failures with status 0 (abort path)', async () => {
+    const entries: UpstreamAuditEntry[] = [];
+    let nowMs = 0;
+    const controller = new AbortController();
+    const transportTimes: number[] = [];
+    const transport = (async () => {
+      transportTimes.push(nowMs);
+      throw new Error('network down');
+    }) as typeof fetch;
+    const client = new StatiqClient({
+      token: 't',
+      baseUrl: 'https://x.test/api',
+      fetchImpl: transport,
+      now: () => nowMs,
+      sleepImpl: async (ms: number) => {
+        nowMs += ms;
+      },
+      retries: 0,
+      minCallGapMs: 1,
+      maxCallsPerMinute: 1_000,
+      onUpstreamCall: (e) => entries.push(e),
+    });
+    // transport throws (not abort): still audited, with status 0
+    const err = await client.markers(1, 1, controller.signal).catch((e) => e);
+    void err;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.status).toBe(0);
+    expect(entries[0]?.endpoint).toBe('stations/markers');
+    expect(entries[0]?.seq).toBe(1);
+    // abort BEFORE the call departs: nothing reached the wire, so nothing
+    // new is audited (only real upstream attempts are counted)
+    controller.abort();
+    await expect(client.markers(2, 2, controller.signal)).rejects.toBeInstanceOf(StatiqAbortError);
+    expect(entries).toHaveLength(1);
+  });
 
   it('notices aborts during a long Retry-After wait (abort-aware sleep)', async () => {
     let nowMs = 0;
     const controller = new AbortController();
-    const transportTimes: number[] = []
+    const transportTimes: number[] = [];
     const transport = (async () => {
       transportTimes.push(nowMs);
       return new Response('{"error":"wait"}', { status: 429, headers: { 'Retry-After': '600' } });

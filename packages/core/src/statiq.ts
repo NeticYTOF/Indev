@@ -80,7 +80,25 @@ export interface StatiqClientOptions {
    * If a 429's Retry-After cannot fit before this deadline, the call fails
    * fast with the throttled error instead of retrying early.
    */
+  /**
+   * Sanitized audit observer: invoked once per upstream attempt with
+   * { seq, endpoint, status, at } ONLY. Never auth headers, query strings,
+   * request/response bodies, coordinates or any private route data.
+   */
+  onUpstreamCall?: (entry: UpstreamAuditEntry) => void;
   runDeadlineAt?: number;
+}
+
+/** Strictly sanitized audit entry: endpoint name + status + time + count. */
+export interface UpstreamAuditEntry {
+  /** Running count of upstream attempts within this client (planning run). */
+  seq: number;
+  /** Endpoint path only, e.g. "stations/markers". */
+  endpoint: string;
+  /** HTTP status (0 = transport failure / abort). */
+  status: number;
+  /** ISO timestamp. */
+  at: string;
 }
 
 interface CacheEntry {
@@ -107,6 +125,8 @@ export class StatiqClient {
   private readonly now: () => number;
   private readonly doSleep: (ms: number) => Promise<void>;
   private readonly runDeadlineAt: number | undefined;
+  private readonly onUpstreamCall: ((entry: UpstreamAuditEntry) => void) | undefined;
+  private upstreamAttempts = 0;
   private readonly detailsCache = new Map<number, CacheEntry>();
   private lastCallAt = Number.NEGATIVE_INFINITY;
   private callStamps: number[] = [];
@@ -128,6 +148,7 @@ export class StatiqClient {
     this.now = opts.now ?? Date.now;
     this.doSleep = opts.sleepImpl ?? defaultSleep;
     this.runDeadlineAt = opts.runDeadlineAt;
+    this.onUpstreamCall = opts.onUpstreamCall;
   }
 
   /** Stations near a point (~13 km radius, capped at 256 by the upstream). */
@@ -237,6 +258,24 @@ export class StatiqClient {
     await this.sleepAbortable(Math.min(jittered, 4_000) + 100, signal);
   }
 
+/** Sanitized audit hook: one sanitized entry per upstream attempt. */
+  private audit(endpoint: string, status: number): void {
+    this.upstreamAttempts += 1;
+    if (this.onUpstreamCall) {
+      this.onUpstreamCall({
+        seq: this.upstreamAttempts,
+        endpoint: endpoint.replace(/^\/+/, ''),
+        status,
+        at: new Date().toISOString(),
+      });
+    }
+  }
+
+  /** Total upstream attempts made through this client (per run). */
+  upstreamCallsMade(): number {
+    return this.upstreamAttempts;
+  }
+
   private async postJson<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
     let lastError: unknown;
     let lastRetryAfterMs: number | undefined;
@@ -274,6 +313,7 @@ export class StatiqClient {
           signal: controller.signal,
         });
         const text = await res.text();
+        this.audit(path, res.status);
         if (!res.ok) {
           const retryAfter =
             res.status === 429 ? this.parseRetryAfterMs(res.headers?.get('retry-after')) : undefined;
@@ -289,7 +329,12 @@ export class StatiqClient {
       } catch (err) {
         // aborts propagate immediately; they are never retried
         if (signal?.aborted || (signal && isAbortLike(err))) {
+          this.audit(path, 0);
           throw new StatiqAbortError();
+        }
+        // every outbound attempt is auditable, even transport failures
+        if (!(err instanceof StatiqApiError)) {
+          this.audit(path, 0);
         }
         if (err instanceof StatiqApiError && err.status < 500 && err.status !== 429) {
           throw err;
