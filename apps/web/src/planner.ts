@@ -195,11 +195,13 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
   // Honest live-mode progress: a REAL elapsed timer plus a truthful hint
   // about why a plan can take minutes. No fake progress, no invented
   // percentages. Hidden in mock mode - synthetic plans are instant and
-  // must not borrow live-mode claims.
+  // must not borrow live-mode claims. Screen readers hear the hint ONCE
+  // (role=status on the stable line); the ticking elapsed readout is
+  // aria-hidden visual-only so a long wait is never live-region spam.
   const liveBusy = el(`
     <div class="plan-busy hidden">
-      <p class="plan-busy-hint">Every candidate charger is fetched individually with safety pacing — a long corridor can take several minutes. The request stays open; nothing is cached between runs.</p>
-      <p class="plan-busy-time" role="status"><span class="plan-busy-spinner" aria-hidden="true"></span><span class="plan-busy-elapsed">0s elapsed</span></p>
+      <p class="plan-busy-hint" role="status">Every candidate charger is fetched individually with safety pacing — a long corridor can take several minutes. The request stays open; nothing is cached between runs.</p>
+      <p class="plan-busy-time"><span class="plan-busy-spinner" aria-hidden="true"></span><span class="plan-busy-elapsed" aria-hidden="true">0s elapsed</span></p>
     </div>
   `);
   const busyElapsed = liveBusy.querySelector('.plan-busy-elapsed') as HTMLElement;
@@ -213,7 +215,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
     busyStartedAt = Date.now();
     busyElapsed.textContent = '0s elapsed';
     liveBusy.classList.remove('hidden');
-    // 5s cadence: real timing, calm for assistive tech (role=status).
+    // 5s cadence for the VISUAL readout; assistive tech never hears ticks.
     busyTimer = window.setInterval(() => {
       busyElapsed.textContent = `${formatElapsedMs(Date.now() - busyStartedAt)} elapsed`;
     }, 5000);
@@ -259,6 +261,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
     if (aiButton) aiButton.disabled = true;
     hideError(errorBox);
     startBusy();
+    let focusOnSettle: HTMLElement | null = null;
     try {
       const { plan, ai } = await api.aiPlan({
         origin: { label: origin.hit.label, lat: origin.hit.lat, lon: origin.hit.lon },
@@ -275,9 +278,13 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
       }
     } catch (err) {
       showPlanningError(errorBox, err, 'AI planning failed.');
+      // Context restore: the disabled button lost focus to <body> during
+      // the run - land back on the retry control once it re-enables.
+      focusOnSettle = aiButton;
     } finally {
       stopBusy();
       if (aiButton) aiButton.disabled = false;
+      focusOnSettle?.focus();
     }
   });
 
@@ -298,6 +305,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
     setLoading(true, serverIsMock ? 'Planning synthetic route…' : 'Planning live route…');
     hideError(errorBox);
     startBusy();
+    let focusOnSettle: HTMLElement | null = null;
     try {
       const req: PlanRequest = {
         origin: { label: origin.hit.label, lat: origin.hit.lat, lon: origin.hit.lon },
@@ -309,9 +317,13 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
       onPlanAvailable(plan, map);
     } catch (err) {
       showPlanningError(errorBox, err, 'Planning failed.');
+      // Context restore: the disabled button lost focus to <body> during
+      // the wait - land back on the retry control once it re-enables.
+      focusOnSettle = planButton;
     } finally {
       stopBusy();
       setLoading(false, 'Plan route');
+      focusOnSettle?.focus();
     }
   });
 }
@@ -592,6 +604,10 @@ function renderPlanFailure(box: HTMLElement, guidance: PlanFailureGuidance, serv
   raw.textContent = serverMessage;
   box.append(title, detail, raw);
   box.classList.remove('hidden');
+  // Keyboard reveal: bring the details into view without stealing focus
+  // (role=alert already announced them; the submitting button gets focus
+  // back after it re-enables).
+  box.scrollIntoView({ block: 'nearest' });
 }
 
 function hideError(box: HTMLElement): void {
