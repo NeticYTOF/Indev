@@ -111,6 +111,39 @@ const stations: StationSpec[] = Array.from({ length: 14 }, (_, i) => ({
 }));
 
 describe('validateAiChoice', () => {
+  it('still charges above the usual cap and warns when a long next hop really needs it', () => {
+    const bundle = handBuiltBundle([100], 400);
+    const validation = validateAiChoice(bundle, { stationIds: [idAt(100)] }, { startSocPct: 50 }, HARIER_EV_75);
+    expect(validation.ok).toBe(true);
+    if (!validation.ok) return;
+    const warnings: string[] = [];
+    const stops = finalize(validation.seq, 400, bundle.route,
+      { ...DEFAULT_PLAN_OPTIONS, startSocPct: 50 }, HARIER_EV_75, warnings);
+    const stop = stops[0]!;
+    expect(stop.leaveSocPct).toBeGreaterThan(80);
+    expect(stop.leaveSocPct).toBeLessThanOrEqual(95);
+    expect(stop.chargeKwh).toBeGreaterThan(0);
+    expect(stop.chargeTimeMin).toBeGreaterThan(0);
+    expect(warnings.some((warning) => warning.includes('above the usual 80%'))).toBe(true);
+  });
+
+  it.each([20, 50, 80, 100])('keeps leg energy and charge accounting coherent from %s percent', (startSocPct) => {
+    const bundle = handBuiltBundle([20, 60, 180], 250);
+    const validation = validateAiChoice(bundle, { stationIds: [idAt(20), idAt(60), idAt(180)] }, { startSocPct }, HARIER_EV_75);
+    expect(validation.ok).toBe(true);
+    if (!validation.ok) return;
+    const stops = finalize(validation.seq, 250, bundle.route,
+      { ...DEFAULT_PLAN_OPTIONS, startSocPct }, HARIER_EV_75, []);
+    let departure = startSocPct;
+    for (const stop of stops) {
+      expect(stop.arriveSocPct).toBeCloseTo(socAfterDriving(stop.legKm, departure), 0);
+      expect(stop.leaveSocPct).toBeGreaterThanOrEqual(stop.arriveSocPct);
+      expect(stop.chargeKwh).toBeGreaterThanOrEqual(0);
+      expect(stop.chargeTimeMin).toBeGreaterThanOrEqual(0);
+      departure = stop.leaveSocPct;
+    }
+  });
+
   it('never lowers an excess arrival charge when the next leg needs more than the usual cap', () => {
     const bundle = handBuiltBundle([10], 300);
     const validation = validateAiChoice(bundle, { stationIds: [idAt(10)] }, {}, HARIER_EV_75);
