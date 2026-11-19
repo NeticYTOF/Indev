@@ -402,9 +402,14 @@ export class StatiqClient {
         // DISPATCH may follow fatal headers. Diagnostics (audit entry with
         // the true status, the body on the error, the parsed Retry-After)
         // are retained after the stop.
+        // Typing note: a LOCAL narrowed budget reference - TS cannot track
+        // that fatalCause truthiness implies the budget exists through the
+        // ternary, so the guard checks the reference directly. No non-null
+        // suppression anywhere.
+        const budget = this.runBudget;
         const fatalCause =
           !res.ok &&
-          this.runBudget &&
+          budget &&
           (res.status === 401 || res.status === 403 || res.status === 429)
             ? res.status === 429
               ? 'throttled'
@@ -414,8 +419,8 @@ export class StatiqClient {
           fatalCause === 'throttled'
             ? this.parseRetryAfterMs(res.headers?.get('retry-after'))
             : undefined;
-        if (fatalCause) {
-          this.runBudget.stop(fatalCause, fatalRetryAfter);
+        if (budget && fatalCause) {
+          budget.stop(fatalCause, fatalRetryAfter);
         }
         // HEADER-TIME AUDIT: the attempt reached the wire and answered with
         // this status - recorded even if the body then never arrives.

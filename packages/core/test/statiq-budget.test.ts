@@ -574,13 +574,16 @@ describe('fatal-headers race: budget stops at headers, before the body', () => {
       PromiseSettledResult<unknown>,
       PromiseSettledResult<unknown>,
     ];
-    expect(r1.status).toBe('rejected');
+    // explicit rejected-result branches give REAL narrowing of .reason
+    // (no ts-ignore, no non-null): a wrong shape surfaces as its own
+    // failure instead of a type error
+    if (r1.status !== 'rejected') throw new Error('fatal caller must reject');
     expect(r1.reason).toBeInstanceOf(StatiqRunFatalError);
     // diagnostics retained: the body arrives late but travels on the error
     expect((r1.reason as StatiqRunFatalError).message).toContain('Please wait a minute');
     // the ready waiter was refused at the gate (after the headers, before
     // the body ever resolved) - hearing the stop, never the network
-    expect(r2.status).toBe('rejected');
+    if (r2.status !== 'rejected') throw new Error('gated waiter must reject');
     expect((r2.reason as UpstreamRunStoppedError).cause).toBe('throttled');
   });
 
