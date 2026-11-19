@@ -58,14 +58,16 @@ describe('saved-trip delete: single flight + focus that survives both outcomes',
 
   it('re-enables the button on BOTH failure branches (res not ok, throw)', () => {
     expect((deleteSrc.match(/btn\.disabled = false;/g) ?? []).length).toBe(2);
-    expect((deleteSrc.match(/document\.activeElement === document\.body/g) ?? []).length).toBe(2);
+    expect((deleteSrc.match(/if \(document\.activeElement === document\.body\) btn\.focus\(\);/g) ?? []).length).toBe(2);
   });
 
   it('lands focus on the stable owner control before the refresh destroys the row', () => {
     // renderTripsDrawer clears innerHTML wholesale - the clicked button
     // dies with it; the owner control is the only stable target, and it
-    // must receive focus BEFORE the refresh destroys the row.
+    // must receive focus BEFORE refresh when focus would be destroyed.
+    // Deliberate focus outside the drawer must be left alone.
+    expect(deleteSrc).toContain('document.activeElement === document.body || drawer.contains(document.activeElement)');
     expect(tripsSrc)
-      .toMatch(/document\.getElementById\('trips-button'\)\?\.focus\(\);\s+renderTripsDrawer\(drawer, map\); \/\/ refresh list/);
+      .toMatch(/document\.getElementById\('trips-button'\)\?\.focus\(\);\s+}\s+renderTripsDrawer\(drawer, map\); \/\/ refresh list/);
   });
 });
