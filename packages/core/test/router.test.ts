@@ -28,6 +28,24 @@ function fakeFetch(responder: () => { status: number; body: string }, latency?: 
 }
 
 describe('OsrmRouter', () => {
+  it.each([
+    { geometry: { coordinates: [] } },
+    { geometry: { coordinates: [[77, 28]] } },
+    { geometry: { coordinates: [null, [77, 28]] } },
+    { geometry: { coordinates: [[77, 91], [77, 28]] } },
+    { geometry: { coordinates: [['77', 28], [77, 28]] } },
+    { geometry: null }, { distance: -1 }, { duration: -1 }, { distance: null },
+  ])('rejects a malformed successful route: %j', async (override) => {
+    const original = JSON.parse(osrmOk().body);
+    original.routes[0] = { ...original.routes[0], ...override };
+    const { impl, calls } = fakeFetch(() => ({ status: 200, body: JSON.stringify(original) }));
+    const router = new OsrmRouter({ fetchImpl: impl, retries: 0 });
+    await expect(router.route({ lat: 28, lon: 77 }, { lat: 27, lon: 76 })).rejects.toMatchObject({
+      name: 'RouterError', code: 'InvalidResponse',
+    });
+    expect(calls).toHaveLength(1);
+  });
+
   it('parses route distance, duration and geometry', async () => {
     const { impl, calls } = fakeFetch(osrmOk);
     const router = new OsrmRouter({ baseUrl: 'https://router.test', fetchImpl: impl });
