@@ -416,6 +416,31 @@ describe('saved trips (shared with MCP)', () => {
     },
   );
 
+  it.each([
+    { field: 'origin', value: { label: 'Bad', lat: 91, lon: 77 } },
+    { field: 'destination', value: { label: 42, lat: 28, lon: 77 } },
+    { field: 'station', value: { stationId: 1, name: 'Bad', lat: 28, lon: 181 } },
+    { field: 'station', value: { stationId: 1, name: null, lat: 28, lon: 77 } },
+    { field: 'name', value: 42 },
+  ])('rejects invalid saved map/name field %j without persistence', async ({ field, value }) => {
+    const deps = await makeDeps({ mock: true });
+    const app = createApp(deps);
+    const response = await app.request('/api/plan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ origin: ORIGIN, destination: DEST }),
+    });
+    const { plan } = await response.json();
+    const body: Record<string, unknown> = { plan };
+    if (field === 'station') plan.stops[0].station = value;
+    else if (field === 'name') body.name = value;
+    else plan[field] = value;
+    const save = await app.request('/api/trips', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    expect(save.status).toBe(400);
+    expect((await save.json() as { code: string }).code).toBe('bad_request');
+    expect(await deps.trips.list()).toEqual([]);
+  });
+
   it.each([null, {}, { stationId: 0 }, { stationId: -1 }, { stationId: 1.5 }])(
     'rejects malformed saved stop reference %j without writing a trip', async (station) => {
       const deps = await makeDeps({ mock: true, createStatiq: () => { throw new Error('No live calls'); } });
