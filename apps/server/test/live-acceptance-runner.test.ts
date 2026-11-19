@@ -12,13 +12,15 @@
  * - waitChildClose is STREAM-COMPLETE persistence: log capture survives a
  *   stdout drain that lands AFTER the child's exit event - the documented
  *   exit/stdio non-ordering that intermittently persisted an EMPTY
- *   server.log on a SUCCESS acceptance run (reproduced deterministically
- *   below via a controlled pause; NOT dismissed by the isolated rerun
- *   passing). The delayed-drain regression spawns a plain throwaway
- *   `node -e` child - never a server, never upstream.
+ *   server.log on a SUCCESS acceptance run (NOT dismissed by the isolated
+ *   rerun passing). The ordering is CONSTRUCTED with a controlled
+ *   event/stream fake (a paused REAL child stdout does NOT stay empty at
+ *   exit - Node auto-resumes/flushes it, empirically confirmed by the
+ *   226/227 suite run), plus a real-child EVENTUAL complete-output
+ *   assertion with no ordering assumption. Fixes spawn only a plain
+ *   throwaway `node -e` child / fake - never a server, never upstream.
  */
 import { spawn } from 'node:child_process';
-import { once } from 'node:events';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -134,17 +136,118 @@ describe('fetchWallMs (inert unless an explicit override is supplied)', () => {
  * SIGCHLD reap and the pipe drain are independent paths) - the rerun
  * passing is timing luck, not a dismissal of the failure.
  *
- * Deterministic construction: a throwaway child writes its lines and
- * exits while the test PAUSES the stream - so the data provably sits
- * undelivered AFTER the exit event (exactly the failing interleave).
- * The OLD persist-at-exit behavior is shown writing an EMPTY file; the
- * REPAIRED waitChildComplete path then drains fully and captures EVERY
- * line including the final one.
+ * FIXTURE CORRECTION (Linux 226/227): the first version of this regression
+ * wrongly ASSUMED a paused real-child stdout stays empty after exit - Node
+ * auto-resumes/flushes piped stdout at exit (all 40 lines were already
+ * present). The assumption failed, NOT the production close-wait: the
+ * c463884 waitChildClose behavior is not disproven by that fixture failure.
+ * The ordering is therefore CONSTRUCTED with a controlled event/stream fake
+ * (exit state already set, streams NOT drained, data/end/close explicitly
+ * delayed until the test delivers them), plus a real-child EVENTUAL
+ * complete-output assertion with no ordering assumption. The original
+ * observed output-loss evidence is preserved and reproduced by the fake.
  */
 describe('waitChildClose: stream-complete persistence (delayed drain)', () => {
-  it('captures output delivered AFTER exit; persist-at-exit alone writes empty', async () => {
+  /**
+   * Controlled fake of an EXITED child whose streams have NOT yet drained:
+   * exact post-exit state waitChildClose reads (exitCode set, signalCode
+   * null, readableEnded/destroyed false). The test alone can settle the
+   * wait - by delivering the late output and firing close - so the
+   * construction cannot depend on Node's stream scheduling at all.
+   */
+  function makeFakeExitedChild() {
+    const closeWaiters: Array<() => void> = [];
+    const child = {
+      exitCode: 0,
+      signalCode: null,
+      stdout: { readableEnded: false, destroyed: false },
+      stderr: { readableEnded: false, destroyed: false },
+      once(event: string, fn: () => void) {
+        if (event === 'close') closeWaiters.push(fn);
+        return child;
+      },
+      /** The LATE delivery: data landed, end observed (readableEnded),
+       *  then the child 'close' event fires - in that order. */
+      deliverLateOutputAndClose() {
+        child.stdout.readableEnded = true;
+        child.stderr.readableEnded = true;
+        for (const w of closeWaiters.splice(0)) w();
+      },
+    };
+    return child;
+  }
+
+  it('captures data delivered AFTER exit; the old persist-at-exit wrote empty', async () => {
+    const child = makeFakeExitedChild();
     const LINES = 40;
-    const LAST = `DRILLED-FINAL-LINE-${LINES}-of-${LINES}`;
+    const LAST = `LATE-FINAL-LINE-${LINES}-of-${LINES}`;
+    // the accumulator the runner's persistence writes
+    let received = '';
+    const dir = mkdtempSync(join(tmpdir(), 'indev-drain-'));
+    try {
+      // THE OBSERVED INCIDENT, reproduced deterministically: at exit the
+      // captured output is still empty (everything is in flight) - the
+      // old persist-at-exit wrote exactly this empty file
+      const exitOnlyPath = join(dir, 'exit-only.log');
+      writeFileSync(exitOnlyPath, received);
+      expect(readFileSync(exitOnlyPath, 'utf8')).toBe('');
+
+      // REPAIR: with the exit state set but streams NOT drained,
+      // waitChildClose must WAIT - only the stream-complete close may
+      // settle it, never the bare exit state
+      let settled = false;
+      const pending = waitChildClose(child, 3_000).then(() => {
+        settled = true;
+      });
+      // a few turns of the loop: the fake can settle ONLY via the explicit
+      // close below or the 3s timer - neither has happened by 25ms
+      await new Promise((r) => setTimeout(r, 25));
+      expect(settled).toBe(false);
+
+      // the LATE delivery happens NOW: data events after exit, then end,
+      // then close
+      received +=
+        Array.from({ length: LINES - 1 }, (_, i) => `late-line-${i + 1}\n`).join('') +
+        `${LAST}\n`;
+      child.deliverLateOutputAndClose();
+      await pending;
+      expect(settled).toBe(true);
+
+      // persistence AFTER the close-wait captures EVERYTHING, including
+      // the final line that was still in flight at exit
+      expect(received).toContain('late-line-1');
+      expect(received).toContain(`late-line-${LINES - 1}`);
+      expect(received.trimEnd().endsWith(LAST)).toBe(true);
+      const capturedPath = join(dir, 'captured.log');
+      writeFileSync(capturedPath, received);
+      expect(readFileSync(capturedPath, 'utf8')).toBe(received);
+    } finally {
+      rmSync(dir, { recursive: true, force: true }); // fixture log, not run evidence
+    }
+  }, 5_000);
+
+  it('an already-drained exited child settles via the fast path (no timer wait)', async () => {
+    // the fast path (exit state set AND all streams drained) settles
+    // immediately - guarding teardowns against degenerating into
+    // timer-only waits (every success run would pay the full bound)
+    const child = makeFakeExitedChild();
+    child.stdout.readableEnded = true;
+    child.stderr.readableEnded = true; // fully wound down: close already fired
+    let settled = false;
+    void waitChildClose(child, 5_000).then(() => {
+      settled = true;
+    });
+    await new Promise((r) => setTimeout(r, 25));
+    expect(settled).toBe(true);
+  }, 2_000);
+
+  it('real throwaway child: the FULL output is present once the close-wait settles', async () => {
+    // NO ordering assumption: whether Node delivers before or after the
+    // exit event is irrelevant (and empirically variable - Node
+    // auto-flushes piped stdout at exit). The CONTRACT under test is
+    // that once waitChildClose settles on close, everything is captured.
+    const LINES = 40;
+    const LAST = `DRILL-FINAL-LINE-${LINES}-of-${LINES}`;
     const child = spawn(
       process.execPath,
       [
@@ -158,46 +261,13 @@ describe('waitChildClose: stream-complete persistence (delayed drain)', () => {
     child.stdout.on('data', (d) => {
       received += String(d);
     });
-    // Mirror the production runner EXACTLY: BOTH streams carry data handlers
-    // from spawn (live-acceptance.mjs attaches stdout+stderr handlers), so
-    // both flow and the child 'close' semantics are unambiguous. Leaving
-    // piped stderr unhandled would bet the regression's determinism on
-    // Node's close-vs-unconsumed-stream corner cases.
+    // mirror the production runner: BOTH streams carry handlers and flow
     child.stderr.on('data', (d) => {
       stderrReceived += String(d);
     });
-    // Controlled drain delay: nothing may flow until the test resumes.
-    // This substitutes the OS-luck of the real race with a deterministic
-    // disposition: the exit event fires while ALL data sits in the pipe.
-    child.stdout.pause();
-
-    await once(child, 'exit');
-    // THE RACE, MADE DETERMINISTIC: 'exit' has fired and ZERO data has
-    // been delivered - persisting at exit (the old behavior) writes empty
-    expect(received).toBe('');
-    const dir = mkdtempSync(join(tmpdir(), 'indev-drain-'));
-    try {
-      const exitOnlyPath = join(dir, 'exit-only.log');
-      writeFileSync(exitOnlyPath, received);
-      expect(readFileSync(exitOnlyPath, 'utf8')).toBe(''); // the bug, reproduced
-
-      // THE REPAIR: waitChildClose resolves only on the child's 'close'
-      // (exit AND full stdio drain). With the exit state set but the
-      // stream NOT drained, it waits; resuming the stream fires the late
-      // data events (after exit), then end+close - full capture follows.
-      const closePromise = waitChildClose(child, 3_000);
-      const beforeResume = received.length;
-      child.stdout.resume(); // the late delivery happens NOW
-      await closePromise;
-      expect(received.length).toBeGreaterThan(beforeResume);
-      // EVERY line captured, including the final one written pre-exit but
-      // delivered post-exit
-      expect(received).toContain(`drill-line-${LINES - 1}`);
-      expect(received.trimEnd().endsWith(LAST)).toBe(true);
-      // both-streams drain held: stderr flowed too (empty for this child)
-      expect(typeof stderrReceived).toBe('string');
-    } finally {
-      rmSync(dir, { recursive: true, force: true }); // fixture log, not run evidence
-    }
+    await waitChildClose(child, 5_000);
+    expect(received).toContain(`drill-line-${LINES - 1}`);
+    expect(received.trimEnd().endsWith(LAST)).toBe(true);
+    expect(typeof stderrReceived).toBe('string');
   }, 10_000);
 });
