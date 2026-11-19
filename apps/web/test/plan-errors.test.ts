@@ -15,7 +15,21 @@ const KNOWN_CAUSES = [
   'candidate-holes',
 ] as const;
 
-describe('plan failure guidance (cause-true, never a fake diagnosis)', () => {
+// Inherited Object.prototype keys that a buggy or hostile server could
+// send as a cause string; a plain `in`/index lookup would resolve these
+// to FUNCTIONS, not guidance. They must fall to the default.
+const PROTOTYPE_KEYS = [
+  'toString',
+  'constructor',
+  'valueOf',
+  'hasOwnProperty',
+  'isPrototypeOf',
+  'propertyIsEnumerable',
+  'toLocaleString',
+  '__proto__',
+] as const;
+
+describe('plan failure guidance lookup (own-key only, null prototype)', () => {
   it('maps every server cause to guidance naming that cause', () => {
     for (const cause of KNOWN_CAUSES) {
       const g = planFailureGuidance(cause);
@@ -25,6 +39,26 @@ describe('plan failure guidance (cause-true, never a fake diagnosis)', () => {
     }
   });
 
+  it('prototype-inherited keys can never masquerade as causes', () => {
+    for (const key of PROTOTYPE_KEYS) {
+      const g = planFailureGuidance(key);
+      // Never a function/object cast: always the honest default.
+      expect(g.title).toBe('Plan not determined');
+      expect(typeof g.detail).toBe('string');
+      expect(typeof g.toast).toBe('string');
+    }
+  });
+
+  it('unknown or absent causes fall back to the honest no-verdict default', () => {
+    for (const cause of [undefined, '', 'something-new']) {
+      const g = planFailureGuidance(cause);
+      expect(g.title).toBe('Plan not determined');
+      expect(g.detail).toContain('not a verdict');
+    }
+  });
+});
+
+describe('plan failure guidance correctness (cause-true, never invented)', () => {
   it('only the throttle causes tell the user to wait and retry', () => {
     for (const cause of KNOWN_CAUSES) {
       const g = planFailureGuidance(cause);
@@ -33,32 +67,53 @@ describe('plan failure guidance (cause-true, never a fake diagnosis)', () => {
     }
   });
 
-  it('budget-exhausted never claims throttling or encourages an instant retry', () => {
+  it('throttle guidance honors the API-requested wait, never a blanket number', () => {
+    for (const cause of ['throttled', 'sample-throttled'] as const) {
+      const g = planFailureGuidance(cause);
+      // The old blanket lie was "Retry in a minute" - the API's own
+      // Retry-After (in the server evidence) is the only honest wait.
+      expect(g.detail).not.toMatch(/minute/i);
+      expect(g.detail).toMatch(/as the API asked/);
+      expect(g.detail).toMatch(/requested wait is in the details/);
+      expect(g.toast).not.toMatch(/minute/i);
+    }
+  });
+
+  it('budget-exhausted does not diagnose pool-over-cap or promise retry success', () => {
     const g = planFailureGuidance('budget-exhausted');
     expect(g.title).toContain('not throttling');
-    // The old lie - "the charger API is throttling. Retry in a minute" -
-    // must not survive for the most common long-corridor failure.
-    expect(g.detail).toMatch(/same cap/);
+    // Retries count against the same cap; the mechanism is not asserted.
+    expect(g.detail).toMatch(/every retry counts/i);
+    expect(g.detail).not.toMatch(/needs more checks than/i);
+    // No shorter-route / fresh-retry success promise.
+    expect(g.detail).not.toMatch(/shorter route/i);
+    expect(g.detail).not.toMatch(/\bis guaranteed\b/i);
+    expect(g.detail).not.toMatch(/\bwill succeed\b/i);
+    expect(g.detail).toMatch(/not guaranteed to succeed/);
+    expect(g.detail).toMatch(/details below/); // attempts/candidates evidence is pointed at, never hidden
     expect(g.toast).toContain('not throttling');
   });
 
-  it('auth guidance says retrying will not help (a server config problem)', () => {
+  it('deadline guidance names the run, never a phase without evidence', () => {
+    const g = planFailureGuidance('deadline');
+    expect(g.detail).toMatch(/\brun\b/i);
+    expect(g.detail).not.toMatch(/corridor scan/i);
+    // Phase evidence lives in the server's timings, deferred to details.
+    expect(g.detail).toMatch(/phase timings.*details below/);
+  });
+
+  it('auth guidance names credentials OR access - never a definitive token-replacement diagnosis', () => {
     const g = planFailureGuidance('auth');
-    expect(g.detail).toMatch(/Retrying will not help/);
-    expect(g.detail).toMatch(/token/i);
+    expect(g.detail).toMatch(/401\/403/);
+    expect(g.detail).toMatch(/invalid or expired/i);
+    expect(g.detail).toMatch(/lack access/i);
+    expect(g.detail).not.toMatch(/replac/i);
+    expect(g.detail).toMatch(/retrying will not change it/i);
   });
 
   it('coverage causes never claim the route is impossible', () => {
     for (const cause of ['scan-coverage', 'candidate-holes', 'deadline'] as const) {
       const g = planFailureGuidance(cause);
-      expect(g.detail).toContain('not a verdict');
-    }
-  });
-
-  it('unknown or absent causes fall back to the honest no-verdict default', () => {
-    for (const cause of [undefined, '', 'something-new']) {
-      const g = planFailureGuidance(cause);
-      expect(g.title).toBe('Plan not determined');
       expect(g.detail).toContain('not a verdict');
     }
   });

@@ -3,11 +3,21 @@
  *
  * The server sends `code: "not_determined"` with a fine-grained `cause`
  * (throttled | auth | budget-exhausted | deadline | sample-throttled |
- * scan-coverage | candidate-holes). Only the throttle causes mean "the
- * API is busy - wait a minute"; a budget-exhausted run hits the same cap
- * on an instant retry, and auth/deadline/coverage failures are flat-out
- * not retry problems. Every failure gets guidance named after its actual
- * cause; nothing is claimed either way about the route itself.
+ * scan-coverage | candidate-holes). Guidance correctness rules:
+ *
+ *  - Throttle causes NEVER invent a blanket wait ("a minute or two"):
+ *    the API's own requested wait (Retry-After) is in the server evidence
+ *    shown below the guidance - the user defers to THAT number.
+ *  - Budget exhaustion is reported without diagnosing WHY (attempt caps
+ *    count retries too; a big candidate pool is only one possibility)
+ *    and without promising any retry path succeeds.
+ *  - The deadline cause names the RUN, never a specific phase - which
+ *    phase it hit is phase-evidence territory (in the server's timings),
+ *    not something the guidance asserts.
+ *  - Auth means credentials OR access were refused (401/403), not a
+ *    definitive token-replacement diagnosis.
+ *  - No cause ever claims the route is impossible: not_determined is a
+ *    no-verdict outcome, and coverage evidence is never hidden.
  *
  * Pure module: no DOM, no maplibre - unit-testable in a plain node env.
  */
@@ -21,50 +31,59 @@ export interface PlanFailureGuidance {
   toast: string;
 }
 
-const THROTTLE_WAIT = 'Wait a minute or two, then try again.';
+const THROTTLE_DETAIL =
+  'Wait as long as the API asked - the requested wait is in the details below - then try again.';
 
-const CAUSE_GUIDANCE: Record<string, PlanFailureGuidance> = {
-  throttled: {
-    title: 'Charger API throttling',
-    detail: `The charger API asked this run to pause (429), so the plan stopped without a verdict. ${THROTTLE_WAIT}`,
-    toast: 'Plan not determined — charger API throttling. Wait a minute, then retry.',
-  },
-  'sample-throttled': {
-    title: 'Charger API throttling',
-    detail: `A corridor sample was throttled (429) and the scan stopped fail-closed instead of guessing. ${THROTTLE_WAIT}`,
-    toast: 'Plan not determined — charger API throttling. Wait a minute, then retry.',
-  },
-  auth: {
-    title: 'Charger API credentials rejected',
-    detail:
-      "The server's charger API token was rejected (401/403). Retrying will not help - the token needs attention in the server's .env.",
-    toast: 'Plan not determined — charger API credentials rejected. See details.',
-  },
-  'budget-exhausted': {
-    title: 'Run budget exhausted - not throttling',
-    detail:
-      'Every candidate charger is checked individually, and this corridor needs more checks than one run\'s call budget allows. Coverage is incomplete and no verdict was made. Retrying right now hits the same cap; a shorter route fits the budget, or the server\'s run budget can be raised (INDEV_PLAN_MAX_CALLS).',
-    toast: 'Plan not determined — run budget exhausted (the API is not throttling). See details.',
-  },
-  deadline: {
-    title: 'Time budget reached',
-    detail:
-      "The corridor scan exceeded this run's time limit and was cancelled before the route could be verified. This is not a verdict on the route; a shorter corridor completes in time, or the server's time budget can be raised (INDEV_PLAN_DEADLINE_MS).",
-    toast: 'Plan not determined — the run exceeded its time budget. See details.',
-  },
-  'scan-coverage': {
-    title: 'Charger coverage incomplete',
-    detail:
-      'Too many corridor samples could not be read, so charging coverage along the route is unknown. This is not a verdict that the route is impossible.',
-    toast: 'Plan not determined — charger coverage incomplete. See details.',
-  },
-  'candidate-holes': {
-    title: 'Candidate chargers unreadable',
-    detail:
-      'Some per-station lookups failed, so the charging-stop options are incomplete. This is not a verdict that the route is impossible.',
-    toast: 'Plan not determined — some candidate chargers were unreadable. See details.',
-  },
-};
+// Null-prototype map: inherited Object.prototype keys ('toString',
+// 'constructor'...) must never masquerade as causes. Lookup is
+// own-key-only (hasOwnProperty.call), so a stray 'toString' cause from a
+// buggy or hostile server resolves to the DEFAULT guidance instead of a
+// prototype function cast to PlanFailureGuidance.
+const CAUSE_GUIDANCE: Record<string, PlanFailureGuidance> = Object.assign(
+  Object.create(null) as Record<string, PlanFailureGuidance>,
+  {
+    throttled: {
+      title: 'Charger API throttling',
+      detail: `The charger API refused this run (429) and asked for a pause, so the plan stopped without a verdict. ${THROTTLE_DETAIL}`,
+      toast: 'Plan not determined — charger API throttling. Wait as the API asked, then retry.',
+    },
+    'sample-throttled': {
+      title: 'Charger API throttling',
+      detail: `A corridor sample was refused with 429 and the scan stopped fail-closed instead of guessing. ${THROTTLE_DETAIL}`,
+      toast: 'Plan not determined — charger API throttling. Wait as the API asked, then retry.',
+    },
+    auth: {
+      title: 'Charger API credentials rejected',
+      detail:
+        "The charger API refused this run's credentials (401/403) - the token may be invalid or expired, or the account may lack access to this data. Check the server's STATIQ_API_TOKEN and the account's access; retrying will not change it.",
+      toast: 'Plan not determined — charger API credentials rejected. See details.',
+    },
+    'budget-exhausted': {
+      title: 'Run budget exhausted - not throttling',
+      detail:
+        'The run used all of its upstream attempts before coverage was complete - every retry counts against the same cap, so a bigger candidate pool is only one possible reason (the attempts/candidates breakdown is in the details below). No verdict was made. Retrying is not guaranteed to succeed; the same cap applies to every run until the operator raises it (INDEV_PLAN_MAX_CALLS).',
+      toast: 'Plan not determined — run budget exhausted (the API is not throttling). See details.',
+    },
+    deadline: {
+      title: 'Time budget reached',
+      detail:
+        "The run exceeded its time budget and was cancelled before the route could be verified - the phase timings in the details below show where it stood. This is not a verdict on the route; the operator can raise the time budget (INDEV_PLAN_DEADLINE_MS).",
+      toast: 'Plan not determined — the run exceeded its time budget. See details.',
+    },
+    'scan-coverage': {
+      title: 'Charger coverage incomplete',
+      detail:
+        'Too many corridor samples could not be read, so charging coverage along the route is unknown. This is not a verdict that the route is impossible.',
+      toast: 'Plan not determined — charger coverage incomplete. See details.',
+    },
+    'candidate-holes': {
+      title: 'Candidate chargers unreadable',
+      detail:
+        'Some per-station lookups failed, so the charging-stop options are incomplete. This is not a verdict that the route is impossible.',
+      toast: 'Plan not determined — some candidate chargers were unreadable. See details.',
+    },
+  } satisfies Record<string, PlanFailureGuidance>,
+);
 
 const DEFAULT_GUIDANCE: PlanFailureGuidance = {
   title: 'Plan not determined',
@@ -73,10 +92,18 @@ const DEFAULT_GUIDANCE: PlanFailureGuidance = {
   toast: 'Plan not determined — see the details below the plan button.',
 };
 
-/** Guidance for a server cause string; unknown/absent causes get the
- *  honest no-verdict default (never a fake diagnosis). */
+/**
+ * Guidance for a server cause string; unknown, absent or
+ * prototype-suspicious causes get the honest no-verdict default (never a
+ * fake diagnosis, never an inherited-property lookup).
+ */
 export function planFailureGuidance(cause?: string): PlanFailureGuidance {
-  if (cause && cause in CAUSE_GUIDANCE) return CAUSE_GUIDANCE[cause] as PlanFailureGuidance;
+  if (
+    typeof cause === 'string' &&
+    Object.prototype.hasOwnProperty.call(CAUSE_GUIDANCE, cause)
+  ) {
+    return CAUSE_GUIDANCE[cause] as PlanFailureGuidance;
+  }
   return DEFAULT_GUIDANCE;
 }
 
