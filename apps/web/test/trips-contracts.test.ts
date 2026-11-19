@@ -45,6 +45,9 @@ describe('opening a saved trip: focus lands on the rendered summary', () => {
   });
 });
 
+// Only DELETE owns these contracts; refresh has its own focus recovery.
+const deleteSrc = tripsSrc.slice(tripsSrc.indexOf("row.querySelector('[data-delete]')"), tripsSrc.indexOf('return row;'));
+
 describe('saved-trip delete: single flight + focus that survives both outcomes', () => {
   it('refuses a second click while the DELETE is still in flight', () => {
     // Old defect: repeat clicks fired duplicate DELETEs; the second 404
@@ -54,8 +57,8 @@ describe('saved-trip delete: single flight + focus that survives both outcomes',
   });
 
   it('re-enables the button on BOTH failure branches (res not ok, throw)', () => {
-    expect((tripsSrc.match(/btn\.disabled = false;/g) ?? []).length).toBe(2);
-    expect((tripsSrc.match(/document\.activeElement === document\.body/g) ?? []).length).toBe(2);
+    expect((deleteSrc.match(/btn\.disabled = false;/g) ?? []).length).toBe(2);
+    expect((deleteSrc.match(/document\.activeElement === document\.body/g) ?? []).length).toBe(2);
   });
 
   it('lands focus on the stable owner control before the refresh destroys the row', () => {
