@@ -472,7 +472,9 @@ export function createApp(deps: AppDeps): Hono {
     // An invalid upstream reply is unavailable evidence, not a successful
     // refresh or proof that the requested station does not exist.
     if (!response || response.ok !== true ||
-        (response.station && response.station.stationId !== id)) {
+        (response.station && (response.station.stationId !== id ||
+          !Array.isArray(response.station.chargers) ||
+          response.station.chargers.some((charger) => !charger || !Array.isArray(charger.connectors))))) {
       return c.json({ error: 'Station details could not be verified. Please retry.', code: 'upstream_invalid' }, 502);
     }
     if (!response.station) {
