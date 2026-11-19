@@ -408,6 +408,45 @@ describe('planTrip invariants (randomized worlds)', () => {
 });
 
 describe('station details identity integrity', () => {
+  it.each(['empty-chargers', 'empty-connectors'] as const)('preserves explicit %s as known-empty data', async (kind) => {
+    const specs: StationSpec[] = [{ id: 1, name: 'Statiq Empty', chainageKm: 100 }];
+    const base = fakeStatiq(specs);
+    const empty = {
+      ...base,
+      detailsWithMeta: async (id: number) => {
+        const result = await base.detailsWithMeta(id);
+        if (kind === 'empty-chargers') result.response.station!.chargers = [];
+        else result.response.station!.chargers[0]!.connectors = [];
+        return result;
+      },
+    } as unknown as StatiqClient;
+    const err = await planTrip({ router: fakeRouter(700), statiq: empty }, O, D(700)).catch(e => e);
+    expect(err).toBeInstanceOf(PlanningError);
+    expect((err as PlanningError).code).toBe('no_route');
+  });
+
+  it.each(['missing-chargers', 'null-chargers', 'missing-connectors', 'null-connectors'] as const)('keeps %s detail evidence unknown, not known-unusable', async (kind) => {
+    const specs: StationSpec[] = [{ id: 1, name: 'Statiq Incomplete', chainageKm: 100 }];
+    const base = fakeStatiq(specs);
+    const incomplete = {
+      ...base,
+      detailsWithMeta: async (id: number) => {
+        const result = await base.detailsWithMeta(id);
+        const station = result.response.station!;
+        if (kind.endsWith('chargers')) {
+          Object.assign(station, { chargers: kind === 'null-chargers' ? null : undefined });
+        } else {
+          Object.assign(station.chargers[0]!, { connectors: kind === 'null-connectors' ? null : undefined });
+        }
+        return result;
+      },
+    } as unknown as StatiqClient;
+    const err = await planTrip({ router: fakeRouter(700), statiq: incomplete }, O, D(700)).catch(e => e);
+    expect(err).toBeInstanceOf(PlanningError);
+    expect((err as PlanningError).code).toBe('not_determined');
+    expect((err as PlanningError).cause).toBe('candidate-holes');
+  });
+
   it.each(['wrong-id', 'not-ok'] as const)('does not attach %s details to a corridor station', async (kind) => {
     const specs: StationSpec[] = Array.from({ length: 14 }, (_, i) => ({
       id: 900 + i, name: `Statiq Identity ${i}`, chainageKm: 50 * (i + 1),
