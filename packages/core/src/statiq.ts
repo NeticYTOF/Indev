@@ -19,6 +19,13 @@
  *   parsed Retry-After (delay-seconds OR HTTP-date) is recorded for
  *   honest reporting. Without a budget (single-call station revalidation)
  *   429s are honored via the full Retry-After with capped retries.
+ * - TIMEOUT vs CANCELLATION (completion-contract boundary): the per-request
+ *   timeout (10s inner controller) is a RETRYABLE TRANSPORT FAILURE - it
+ *   reached the wire, is audited with status 0, counts against the run
+ *   budget (retries included) and is retried. Only OUTER signal aborts
+ *   (run deadline / explicit cancellation) are run-fatal and never
+ *   retried - detected by the authoritative signal state, not the error
+ *   shape (an AbortError with a live outer signal is a timeout).
  */
 import type {
   StatiqCardsResponse,
@@ -395,12 +402,20 @@ export class StatiqClient {
         if (err instanceof StatiqRunFatalError || err instanceof UpstreamRunStoppedError) {
           throw err;
         }
-        // aborts propagate immediately; they are never retried
-        if (signal?.aborted || (signal && isAbortLike(err))) {
+        // OUTER cancellation (run deadline / explicit abort) is never
+        // retried. Detected by the AUTHORITATIVE signal state, NOT by the
+        // error shape: an AbortError-shaped rejection without the outer
+        // signal firing is the PER-REQUEST TIMEOUT (the 10s inner
+        // controller), which is a retryable transport failure - see below.
+        if (signal?.aborted) {
           this.audit(path, 0);
           throw new StatiqAbortError();
         }
-        // every outbound attempt is auditable, even transport failures
+        // Every outbound attempt is auditable, even transport failures.
+        // Per-request timeouts land here (inner-controller AbortError with
+        // the outer signal alive): audited with status 0 and RETRIED like
+        // any network failure - the attempt reached the wire and counts
+        // against the run budget (actual attempts include retries).
         if (!(err instanceof StatiqApiError)) {
           this.audit(path, 0);
         }

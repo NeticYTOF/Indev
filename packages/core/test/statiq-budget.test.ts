@@ -11,7 +11,12 @@
  *   and recorded for honest reporting.
  */
 import { describe, expect, it } from 'vitest';
-import { StatiqClient, StatiqRunFatalError } from '../src/statiq.js';
+import {
+  StatiqAbortError,
+  StatiqApiError,
+  StatiqClient,
+  StatiqRunFatalError,
+} from '../src/statiq.js';
 import { UpstreamBudget, UpstreamRunStoppedError } from '../src/upstream-budget.js';
 import type { StatiqMarkersResponse } from '../src/types.js';
 
@@ -344,5 +349,138 @@ describe('reservation race: concurrent callers vs the attempt cap', () => {
         reason instanceof StatiqRunFatalError || reason instanceof UpstreamRunStoppedError,
       ).toBe(true);
     }
+  });
+});
+
+/**
+ * COMPLETION-CONTRACT BOUNDARY: per-request timeout vs outer cancellation.
+ *
+ * Historical misclassification (found by boundary inspection): with an
+ * outer signal attached (every budgeted planning run passes one), the
+ * catch treated ANY AbortError-shaped rejection as run cancellation and
+ * never retried - so the per-request 10s timeout (inner controller) killed
+ * the whole planning run as a false 'deadline' report. The boundary is
+ * determined by the AUTHORITATIVE signal state, not the error shape:
+ *
+ * - AbortError with the outer signal ALIVE = per-request timeout: reached
+ *   the wire, audited status 0, counts against the budget (retries
+ *   included), RETRIED like any transport failure;
+ * - outer signal ABORTED (run deadline / explicit cancellation): NEVER
+ *   retried, run-fatal.
+ */
+describe('completion contract: timeout vs cancellation', () => {
+  /** The exact error shape a controller.abort() produces in Node fetch. */
+  function abortShapedError(): Error {
+    const e = new Error('This operation was aborted');
+    e.name = 'AbortError';
+    return e;
+  }
+
+  it('a per-request timeout (AbortError, outer signal LIVE) is retried, not a cancellation', async () => {
+    let n = 0;
+    const transportTimes: number[] = [];
+    let nowMs = 0;
+    const transport = (async () => {
+      const index = n++;
+      transportTimes.push(nowMs);
+      if (index === 0) throw abortShapedError(); // the 10s timer fired
+      return new Response(JSON.stringify(emptyMarkers), { status: 200 });
+    }) as typeof fetch;
+    const budget = new UpstreamBudget(10);
+    const client = new StatiqClient({
+      token: 't',
+      baseUrl: 'https://x.test/api',
+      fetchImpl: transport,
+      now: () => nowMs,
+      sleepImpl: async (ms: number) => {
+        nowMs += ms;
+      },
+      retries: 2,
+      minCallGapMs: 1,
+      maxCallsPerMinute: 1_000,
+    });
+    client.attachRunBudget(budget);
+    // a LIVE outer signal (the planning shape): must NOT make the timeout
+    // look like a deadline cancellation
+    const liveOuter = new AbortController();
+    await client.markers(1, 1, liveOuter.signal);
+    expect(n).toBe(2); // the timeout was retried
+    expect(liveOuter.signal.aborted).toBe(false);
+    expect(budget.attemptsMade).toBe(2); // BOTH dispatches counted (reserved == dispatched)
+    expect(budget.stopped).toBeNull();
+  });
+
+  it('a timeout on the LAST allowable dispatch refuses the retry as exhaustion, not cancellation', async () => {
+    let n = 0;
+    const transport = (async () => {
+      if (n++ === 0) throw abortShapedError(); // consumes the only attempt
+      return new Response(JSON.stringify(emptyMarkers), { status: 200 });
+    }) as typeof fetch;
+    const budget = new UpstreamBudget(1);
+    const client = new StatiqClient({
+      token: 't',
+      baseUrl: 'https://x.test/api',
+      fetchImpl: transport,
+      now: () => 0,
+      sleepImpl: async () => {},
+      retries: 2,
+      minCallGapMs: 1,
+      maxCallsPerMinute: 1_000,
+    });
+    client.attachRunBudget(budget);
+    const liveOuter = new AbortController();
+    const err = await client.markers(1, 1, liveOuter.signal).catch((e) => e);
+    // previously this misreported as a run abort (false 'deadline'); the
+    // honest outcome: the attempt cap is exhausted by real dispatch work
+    expect(err).toBeInstanceOf(UpstreamRunStoppedError);
+    expect((err as UpstreamRunStoppedError).cause).toBe('budget-exhausted');
+    expect(n).toBe(1); // the timeout DID reach the wire once
+    expect(liveOuter.signal.aborted).toBe(false); // nobody cancelled the run
+    expect(budget.stopped).toBeNull(); // exhaustion is not fatal either
+  });
+
+  it('retries exhausted on timeouts surface a transport-failure error, never a cancellation', async () => {
+    const transport = (async () => {
+      throw abortShapedError();
+    }) as typeof fetch;
+    const client = new StatiqClient({
+      token: 't',
+      baseUrl: 'https://x.test/api',
+      fetchImpl: transport,
+      now: () => 0,
+      sleepImpl: async () => {},
+      retries: 0,
+      minCallGapMs: 1,
+      maxCallsPerMinute: 1_000,
+    });
+    const liveOuter = new AbortController();
+    const err = await client.markers(1, 1, liveOuter.signal).catch((e) => e);
+    expect(err).toBeInstanceOf(StatiqApiError);
+    expect((err as StatiqApiError).status).toBe(0); // transport-failure shape
+    expect(err).not.toBeInstanceOf(StatiqAbortError);
+    expect(liveOuter.signal.aborted).toBe(false);
+  });
+
+  it('OUTER cancellation is NEVER retried, whatever the error shape', async () => {
+    let n = 0;
+    const outer = new AbortController();
+    const transport = (async () => {
+      n++;
+      outer.abort(); // the run deadline fires while this request is in flight
+      throw abortShapedError();
+    }) as typeof fetch;
+    const client = new StatiqClient({
+      token: 't',
+      baseUrl: 'https://x.test/api',
+      fetchImpl: transport,
+      now: () => 0,
+      sleepImpl: async () => {},
+      retries: 2, // a retry would be WRONG here: the run is cancelled
+      minCallGapMs: 1,
+      maxCallsPerMinute: 1_000,
+    });
+    const err = await client.markers(1, 1, outer.signal).catch((e) => e);
+    expect(err).toBeInstanceOf(StatiqAbortError);
+    expect(n).toBe(1); // no retry after the outer cancel
   });
 });
