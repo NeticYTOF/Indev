@@ -15,7 +15,7 @@ test(`stop Revalidate recovers from ${failure} failure without duplicate request
   }));
   await page.route('**/api/stations/*', async (route) => { lookups++; if (lookups === 1) { await held; if (failure === 'network') await route.abort('failed'); else await route.fulfill({ status: 503, json: { error: 'Synthetic temporary error' } }); return; } await route.fulfill({ json: { station: {
     synthetic: true, rating: 4.3, reviewCount: 11, reliability: null,
-    chargers: [{ lastUsedOn: '19/11/2026' }],
+    chargers: [{ lastUsedOn: '30/10/2026' }, { lastUsedOn: '02/11/2026' }],
     ccs2: { usable: 3, free: 2, faulted: 0, uncertain: 0 },
   } } }); });
   await page.goto('/');
@@ -44,6 +44,7 @@ test(`stop Revalidate recovers from ${failure} failure without duplicate request
   await expect(card.locator('.revalidate-box')).toContainText('Synthetic station');
   await expect(card.locator('.revalidate-box')).toContainText('3 usable CCS2 plugs');
   await expect(card.locator('.revalidate-box')).toContainText('2 free');
+  await expect(card.locator('.revalidate-box')).toContainText('Last used 2/11/2026');
   await card.scrollIntoViewIfNeeded();
   await page.screenshot({ path: test.info().outputPath('station-revalidated.png') });
 });
