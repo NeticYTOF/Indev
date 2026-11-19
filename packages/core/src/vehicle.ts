@@ -60,6 +60,20 @@ export function socAfterDriving(
 }
 
 /**
+ * Departure SoC % required so that after driving `km` the battery sits at
+ * `targetSocPct`. Inverse of socAfterDriving; caps at 100.
+ */
+export function socRequiredForArrival(
+  km: number,
+  targetSocPct: SocPct,
+  v: VehicleConfig = HARIER_EV_75,
+): SocPct {
+  const consumedKwh = kwhForDistance(km, v);
+  const pctPerKwh = 100 / v.batteryKwh;
+  return Math.min(100, targetSocPct + consumedKwh * pctPerKwh);
+}
+
+/**
  * Effective charge power (kW) at a given SoC for a station's charger,
  * tapering above `taperStartSocPct` toward `taperEndPowerKw` at 100%.
  */
