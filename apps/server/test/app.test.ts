@@ -395,6 +395,27 @@ describe('saved trips (shared with MCP)', () => {
     expect(body.code).toBe('bad_request');
   });
 
+  it.each([[], [{ lat: 28, lon: 77 }], [null, { lat: 28, lon: 77 }],
+    [[28, 77], [27, 76]], [{ lat: 91, lon: 77 }, { lat: 28, lon: 77 }],
+    [{ lat: 28, lon: '77' }, { lat: 28, lon: 77 }]].map((geometry) => ({ geometry })))(
+    'rejects malformed saved route geometry %j without persisting', async ({ geometry }) => {
+      const deps = await makeDeps({ mock: true, createStatiq: () => { throw new Error('No live calls'); } });
+      const app = createApp(deps);
+      const response = await app.request('/api/plan', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ origin: ORIGIN, destination: DEST }),
+      });
+      const { plan } = await response.json();
+      plan.geometry = geometry;
+      const save = await app.request('/api/trips', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan }),
+      });
+      expect(save.status).toBe(400);
+      expect((await save.json() as { code: string }).code).toBe('bad_request');
+      expect(await deps.trips.list()).toEqual([]);
+    },
+  );
+
   it.each([null, {}, { stationId: 0 }, { stationId: -1 }, { stationId: 1.5 }])(
     'rejects malformed saved stop reference %j without writing a trip', async (station) => {
       const deps = await makeDeps({ mock: true, createStatiq: () => { throw new Error('No live calls'); } });
