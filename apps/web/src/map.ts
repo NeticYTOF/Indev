@@ -1,13 +1,22 @@
 /**
  * Map layer: full-screen MapLibre map with the route polyline,
  * origin/destination pins and numbered charging-stop markers.
- * Flat colors only — no gradient fills anywhere.
+ * Night Drive: dark basemap as the hero; flat colors only.
  */
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
-const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
-const STYLE_FALLBACK_URL = 'https://tiles.openfreemap.org/styles/bright';
+/** Dark styles, tried in order (all free, no API keys). */
+const STYLE_URLS = [
+  'https://tiles.openfreemap.org/styles/dark',
+  'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+  'https://tiles.openfreemap.org/styles/liberty',
+];
+
+// Last-resort route colors when CSS custom props are unavailable (e.g. in
+// a non-browser test environment).
+const FALLBACK_ROUTE = '#4D9FFF';
+const FALLBACK_CASING = '#E9F1FC';
 
 export interface MapStop {
   lat: number;
@@ -18,10 +27,15 @@ export interface MapStop {
 
 let tripLayerCounter = 0;
 
+function cssToken(name: string, fallback: string): string {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
+
 export function createMap(container: HTMLElement): maplibregl.Map {
   const map = new maplibregl.Map({
     container,
-    style: STYLE_URL,
+    style: STYLE_URLS[0] as string,
     center: [78.96, 22.59], // geographic centre of India
     zoom: 5, // z>=5 puts state and city labels in the visible tile ranges
     attributionControl: { compact: true },
@@ -30,8 +44,8 @@ export function createMap(container: HTMLElement): maplibregl.Map {
   });
 
   // Surface style/tile/glyph failures loudly: a silent failure renders
-  // terrain with no labels (diagnosed during the visual pass). The console
-  // output makes any future fetch failure self-evidencing.
+  // terrain with no labels. The console output makes any future fetch
+  // failure self-evidencing.
   map.on('error', (e) => {
     const err = e as { error?: unknown; sourceId?: string; layerId?: string; sourceLayerId?: string; tile?: unknown };
     console.warn(
@@ -46,22 +60,30 @@ export function createMap(container: HTMLElement): maplibregl.Map {
     );
   });
 
-  // If the primary style never loads, fall back to bright (still free,
-  // still OpenFreeMap) so the UI never shows a label-less void.
-  let styleLoaded = false;
-  map.on('load', () => {
-    styleLoaded = true;
-  });
-  setTimeout(() => {
-    if (!styleLoaded) {
-      console.warn('[map] style did not load in time; switching to fallback style');
+  // Style fallback chain: if a style never loads, walk to the next one so
+  // the UI never shows a label-less void. Attempts are bounded by the list.
+  let styleIndex = 0;
+  let loadTimer: ReturnType<typeof setTimeout> | null = null;
+  const armFallback = (): void => {
+    if (loadTimer) clearTimeout(loadTimer);
+    loadTimer = setTimeout(() => {
+      styleIndex += 1;
+      const next = STYLE_URLS[styleIndex];
+      if (!next) return;
+      console.warn(`[map] style did not load in time; switching to fallback ${styleIndex}`);
       try {
-        map.setStyle(STYLE_FALLBACK_URL);
+        map.setStyle(next);
       } catch {
-        /* map already torn down */
+        return;
       }
-    }
-  }, 15_000);
+      armFallback();
+    }, 15_000);
+  };
+  map.on('load', () => {
+    if (loadTimer) clearTimeout(loadTimer);
+    loadTimer = null;
+  });
+  armFallback();
 
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-left');
   map.addControl(new maplibregl.GeolocateControl({ trackUserLocation: false }), 'bottom-left');
@@ -93,13 +115,16 @@ export function drawTrip(map: maplibregl.Map, trip: TripDraw): void {
     },
   });
 
-  // casing: white outline under the accent line (classic map clarity)
+  // Dark-map route: a light casing under the accent line for crisp clarity.
   map.addLayer({
     id: `${id}-casing`,
     type: 'line',
     source: id,
     layout: { 'line-cap': 'round', 'line-join': 'round' },
-    paint: { 'line-color': '#ffffff', 'line-width': 10 },
+    paint: {
+      'line-color': cssToken('--route-casing', FALLBACK_CASING),
+      'line-width': 9,
+    },
   });
   map.addLayer({
     id: `${id}-line`,
@@ -107,9 +132,8 @@ export function drawTrip(map: maplibregl.Map, trip: TripDraw): void {
     source: id,
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: {
-      'line-color':
-        getComputedStyle(document.documentElement).getPropertyValue('--route').trim() || '#2463eb',
-      'line-width': 5,
+      'line-color': cssToken('--route', FALLBACK_ROUTE),
+      'line-width': 4.5,
     },
   });
 
@@ -123,7 +147,8 @@ export function drawTrip(map: maplibregl.Map, trip: TripDraw): void {
   });
   markers.push(makePin(map, trip.destination, 'B', 'destination'));
 
-  // fit with room for the left panel on desktop
+  // Frame the route with room for the floating panels. On mobile the bottom
+  // sheet will cover the lower half, so the route sits in the upper area.
   const wide = window.innerWidth > 720;
   const bounds = trip.geometry.reduce(
     (b, c) => b.extend(c as [number, number]),
@@ -131,10 +156,10 @@ export function drawTrip(map: maplibregl.Map, trip: TripDraw): void {
   );
   map.fitBounds(bounds, {
     padding: {
-      top: 90,
-      bottom: 90,
-      left: wide ? 460 : 40,
-      right: wide ? 60 : 40,
+      top: 84,
+      bottom: wide ? 84 : 340,
+      left: wide ? 478 : 36,
+      right: wide ? 64 : 36,
     },
     duration: 800,
     maxZoom: 13,
