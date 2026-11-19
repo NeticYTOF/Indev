@@ -46,7 +46,7 @@ export function classifyPlug(c: StatiqConnector): PlugClassification {
   }
 
   // Explicitly unavailable / disconnected without fault text -> offline.
-  if (isUnavailable) {
+  if (isUnavailable || status.includes('offline')) {
     return { health: 'offline', contradiction: false };
   }
 
@@ -57,6 +57,7 @@ export function classifyPlug(c: StatiqConnector): PlugClassification {
   }
 
   if (status.includes('finishing') || note.includes('finish')) {
+    if (disconnectText) return { health: 'uncertain', contradiction: true };
     return { health: 'finishing', contradiction: false };
   }
 
