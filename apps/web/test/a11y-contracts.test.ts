@@ -63,6 +63,29 @@ describe('planning run lifecycle (single flight by construction)', () => {
   });
 });
 
+describe('geocode race guard (makeSearchField ordering)', () => {
+  it('gates every list application on the per-field session token', () => {
+    expect(plannerSrc).toContain('const session = new GeocodeSession();');
+    expect(plannerSrc).toContain('const token = session.begin();');
+    // Stale responses apply nothing; the focus check also prevents the
+    // blur orphan (a late response reopening the list with focus gone).
+    expect(plannerSrc).toContain(
+      'if (!session.isCurrent(token) || document.activeElement !== input) return;',
+    );
+  });
+
+  it('a stale ERROR must not hide a newer query\u0027s list', () => {
+    // Old defect: the catch path unconditionally hid the list.
+    expect(plannerSrc).toContain('if (!session.isCurrent(token)) return;');
+  });
+
+  it('typing/clearing and picking invalidate in-flight responses', () => {
+    // input listener (covers clearing: invalidate precedes the q<2 branch)
+    // + the pick handler = exactly two call sites.
+    expect((plannerSrc.match(/session\.invalidate\(\);/g) ?? []).length).toBe(2);
+  });
+});
+
 describe('toast vs drawer overlays (mobile Close control)', () => {
   it('keeps #trips-drawer before #toast-root (sibling override contract)', () => {
     // The "drawer open" toast repositioning is a general-sibling CSS rule;

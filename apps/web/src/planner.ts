@@ -13,6 +13,7 @@ import { renderPlanPanel } from './plan-panel.js';
 import { toast } from './toast.js';
 import { formatElapsedMs, planFailureGuidance, type PlanFailureGuidance } from './plan-errors.js';
 import { SubmitGate } from './submit-gate.js';
+import { GeocodeSession } from './geocode-session.js';
 
 interface PlaceInput {
   hit: GeocodeHit | null;
@@ -502,9 +503,15 @@ function makeSearchField(
 
   let debounce: ReturnType<typeof setTimeout> | null = null;
   let activeIndex = -1;
+  // Ordering guard for this field's geocode responses: a stale response
+  // (late after a newer query, after the query was cleared, or after a
+  // pick) must never repopulate or reopen the list. Pure module - see
+  // geocode-session.test.ts for the deterministic ordering regressions.
+  const session = new GeocodeSession();
 
   input.addEventListener('input', () => {
     onPicked(null);
+    session.invalidate(); // any in-flight response is now stale
     if (debounce) clearTimeout(debounce);
     const q = input.value.trim();
     if (q.length < 2) {
@@ -513,8 +520,14 @@ function makeSearchField(
       return;
     }
     debounce = setTimeout(async () => {
+      // This dispatched query owns the list from here: late responses for
+      // older sessions (or after a clear/pick) are discarded by the guard.
+      const token = session.begin();
       try {
         const { hits } = await api.geocode(q);
+        // Stale response, or focus left the field (blur orphan: the list
+        // must not reopen while the user is elsewhere) - apply nothing.
+        if (!session.isCurrent(token) || document.activeElement !== input) return;
         list.innerHTML = '';
         activeIndex = -1;
         if (hits.length === 0) {
@@ -532,6 +545,9 @@ function makeSearchField(
           const index = seen.size - 1;
           const item = el(`<button type="button" class="suggestion-item" role="option">${escapeHtml(h.label)}</button>`);
           item.addEventListener('click', () => {
+            // The session is complete: pending stragglers must not reopen
+            // the list over the finished selection.
+            session.invalidate();
             input.value = h.label;
             onPicked(h);
             list.classList.add('hidden');
@@ -547,6 +563,8 @@ function makeSearchField(
         }
         list.classList.remove('hidden');
       } catch {
+        // A stale request's error must not hide a NEWER query's list.
+        if (!session.isCurrent(token)) return;
         list.classList.add('hidden');
       }
     }, 220);
