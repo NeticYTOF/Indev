@@ -522,6 +522,11 @@ function makeSearchField(
   input.addEventListener('input', () => {
     onPicked(null);
     session.invalidate(); // any in-flight response is now stale
+    // Old choices belong to the previous query, not the text now shown.
+    // Clear immediately, including the debounce and network wait window.
+    list.replaceChildren();
+    list.classList.add('hidden');
+    activeIndex = -1;
     if (debounce) clearTimeout(debounce);
     const q = input.value.trim();
     if (q.length < 2) {
@@ -585,7 +590,9 @@ function makeSearchField(
     if (items.length === 0 || list.classList.contains('hidden')) return;
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
-      activeIndex = e.key === 'ArrowDown' ? (activeIndex + 1) % items.length : (activeIndex - 1 + items.length) % items.length;
+      activeIndex = activeIndex < 0
+        ? (e.key === 'ArrowDown' ? 0 : items.length - 1)
+        : (activeIndex + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
       items.forEach((n, i) => n.classList.toggle('active', i === activeIndex));
       (items[activeIndex] as HTMLElement)?.scrollIntoView({ block: 'nearest' });
     } else if (e.key === 'Enter' && activeIndex >= 0) {
