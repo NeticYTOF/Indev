@@ -140,6 +140,7 @@ function openSavedTrip(trip: SavedTrip, map: maplibregl.Map): void {
   if (window.innerWidth <= 720) {
     panel.classList.add('open');
     document.getElementById('sheet-open')?.setAttribute('aria-expanded', 'true');
+    document.getElementById('sheet-open')?.classList.add('hidden');
   }
   // The button that opened this trip vanished with the drawer - land
   // focus on the attention target (the freshly rendered summary) instead

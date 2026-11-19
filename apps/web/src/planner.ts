@@ -384,6 +384,7 @@ export function onPlanAvailable(plan: TripPlan, map: maplibregl.Map): void {
     panel.classList.add('open');
     // keep the FAB's expanded state true for assistive tech
     document.getElementById('sheet-open')?.setAttribute('aria-expanded', 'true');
+    document.getElementById('sheet-open')?.classList.add('hidden');
   }
 }
 
@@ -614,6 +615,8 @@ function makeSearchField(
     const panel = document.getElementById('planner-panel');
     if (window.innerWidth <= 720 && panel && !panel.classList.contains('open')) {
       panel.classList.add('open');
+      document.getElementById('sheet-open')?.setAttribute('aria-expanded', 'true');
+      document.getElementById('sheet-open')?.classList.add('hidden');
     }
   });
 
