@@ -13,9 +13,9 @@
  * not_determined body (cause budget-exhausted, long coverage evidence).
  * Evidence is synthetic intercepted only; nothing here claims a verdict
  * about live data, and no provider traffic happens - geocode + the page
- * itself come from the mock dev stack (npm run dev:stack, INDEV_MOCK=1).
+ * itself come from the config-owned credential-free mock UI stack.
  *
- * Run (Linux): npx playwright test --project=chromium
+ * Run (Linux): npm ci && npm run test:browser:setup && npm run test:browser
  */
 import { expect, test, type Page } from '@playwright/test';
 
@@ -42,16 +42,30 @@ async function revealState(page: Page): Promise<RevealState> {
     if (!title || !detail) return { title: false, detail: false, focused: false };
     const r1 = title.getBoundingClientRect();
     const r2 = detail.getBoundingClientRect();
+    const panel = document.getElementById('planner-panel')!.getBoundingClientRect();
+    const top = Math.max(0, panel.top);
+    const bottom = Math.min(window.innerHeight, panel.bottom);
     return {
-      title: r1.top >= 0 && r1.bottom <= window.innerHeight,
-      detail: r2.top >= 0 && r2.bottom <= window.innerHeight,
+      title: r1.top >= top && r1.bottom <= bottom,
+      detail: r2.top >= top && r2.bottom <= bottom,
       focused: document.activeElement === go,
     };
   });
 }
 
 test.beforeEach(async ({ page }) => {
-  // Synthetic determinism: only the plan call is intercepted.
+  // No third-party map/font requests are needed for this UI regression.
+  await page.route(/^https?:\/\//, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') await route.continue();
+    else await route.abort();
+  });
+  // Show the optional AI box to preserve the original below-fold geometry.
+  // This fixture never calls an AI endpoint or provider.
+  await page.route('**/api/health', (route) => route.fulfill({
+    json: { ok: true, mock: true, ai: true, chargersSeen: 0 },
+  }));
+  // Synthetic determinism: the plan call returns the failure fixture.
   await page.route('**/api/plan', (route) =>
     route.fulfill({
       status: 422,
@@ -66,12 +80,13 @@ test.beforeEach(async ({ page }) => {
 });
 
 async function forceLongFailure(page: Page): Promise<void> {
-  const from = page.getByPlaceholder('From');
+  await expect(page.getByRole('button', { name: 'Plan with AI', exact: true })).toBeVisible();
+  const from = page.getByRole('searchbox', { name: 'From', exact: true });
   await from.fill('Delhi');
-  await page.locator('.suggestion-item').first().click();
-  const to = page.getByPlaceholder('To');
+  await page.locator('.suggestions:not(.hidden) .suggestion-item').first().click();
+  const to = page.getByRole('searchbox', { name: 'To', exact: true });
   await to.fill('Jaipur');
-  await page.locator('.suggestion-item').first().click();
+  await page.locator('.suggestions:not(.hidden) .suggestion-item').first().click();
   await page.getByRole('button', { name: 'Plan route' }).click();
   await expect(page.locator('.error-box .error-title')).toContainText('Run budget exhausted');
   await expect(page.locator('.error-box .error-raw')).toContainText('rough estimate');
@@ -80,6 +95,8 @@ async function forceLongFailure(page: Page): Promise<void> {
 test('mobile 390x844: long failure readable AND retry button keeps focus', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
+  const health = await page.request.get('/api/health');
+  expect((await health.json()).mock).toBe(true);
   await forceLongFailure(page);
 
   const state = await revealState(page);
@@ -96,15 +113,19 @@ test('mobile 390x844: long failure readable AND retry button keeps focus', async
   expect(after.title).toBeTruthy();
   expect(after.detail).toBeTruthy();
   expect(after.focused).toBeTruthy();
+  await page.screenshot({ path: test.info().outputPath('failure-reveal.png') });
 });
 
 test('desktop 1280x800: same invariants', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('/');
+  const health = await page.request.get('/api/health');
+  expect((await health.json()).mock).toBe(true);
   await forceLongFailure(page);
 
   const state = await revealState(page);
   expect(state.title).toBeTruthy();
   expect(state.detail).toBeTruthy();
   expect(state.focused).toBeTruthy();
+  await page.screenshot({ path: test.info().outputPath('failure-reveal.png') });
 });

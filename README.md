@@ -66,3 +66,32 @@ npm run dev            # LIVE mode: server :8787 + web :5173
 npm test         # full suite (isolated temp stores, mocked transports)
 npm run typecheck
 ```
+## Browser regression checks (Linux)
+
+Requires Node 20 or newer. From a clean checkout:
+
+```sh
+npm ci
+npm run test:browser:setup
+npm run typecheck
+npm run test:browser
+```
+
+On Linux hosts that already provide Chrome, the browser download can be skipped:
+
+```sh
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome npm run test:browser
+```
+
+The browser command starts and stops its own isolated, credential-free mock
+stack on ports 8788 and 5174. Keep those ports free. It refuses to reuse an
+unknown web server. Saved trips use disposable test data, not the normal data
+folder. The config does not start a live provider run. The failure test uses
+intercepted synthetic responses, including optional AI controls for layout;
+it is not evidence of live route completion. Third-party map requests are
+blocked for this focused UI regression, so its screenshots have no basemap.
+
+The checks cover mobile 390x844 and desktop 1280x800, title/guidance visibility
+inside the planner scrollport, and restored retry-button focus. Browser specs
+and config are included in `npm run typecheck`. Failure screenshots/traces and
+successful reveal screenshots are written under ignored `test-results/`.
