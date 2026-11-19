@@ -98,6 +98,32 @@ describe('GET /api/vehicles', () => {
   });
 });
 
+describe('planning coordinate bounds', () => {
+  for (const endpoint of ['/api/plan', '/api/ai/plan']) {
+    for (const field of ['origin', 'destination']) {
+      it.each([{ lat: 91, lon: 77 }, { lat: -91, lon: 77 }, { lat: 28, lon: 181 }, { lat: 28, lon: -181 }])(
+        `${endpoint} rejects out-of-range ${field}: %j`, async (coordinate) => {
+          const app = createApp(await makeDeps({ mock: true }));
+          const res = await app.request(endpoint, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ origin: ORIGIN, destination: DEST, [field]: { label: 'Invalid coordinate', ...coordinate } }),
+          });
+          expect(res.status).toBe(400);
+          expect((await res.json() as { code: string }).code).toBe('bad_request');
+        },
+      );
+    }
+    it(`${endpoint} accepts inclusive valid coordinate boundaries`, async () => {
+      const app = createApp(await makeDeps({ mock: true }));
+      const res = await app.request(endpoint, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ origin: { label: 'Boundary A', lat: -90, lon: -180 }, destination: { label: 'Boundary B', lat: 90, lon: 180 } }),
+      });
+      expect(res.status).toBe(200);
+    });
+  }
+});
+
 describe('POST /api/plan', () => {
   it('rejects bad bodies with 400', async () => {
     const app = createApp(await makeDeps());
