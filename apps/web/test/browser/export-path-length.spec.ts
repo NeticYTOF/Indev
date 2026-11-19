@@ -20,10 +20,15 @@ test('a winding export finishes drawing the entire route, not a fixed pixel pref
   expect(await path.evaluate(el => (el as SVGPathElement).getTotalLength())).toBeGreaterThan(4000);
   await expect(path).toHaveAttribute('pathLength', '1');
   expect(await path.evaluate(el => getComputedStyle(el).strokeDasharray)).toBe('1px');
-  await page.evaluate(() => {
-    const style = document.createElementNS('http://www.w3.org/2000/svg', 'style');
-    style.textContent = '.fade { opacity: 1 !important; animation: none !important; } .draw { stroke-dashoffset: 0 !important; animation: none !important; }';
-    document.documentElement.appendChild(style);
+  // Observe real CSS completion rather than forcing the finished style.
+  // The finished promises wait only for this document's finite animations.
+  const animationStates = await page.evaluate(async () => {
+    const animations = document.getAnimations();
+    await Promise.all(animations.map(animation => animation.finished));
+    return animations.map(animation => animation.playState);
   });
+  expect(animationStates.length).toBeGreaterThan(0);
+  expect(animationStates.every(state => state === 'finished')).toBe(true);
+  expect(await path.evaluate(el => getComputedStyle(el).strokeDashoffset)).toBe('0px');
   await page.screenshot({ path: test.info().outputPath('winding.png') });
 });
