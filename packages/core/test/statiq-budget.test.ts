@@ -412,6 +412,9 @@ describe('completion contract: timeout vs cancellation', () => {
 
   it('a timeout on the LAST allowable dispatch refuses the retry as exhaustion, not cancellation', async () => {
     let n = 0;
+    let nowMs = 0; // ADVANCING fake clock: the retry's limiter wait must be
+    // able to observe time passing - a constant clock + no-op sleep spins
+    // acquireSlot's poll loop forever (the Linux 30s hang)
     const transport = (async () => {
       if (n++ === 0) throw abortShapedError(); // consumes the only attempt
       return new Response(JSON.stringify(emptyMarkers), { status: 200 });
@@ -421,8 +424,10 @@ describe('completion contract: timeout vs cancellation', () => {
       token: 't',
       baseUrl: 'https://x.test/api',
       fetchImpl: transport,
-      now: () => 0,
-      sleepImpl: async () => {},
+      now: () => nowMs,
+      sleepImpl: async (ms: number) => {
+        nowMs += ms;
+      },
       retries: 2,
       minCallGapMs: 1,
       maxCallsPerMinute: 1_000,
@@ -440,6 +445,7 @@ describe('completion contract: timeout vs cancellation', () => {
   });
 
   it('retries exhausted on timeouts surface a transport-failure error, never a cancellation', async () => {
+    let nowMs = 0; // advancing fake clock (same fixture discipline as above)
     const transport = (async () => {
       throw abortShapedError();
     }) as typeof fetch;
@@ -447,8 +453,10 @@ describe('completion contract: timeout vs cancellation', () => {
       token: 't',
       baseUrl: 'https://x.test/api',
       fetchImpl: transport,
-      now: () => 0,
-      sleepImpl: async () => {},
+      now: () => nowMs,
+      sleepImpl: async (ms: number) => {
+        nowMs += ms;
+      },
       retries: 0,
       minCallGapMs: 1,
       maxCallsPerMinute: 1_000,
@@ -463,6 +471,7 @@ describe('completion contract: timeout vs cancellation', () => {
 
   it('OUTER cancellation is NEVER retried, whatever the error shape', async () => {
     let n = 0;
+    let nowMs = 0; // advancing fake clock (same fixture discipline as above)
     const outer = new AbortController();
     const transport = (async () => {
       n++;
@@ -473,8 +482,10 @@ describe('completion contract: timeout vs cancellation', () => {
       token: 't',
       baseUrl: 'https://x.test/api',
       fetchImpl: transport,
-      now: () => 0,
-      sleepImpl: async () => {},
+      now: () => nowMs,
+      sleepImpl: async (ms: number) => {
+        nowMs += ms;
+      },
       retries: 2, // a retry would be WRONG here: the run is cancelled
       minCallGapMs: 1,
       maxCallsPerMinute: 1_000,

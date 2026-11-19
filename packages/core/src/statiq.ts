@@ -38,6 +38,16 @@ import { UpstreamBudget, UpstreamRunStoppedError } from './upstream-budget.js';
 export const DEFAULT_STATIQ_BASE_URL =
   'https://harrier-evroute.aaravnirajsingh.workers.dev/api';
 
+/**
+ * How long dispatch stamps are retained by the rolling-window limiter
+ * (slightly past the 60s window so boundary windows stay conservative).
+ * SHARED with the work-estimate module (packages/core/src/work-estimate.ts)
+ * so the limiter's effective sustained pacing and full-coverage estimates
+ * can never drift apart. Linux measured the effective window at ~62.05s
+ * (25 calls per 62.05s under the defaults).
+ */
+export const WINDOW_RETENTION_MS = 62_000;
+
 export class StatiqApiError extends Error {
   constructor(
     readonly status: number,
@@ -257,9 +267,11 @@ export class StatiqClient {
       if (signal?.aborted) throw new StatiqAbortError();
       const now = this.now();
       // Retain stamps past the window: a push is only allowed when even the
-      // most conservative 60s window (ending now) holds < max calls.
-      const RETENTION_MS = 62_000;
-      this.callStamps = this.callStamps.filter((t) => now - t < RETENTION_MS);
+      // most conservative 60s window (ending now) holds < max calls. The
+      // 62s retention is shared with the work-estimate module
+      // (WINDOW_RETENTION_MS) so the limiter's effective sustained pacing
+      // and the estimator can never drift apart.
+      this.callStamps = this.callStamps.filter((t) => now - t < WINDOW_RETENTION_MS);
       const gapWait = this.lastCallAt + this.minCallGapMs - now;
       const windowFull = this.callStamps.length >= this.maxCallsPerMinute;
       if (!windowFull && gapWait <= 0) {
@@ -269,7 +281,7 @@ export class StatiqClient {
         return;
       }
       const oldest = this.callStamps[0] ?? now;
-      const windowWait = windowFull ? RETENTION_MS - (now - oldest) + 50 : 0;
+      const windowWait = windowFull ? WINDOW_RETENTION_MS - (now - oldest) + 50 : 0;
       // wait at most ~200ms so an abort is noticed within one poll cycle
       await this.doSleep(Math.min(Math.max(gapWait, windowWait, 50), 200));
     }
