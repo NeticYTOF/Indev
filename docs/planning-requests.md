@@ -118,11 +118,15 @@ decision — code never raises them silently.
 
 ## Fail-closed stop semantics
 
-- **First 429 (throttle) or 401/403 (auth)**: the whole run stops instantly
-  — no sleep-then-retry, no bypassing the server's limit. Concurrent
-  workers fail fast at the budget gate **without touching the network**.
-  The parsed `Retry-After` (both the delay-seconds and the HTTP-date form)
-  is recorded and reported so the next run can be scheduled honestly.
+- **First 429 (throttle) or 401/403 (auth)**: the shared budget stops AT
+  THE RESPONSE HEADERS - before the body resolves - so no gated worker can
+  slip an extra dispatch while a fatal body is still in flight (the Linux
+  race repro). No sleep-then-retry, no bypassing the server's limit; zero
+  NEW dispatch after the headers, while requests already in flight complete
+  as legitimate work. Concurrent workers fail fast at the budget gate
+  **without touching the network**. The parsed `Retry-After` (both forms) is
+  recorded at stop time; the audit entry and the error's body diagnostics
+  are retained afterwards.
 - **Exhausted budget**: the plan fails as `not_determined` with coverage
   evidence — attempts used vs cap (actual transport attempts, incl.
   retries), route samples covered, and the candidate aggregate (planned

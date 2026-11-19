@@ -14,11 +14,15 @@
  *   SAFETY DEFAULTS - our own politeness choice, NOT a provider contract:
  *   the upstream publishes no rate-limit headers we rely on.
  * - RETRY POLICY: budgeted planning runs (see attachRunBudget) fail CLOSED
- *   on the FIRST 429/401/403 - the whole run stops, no sleep-then-retry,
- *   no further upstream traffic from any concurrent worker - and the
- *   parsed Retry-After (delay-seconds OR HTTP-date) is recorded for
- *   honest reporting. Without a budget (single-call station revalidation)
- *   429s are honored via the full Retry-After with capped retries.
+ *   on the FIRST 429/401/403 - the shared budget stops AT THE RESPONSE
+ *   HEADERS, BEFORE the body resolves (a fatal status is fully known at
+ *   headers; waiting for the body let a gated worker slip one extra
+ *   dispatch - the Linux race repro), no sleep-then-retry, no NEW dispatch
+ *   from any concurrent worker (requests already in flight complete as
+ *   legitimate work), and the parsed Retry-After (delay-seconds OR
+ *   HTTP-date) is recorded at stop time for honest reporting. Without a
+ *   budget (single-call station revalidation) 429s are honored via the
+ *   full Retry-After with capped retries.
  * - TIMEOUT vs CANCELLATION (completion-contract boundary): the per-request
  *   timeout (10s inner controller) is a RETRYABLE TRANSPORT FAILURE - it
  *   reached the wire, is audited with status 0, counts against the run
@@ -371,6 +375,10 @@ export class StatiqClient {
       //  - success: reserved == dispatched, so the shared counters always
       //    match real network work.
       this.runBudget?.reserveAttempt();
+      // ONE AUDIT PER ATTEMPT: header-time audit marks the attempt as
+      // answered on the wire; the catch's audit-0 fallbacks skip when it
+      // already ran (a body-read failure after headers must not double-).
+      let attemptAudited = false;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.timeoutMs);
       const onOuterAbort = () => controller.abort();
@@ -385,19 +393,43 @@ export class StatiqClient {
           body: JSON.stringify(body),
           signal: controller.signal,
         });
-        const text = await res.text();
+        // FATAL HEADERS STOP THE BUDGET IMMEDIATELY (contract repair; the
+        // Linux offline repro raced 2/6): a fatal 401/403/429 is fully
+        // known at HEADERS, but stopping only after the body resolved left
+        // a window where another worker passed the budget gate and
+        // DISPATCHED while the fatal body was still in flight.
+        // Already-in-flight requests complete as legitimate work; ZERO NEW
+        // DISPATCH may follow fatal headers. Diagnostics (audit entry with
+        // the true status, the body on the error, the parsed Retry-After)
+        // are retained after the stop.
+        const fatalCause =
+          !res.ok &&
+          this.runBudget &&
+          (res.status === 401 || res.status === 403 || res.status === 429)
+            ? res.status === 429
+              ? 'throttled'
+              : 'auth'
+            : undefined;
+        const fatalRetryAfter =
+          fatalCause === 'throttled'
+            ? this.parseRetryAfterMs(res.headers?.get('retry-after'))
+            : undefined;
+        if (fatalCause) {
+          this.runBudget.stop(fatalCause, fatalRetryAfter);
+        }
+        // HEADER-TIME AUDIT: the attempt reached the wire and answered with
+        // this status - recorded even if the body then never arrives.
         this.audit(path, res.status);
+        attemptAudited = true;
+        const text = await res.text();
+        if (fatalCause) {
+          // no retry path is entered under a budget: the fatal error carries
+          // the full body diagnostics and the parsed wait for honest evidence
+          throw new StatiqRunFatalError(fatalCause, res.status, path, text, fatalRetryAfter);
+        }
         if (!res.ok) {
           const retryAfter =
             res.status === 429 ? this.parseRetryAfterMs(res.headers?.get('retry-after')) : undefined;
-          // Under a run budget the FIRST 429/401/403 STOPS the run:
-          // fail closed - no sleep-then-retry, no bypassing the server's
-          // limit, no further traffic from any concurrent worker.
-          if (this.runBudget && (res.status === 401 || res.status === 403 || res.status === 429)) {
-            const stopCause = res.status === 429 ? 'throttled' : 'auth';
-            this.runBudget.stop(stopCause, retryAfter);
-            throw new StatiqRunFatalError(stopCause, res.status, path, text, retryAfter);
-          }
           // No budget (single-call revalidation): 4xx (except 429) are
           // permanent and not retried; 429/5xx retry honoring Retry-After.
           if (res.status >= 500 || res.status === 429) {
@@ -420,15 +452,17 @@ export class StatiqClient {
         // signal firing is the PER-REQUEST TIMEOUT (the 10s inner
         // controller), which is a retryable transport failure - see below.
         if (signal?.aborted) {
-          this.audit(path, 0);
+          if (!attemptAudited) this.audit(path, 0);
           throw new StatiqAbortError();
         }
         // Every outbound attempt is auditable, even transport failures.
         // Per-request timeouts land here (inner-controller AbortError with
         // the outer signal alive): audited with status 0 and RETRIED like
         // any network failure - the attempt reached the wire and counts
-        // against the run budget (actual attempts include retries).
-        if (!(err instanceof StatiqApiError)) {
+        // against the run budget (actual attempts include retries). An
+        // attempt that already answered at HEADERS is not re-audited (its
+        // true status is already recorded; the body read failed after it).
+        if (!(err instanceof StatiqApiError) && !attemptAudited) {
           this.audit(path, 0);
         }
         if (err instanceof StatiqApiError && err.status < 500 && err.status !== 429) {

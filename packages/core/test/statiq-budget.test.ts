@@ -495,3 +495,127 @@ describe('completion contract: timeout vs cancellation', () => {
     expect(n).toBe(1); // no retry after the outer cancel
   });
 });
+
+/**
+ * FATAL-HEADERS RACE (contract repair; Linux offline repro raced 2/6).
+ *
+ * The old flow stopped the shared budget only AFTER awaiting the response
+ * body - so a fatal 429 whose body resolved slowly left a window where a
+ * gated concurrent worker passed the budget gate and dispatched one extra
+ * request. The repaired contract:
+ *
+ * - the budget stops AT THE FATAL HEADERS (401/403/429), BEFORE the body;
+ * - already-in-flight requests complete as legitimate work;
+ * - ZERO NEW DISPATCH follows fatal headers;
+ * - diagnostics are retained afterwards: the audit entry carries the true
+ *   status, the error carries the body, and Retry-After parses from the
+ *   headers at stop time.
+ */
+describe('fatal-headers race: budget stops at headers, before the body', () => {
+  /** Response-like whose fetch resolves instantly (headers) but whose body
+   *  resolves only after `hops` microtask turns - the repro's slow body. */
+  function delayedFatalBody(hops: number): Response {
+    return {
+      ok: false,
+      status: 429,
+      headers: new Headers({ 'Retry-After': '30' }),
+      async text() {
+        for (let i = 0; i < hops; i++) await Promise.resolve();
+        return '{"error":"Please wait a minute."}';
+      },
+    } as unknown as Response;
+  }
+
+  function fakeClockClient(
+    transport: typeof fetch,
+    maxAttempts: number,
+    minCallGapMs: number,
+  ): { client: StatiqClient; budget: UpstreamBudget } {
+    let nowMs = 0;
+    const budget = new UpstreamBudget(maxAttempts);
+    const client = new StatiqClient({
+      token: 't',
+      baseUrl: 'https://x.test/api',
+      fetchImpl: transport,
+      now: () => nowMs,
+      sleepImpl: async (ms: number) => {
+        nowMs += ms;
+      },
+      retries: 0,
+      minCallGapMs,
+      maxCallsPerMinute: 1_000,
+    });
+    client.attachRunBudget(budget);
+    return { client, budget };
+  }
+
+  it('a ready waiter NEVER dispatches between fatal HEADERS and the body', async () => {
+    // repro shape: worker 1's fatal body takes 10 microtask hops; worker 2
+    // sits one limiter wake away. Stop-at-headers refuses worker 2 at its
+    // reserve; the OLD stop-after-body let it dispatch (the race).
+    let n = 0;
+    const transport = (async () => {
+      if (n++ === 0) return delayedFatalBody(10);
+      return new Response(JSON.stringify(emptyMarkers), { status: 200 });
+    }) as typeof fetch;
+    // gap 500 -> two 200ms poll chunks before worker 2's wake (~5 hops),
+    // well after worker 1's headers/stop (~2 hops) and well before the
+    // 10-hop body resolves: the ordering discriminates the repair
+    const { client, budget } = fakeClockClient(transport, 10, 500);
+    const results = await Promise.allSettled([
+      client.markers(1, 1),
+      client.markers(2, 2),
+    ]);
+    // exactly ONE dispatch: the fatal one - zero NEW dispatch after headers
+    expect(n).toBe(1);
+    expect(budget.stopped).toBe('throttled');
+    expect(budget.retryAfterMs).toBe(30_000); // parsed from HEADERS at stop time
+    const [r1, r2] = results as [
+      PromiseSettledResult<unknown>,
+      PromiseSettledResult<unknown>,
+    ];
+    expect(r1.status).toBe('rejected');
+    expect(r1.reason).toBeInstanceOf(StatiqRunFatalError);
+    // diagnostics retained: the body arrives late but travels on the error
+    expect((r1.reason as StatiqRunFatalError).message).toContain('Please wait a minute');
+    // the ready waiter was refused at the gate (after the headers, before
+    // the body ever resolved) - hearing the stop, never the network
+    expect(r2.status).toBe('rejected');
+    expect((r2.reason as UpstreamRunStoppedError).cause).toBe('throttled');
+  });
+
+  it('an ALREADY-IN-FLIGHT request completes; only post-header dispatches are refused', async () => {
+    // worker 1's whole FETCH is delayed 12 hops, THEN returns the fatal 429
+    // (immediate body); worker 2 dispatches behind it and its 200 returns
+    // BEFORE worker 1's headers land: worker 2 is legitimate in-flight
+    // work and FULFILLS. The stop refuses only requests that had not yet
+    // dispatched when the fatal headers arrived.
+    let n = 0;
+    const transport = (async () => {
+      if (n++ === 0) {
+        for (let i = 0; i < 12; i++) await Promise.resolve();
+        return new Response('{"error":"Please wait a minute."}', {
+          status: 429,
+          headers: new Headers({ 'Retry-After': '30' }),
+        });
+      }
+      return new Response(JSON.stringify(emptyMarkers), { status: 200 });
+    }) as typeof fetch;
+    // worker 2 dispatches ~3 hops in (1 chunk of 100 fake ms), its 200
+    // resolves ~2 hops later - all well before worker 1's 12-hop headers
+    const { client, budget } = fakeClockClient(transport, 10, 100);
+    const results = await Promise.allSettled([
+      client.markers(1, 1),
+      client.markers(2, 2),
+    ]);
+    expect(n).toBe(2); // both dispatched - worker 2 was legitimately in flight
+    expect(results[1]?.status).toBe('fulfilled');
+    expect(results[0]?.status).toBe('rejected');
+    const fatal = (results[0] as PromiseRejectedResult).reason as StatiqRunFatalError;
+    expect(fatal).toBeInstanceOf(StatiqRunFatalError);
+    expect(fatal.stopCause).toBe('throttled');
+    expect(fatal.retryAfterMs).toBe(30_000);
+    expect(budget.stopped).toBe('throttled');
+    expect(budget.attemptsMade).toBe(2); // reserved == dispatched for both
+  });
+});
