@@ -11,7 +11,7 @@ import { el, escapeHtml } from './planner.js';
 import { api } from './api.js';
 import { downloadAnimatedExport } from './export.js';
 import { toast } from './toast.js';
-import { formatDuration, formatEta, formatInr, lastUsedLabel, formatDateTime } from './format.js';
+import { formatDuration, formatEta, formatInr, lastUsedLabel, formatDateTime, formatTariff } from './format.js';
 import { safeHttpUrl } from './safe-url.js';
 
 export function renderPlanPanel(
@@ -197,7 +197,7 @@ function renderStopCard(stop: PlanStop, index: number): HTMLElement {
             <span class="stop-name">${escapeHtml(s.name)}</span>
             <span class="stop-brand brand-${s.brand}">${brandLabel}</span>
           </div>
-          <span class="stop-tariff">${stop.pricePerKwh != null ? `Rs. ${Math.round(stop.pricePerKwh)}/kWh` : 'Tariff unknown'}</span>
+          <span class="stop-tariff">${stop.pricePerKwh != null ? escapeHtml(formatTariff(stop.pricePerKwh)) : 'Tariff unknown'}</span>
         </div>
         <div class="stop-body">
           <div class="soc-row">
