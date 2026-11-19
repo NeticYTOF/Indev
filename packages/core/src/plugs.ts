@@ -27,7 +27,7 @@ export function classifyPlug(c: StatiqConnector): PlugClassification {
   const available = c.available;
   const isUnavailable = status.includes('unavailable');
   const positiveStatus =
-    !isUnavailable && /available|charging|preparing|finishing/.test(status);
+    !isUnavailable && /^(available|charging|preparing|finishing)$/.test(status);
   const faultInStatus = status.includes('fault');
   const faultInNote = note.includes('fault'); // fault text
   const disconnectText = /disconnect|offline/.test(note) || /unavailable|offline/.test(status);
@@ -51,24 +51,28 @@ export function classifyPlug(c: StatiqConnector): PlugClassification {
   }
 
   // Occupied but working.
-  if (status.includes('charging')) {
+  if (status === 'charging') {
     if (disconnectText) return { health: 'uncertain', contradiction: true };
     return { health: 'working-occupied', contradiction: false };
   }
 
-  if (status.includes('finishing') || note.includes('finish')) {
+  if (note.includes('finish') && disconnectText) {
+    return { health: 'uncertain', contradiction: true };
+  }
+
+  if (status === 'finishing') {
     if (disconnectText) return { health: 'uncertain', contradiction: true };
     return { health: 'finishing', contradiction: false };
   }
 
-  if (status.includes('preparing')) {
+  if (status === 'preparing') {
     if (available === false || disconnectText) {
       return { health: 'uncertain', contradiction: true };
     }
     return { health: 'working-free', contradiction: false };
   }
 
-  if (status.includes('available')) {
+  if (status === 'available') {
     if (note.includes('charging') && available !== true) {
       return { health: 'working-occupied', contradiction: false };
     }
