@@ -135,6 +135,13 @@ interface WireOpts {
    *  transport delay let the whole 60-sample scan finish before a 200ms
    *  deadline). */
   markerPendingUntilAbort?: boolean;
+  /** The FIRST markers transport call throws the exact AbortError shape
+   *  the per-request timeout controller produces (with the outer run
+   *  signal LIVE): the 685e7b9 contract classifies it as a RETRYABLE
+   *  transport failure, not a cancellation. A mid-scan timeout fixture
+   *  with exact counts - had the misclassification remained, the run
+   *  would abort as a false deadline (zero details dispatched). */
+  markerTimeoutFirstCall?: boolean;
 }
 
 /**
@@ -152,6 +159,7 @@ function wireStatiq(
 ): { client: StatiqClient; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
   let detailsDispatch = 0;
+  let markerDispatch = 0;
   let nowMs = 0; // advancing fake clock (deterministic; no real sleeps)
   const markerAttempts = new Map<string, number>();
   const detailAttempts = new Map<number, number>();
@@ -163,6 +171,7 @@ function wireStatiq(
     const bodyText = String(init?.body ?? '');
     if (path.endsWith('/stations/markers')) {
       calls.push({ endpoint: 'markers' });
+      const dispatchIdx = ++markerDispatch;
       const { latitude, longitude } = JSON.parse(bodyText) as {
         latitude: number;
         longitude: number;
@@ -186,6 +195,16 @@ function wireStatiq(
           }
           init?.signal?.addEventListener('abort', onAbort, { once: true });
         });
+      }
+      if (opts.markerTimeoutFirstCall && dispatchIdx === 1) {
+        // the FIRST markers request times out: the exact AbortError shape
+        // an inner-controller timeout produces, with the outer run signal
+        // still live - a retryable transport failure per the completion
+        // contract (a real dispatch: it reached the wire and counts).
+        // The retry re-dispatches with dispatchIdx 2 -> normal 200.
+        const e = new Error('This operation was aborted (timeout)');
+        e.name = 'AbortError';
+        throw e;
       }
       if (opts.markerAttemptFailOnce && seen === 1) {
         return new Response('{"error":"transient 500"}', { status: 500 });
@@ -455,6 +474,28 @@ describe('planner runs over a real budgeted client (wire transport)', () => {
     // started
     expect(markers).toHaveLength(4);
     expect(details).toHaveLength(0);
+  });
+
+  it('a per-request timeout MID-SCAN is retried, never a cancellation: the run completes', async () => {
+    // The FIRST markers request times out (the exact AbortError shape the
+    // inner 10s controller produces, with the outer run signal still
+    // LIVE). Per the completion contract (685e7b9) that is a RETRYABLE
+    // TRANSPORT FAILURE: the client retries it, the timed-out attempt
+    // counts as real dispatch work, and the run completes. Had the old
+    // misclassification remained, the run would have aborted as a FALSE
+    // deadline (zero details dispatched).
+    const { client, calls } = wireStatiq({ specs: POOL, markerTimeoutFirstCall: true });
+    const plan = await planTrip({ router: fakeRouter(700), statiq: client }, O, D700);
+    expect(plan.status).toBe('ok');
+    expect(plan.stops.length).toBeGreaterThanOrEqual(1);
+
+    const markers = calls.filter((c) => c.endpoint === 'markers');
+    const details = calls.filter((c) => c.endpoint === 'details');
+    // EXACT counts: every sample once, plus ONE retry for the timed-out
+    // first request (reserved == dispatched: the timeout attempt reached
+    // the wire and counts as real work); every candidate checked.
+    expect(markers).toHaveLength(expectedMarkerCalls(700) + 1);
+    expect(details).toHaveLength(8);
   });
 
   it('retry-driven MID-SCAN exhaustion keeps progress and fails budget-exhausted', async () => {
