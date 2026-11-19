@@ -799,7 +799,8 @@ export function computeTotals(
 ): PlanTotals {
   const chargeMin = stops.reduce((s, x) => s + x.chargeTimeMin, 0);
   const kwh = stops.reduce((s, x) => s + x.chargeKwh, 0);
-  const price = stops.every((s) => s.estPriceInr == null)
+  // A known subtotal is not a trip total: an unknown tariff is not free.
+  const price = stops.length === 0 || stops.some((s) => s.estPriceInr == null)
     ? null
     : stops.reduce((s, x) => s + (x.estPriceInr ?? 0), 0);
   const last = stops.at(-1);
