@@ -434,7 +434,18 @@ export function createApp(deps: AppDeps): Hono {
     if (plan.geometry.length < 2 || plan.geometry.some((point) => !coordRef(point))) {
       return c.json({ error: 'Plan geometry is malformed', code: 'bad_request' }, 400);
     }
-    const saved = await deps.trips.save(plan, (body as { name?: string }).name);
+    // Minimal saved references feed map pins and text renderers directly.
+    // Validate rather than saving coordinates/labels those views cannot use.
+    const name = (body as { name?: unknown }).name;
+    if (
+      !coordRef(plan.origin) || typeof plan.origin.label !== 'string' ||
+      !coordRef(plan.destination) || typeof plan.destination.label !== 'string' ||
+      plan.stops.some((stop) => !coordRef(stop.station) || typeof stop.station.name !== 'string') ||
+      (name != null && typeof name !== 'string')
+    ) {
+      return c.json({ error: 'Saved trip coordinates or names are malformed', code: 'bad_request' }, 400);
+    }
+    const saved = await deps.trips.save(plan, name as string | undefined);
     return c.json({ trip: saved }, 201);
   });
 
