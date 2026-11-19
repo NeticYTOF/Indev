@@ -1,8 +1,9 @@
 /**
- * Plan results: totals, honest banners (degraded / synthetic / warnings),
- * and per-stop cards: battery in/out, charge, tariff price, time,
- * rating/reviews, last-used, reliability (unavailable), brand, uncertainty,
- * fetched-at freshness, Google Maps directions link.
+ * Plan results: honest banners (degraded / synthetic / warnings), hero
+ * trip strip, and the charging-stop timeline: numbered rail nodes, per-stop
+ * battery in/out with charge between, tariff price, times, rating/reviews,
+ * last-used, reliability (unavailable), uncertainty chips, fetched-at
+ * freshness, Google Maps directions link.
  */
 import * as maplibregl from 'maplibre-gl';
 import type { TripPlan, PlanStop } from '@indeev/core';
@@ -17,13 +18,14 @@ export function renderPlanPanel(
   map: maplibregl.Map,
   plan: TripPlan,
 ): void {
-  // The planner form stays on top; results render into a section below it.
+  // The compose card stays on top; results render into a section below it.
   let results = panel.querySelector<HTMLElement>('.plan-results');
   if (!results) {
     results = el('<section class="plan-results" aria-label="Trip plan"></section>') as HTMLElement;
     panel.appendChild(results);
   }
   results.innerHTML = '';
+  void map;
 
   // ---- banners ----
   const banners = el('<div class="banners"></div>');
@@ -51,20 +53,18 @@ export function renderPlanPanel(
   `);
   results.appendChild(head);
 
-  // ---- totals strip ----
-  const totals = el(`
-    <div class="totals">
-      <div class="totals-grid">
-        <div class="total"><span class="total-num">${formatDuration(plan.totals.totalTimeMin)}</span><span class="total-label">Total time</span></div>
-        <div class="total"><span class="total-num">${Math.round(plan.routeDistanceKm)} km</span><span class="total-label">Distance</span></div>
-        <div class="total"><span class="total-num">${plan.totals.estPriceInr != null ? formatInr(plan.totals.estPriceInr) : '—'}</span><span class="total-label">Est. charging cost</span></div>
-        <div class="total"><span class="total-num">${plan.stops.length}</span><span class="total-label">Charging stop${plan.stops.length === 1 ? '' : 's'}</span></div>
-        <div class="total"><span class="total-num">${formatDuration(plan.totals.chargeTimeMin)}</span><span class="total-label">Charging time</span></div>
-        <div class="total"><span class="total-num">${Math.round(plan.totals.finalSocPct)}%</span><span class="total-label">Arrival charge</span></div>
-      </div>
+  // ---- hero trip strip ----
+  const strip = el(`
+    <div class="trip-strip">
+      <div class="strip-cell"><span class="strip-num">${escapeHtml(formatDuration(plan.totals.totalTimeMin))}</span><span class="strip-label">Total time</span></div>
+      <div class="strip-cell"><span class="strip-num">${Math.round(plan.routeDistanceKm)}<span class="unit">km</span></span><span class="strip-label">Distance</span></div>
+      <div class="strip-cell"><span class="strip-num">${escapeHtml(String(plan.stops.length))}</span><span class="strip-label">Charging stop${plan.stops.length === 1 ? '' : 's'}</span></div>
+      <div class="strip-cell"><span class="strip-num">${escapeHtml(formatDuration(plan.totals.chargeTimeMin))}</span><span class="strip-label">Charging time</span></div>
+      <div class="strip-cell"><span class="strip-num">${plan.totals.estPriceInr != null ? escapeHtml(formatInr(plan.totals.estPriceInr)) : '—'}</span><span class="strip-label">Est. cost</span></div>
+      <div class="strip-cell accent"><span class="strip-num">${Math.round(plan.totals.finalSocPct)}<span class="unit">%</span></span><span class="strip-label">Arrival charge</span></div>
     </div>
   `);
-  results.appendChild(totals);
+  results.appendChild(strip);
 
   // ---- actions ----
   const actions = el(`
@@ -81,7 +81,7 @@ export function renderPlanPanel(
     btn.addEventListener('click', () => void revalidateStop(btn, plan));
   });
 
-  // stops render below actions
+  // ---- stops timeline ----
   const stopsWrap = el('<div class="stops"></div>');
   if (plan.stops.length === 0) {
     stopsWrap.appendChild(el('<div class="no-stops">No charging stops needed — the destination is within your charge.</div>'));
@@ -170,35 +170,40 @@ function renderStopCard(stop: PlanStop, index: number): HTMLElement {
   const brandLabel = s.brand.charAt(0).toUpperCase() + s.brand.slice(1);
   const directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${s.lat}%2C${s.lon}`;
   const card = el(`
-    <article class="stop-card" data-stop-index="${index}">
-      <div class="stop-head">
-        <span class="stop-number">${index + 1}</span>
-        <div class="stop-title">
-          <span class="stop-name">${escapeHtml(s.name)}</span>
-          <span class="stop-brand brand-${s.brand}">${brandLabel}</span>
-        </div>
-        <span class="stop-tariff">${stop.pricePerKwh != null ? `Rs. ${Math.round(stop.pricePerKwh)}/kWh` : 'Tariff unknown'}</span>
+    <article class="stop-card timeline" data-stop-index="${index}">
+      <div class="stop-rail" aria-hidden="true">
+        <span class="stop-node">${index + 1}</span>
+        <span class="node-line"></span>
       </div>
-      <div class="stop-body">
-        <div class="soc-row">
-          ${socBar('Arrive', stop.arriveSocPct)}
-          <span class="charge-arrow" title="${Math.round(stop.chargeKwh)} kWh">${Math.round(stop.chargeKwh)} kWh</span>
-          ${socBar('Leave', stop.leaveSocPct)}
+      <div class="stop-main">
+        <div class="stop-head">
+          <div class="stop-title">
+            <span class="stop-name">${escapeHtml(s.name)}</span>
+            <span class="stop-brand brand-${s.brand}">${brandLabel}</span>
+          </div>
+          <span class="stop-tariff">${stop.pricePerKwh != null ? `Rs. ${Math.round(stop.pricePerKwh)}/kWh` : 'Tariff unknown'}</span>
         </div>
-        <div class="stop-stats">
-          <span class="stat">Charge ${formatDuration(stop.chargeTimeMin)}</span>
-          <span class="stat">Arrive at ${formatEta(stop.arrivalEtaMin)}</span>
-          <span class="stat">Depart at +${formatEta(stop.departureEtaMin)}</span>
-          <span class="stat">Detour ${stop.detourKm.toFixed(1)} km</span>
+        <div class="stop-body">
+          <div class="soc-row">
+            ${socBar('Arrive', stop.arriveSocPct)}
+            <span class="charge-arrow" title="${Math.round(stop.chargeKwh)} kWh">${Math.round(stop.chargeKwh)} kWh</span>
+            ${socBar('Leave', stop.leaveSocPct)}
+          </div>
+          <div class="stop-stats">
+            <span class="stat">Charge ${formatDuration(stop.chargeTimeMin)}</span>
+            <span class="stat">Arrive at ${formatEta(stop.arrivalEtaMin)}</span>
+            <span class="stat">Depart at +${formatEta(stop.departureEtaMin)}</span>
+            <span class="stat">Detour ${stop.detourKm.toFixed(1)} km</span>
+          </div>
+          <div class="stop-meta">
+            <span class="meta">${s.rating != null ? `★ ${Math.round(s.rating * 10) / 10} (${(s.reviewCount ?? 0).toLocaleString('en-IN')} reviews)` : 'No rating'}</span>
+            <span class="meta">Last used ${lastUsedLabel(s.chargers)}</span>
+            <span class="meta">Reliability: unavailable</span>
+            <span class="meta fetched">Status fetched ${fetchedAgo(s.fetchedAt)}</span>
+          </div>
+          ${uncertaintyChips(s)}
+          ${s.synthetic ? '<div class="synthetic-flag">Synthetic station (mock data)</div>' : ''}
         </div>
-        <div class="stop-meta">
-          <span class="meta">${s.rating != null ? `★ ${Math.round(s.rating * 10) / 10} (${(s.reviewCount ?? 0).toLocaleString('en-IN')} reviews)` : 'No rating'}</span>
-          <span class="meta">Last used ${lastUsedLabel(s.chargers)}</span>
-          <span class="meta">Reliability: unavailable</span>
-          <span class="meta fetched">Status fetched ${fetchedAgo(s.fetchedAt)}</span>
-        </div>
-        ${uncertaintyChips(s)}
-        ${s.synthetic ? '<div class="synthetic-flag">Synthetic station (mock data)</div>' : ''}
       </div>
       <div class="stop-foot">
         <a class="btn btn-compact btn-ghost" href="${directionsUrl}" target="_blank" rel="noreferrer">Directions</a>
@@ -210,10 +215,12 @@ function renderStopCard(stop: PlanStop, index: number): HTMLElement {
   return card;
 }
 
+/** SoC column with an honest tone class (green/amber/red by level). */
 function socBar(labelText: string, soc: number): string {
   const pct = Math.max(0, Math.min(100, soc));
+  const tone = soc >= 45 ? '' : soc >= 20 ? ' mid' : ' low';
   return `
-    <div class="soc-col">
+    <div class="soc-col${tone}">
       <span class="soc-label">${labelText}</span>
       <div class="soc-bar" role="img" aria-label="${labelText} ${Math.round(soc)}%">
         <span class="soc-fill" style="width:${pct}%"></span>
