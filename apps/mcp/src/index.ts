@@ -95,7 +95,7 @@ server.tool(
       .object({
         label: z.string().optional(),
         batteryKwh: z.number().positive(),
-        claimedRangeKwh: z.number().positive().optional(),
+        claimedRangeKm: z.number().positive().optional(),
         realWorldRangeKm: z.number().positive(),
       })
       .optional()

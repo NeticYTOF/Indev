@@ -18,7 +18,7 @@ export interface PlanRequest {
   destination: { label: string; lat: number; lon: number };
   vehicle?: {
     entryId?: string;
-    custom?: { label?: string; batteryKwh: number; claimedRangeKwh?: number; realWorldRangeKm: number };
+    custom?: { label?: string; batteryKwh: number; claimedRangeKm?: number; realWorldRangeKm: number };
     realWorldRangeKm?: number;
   };
   startSocPct?: number;

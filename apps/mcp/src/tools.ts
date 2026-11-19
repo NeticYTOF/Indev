@@ -49,7 +49,7 @@ export interface PlanTripArgs {
   /** "489" real-world km for the selected vehicle (REQUIRED unless default Harrier). */
   vehicleRealWorldRangeKm?: number;
   vehicleCatalogId?: string;
-  customVehicle?: { label?: string; batteryKwh: number; claimedRangeKwh?: number; realWorldRangeKm: number };
+  customVehicle?: { label?: string; batteryKwh: number; claimedRangeKm?: number; realWorldRangeKm: number };
   startSocPct?: number;
   /** Optional trip name: plan is saved to the shared store when provided. */
   save?: string;
