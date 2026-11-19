@@ -255,12 +255,7 @@ export async function getStationHandler(
   const s = response.station;
   const summary = summarizeCcs2(s);
 
-  const lastUsed =
-    (s.chargers ?? [])
-      .map((ch) => ch.lastUsedOn)
-      .filter((d): d is string => Boolean(d))
-      .sort()
-      .pop() ?? null;
+  const lastUsed = latestChargerDate(s.chargers.map((ch) => ch.lastUsedOn));
 
   const station: StationViewMcp = {
     stationId: s.stationId,
@@ -320,4 +315,25 @@ export function planToStructured(plan: TripPlan): object {
     })),
     warnings: plan.warnings,
   };
+}
+
+/** Recorded charger vocabulary is dd/mm/yyyy, not lexically sortable.
+ * Invalid dates never outrank valid evidence; if all values are opaque,
+ * preserve the first raw value rather than inventing a date or chronology. */
+function latestChargerDate(values: Array<string | null>): string | null {
+  const raw = values.filter((value): value is string => typeof value === 'string' && value.length > 0);
+  let latest: { value: string; time: number } | undefined;
+  for (const value of raw) {
+    const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(value);
+    if (!match) continue;
+    const day = Number(match[1]);
+    const month = Number(match[2]) - 1;
+    const year = Number(match[3]);
+    const date = new Date(0);
+    date.setUTCFullYear(year, month, day);
+    date.setUTCHours(0, 0, 0, 0);
+    if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month || date.getUTCDate() !== day) continue;
+    if (!latest || date.getTime() > latest.time) latest = { value, time: date.getTime() };
+  }
+  return latest?.value ?? raw[0] ?? null;
 }
