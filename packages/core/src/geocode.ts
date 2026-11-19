@@ -74,7 +74,7 @@ export class PhotonGeocoder {
       lon: String(this.bias.lon),
     });
     const json = await this.getJson<PhotonResponse>(`${this.base}/api?${params.toString()}`);
-    const features = json?.features ?? [];
+    const features = json?.features;
     if (!Array.isArray(features) || features.some((feature) => {
       const coordinates = feature?.geometry?.coordinates;
       const properties = feature?.properties;
