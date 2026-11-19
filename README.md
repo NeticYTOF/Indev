@@ -44,7 +44,13 @@ npm run dev            # LIVE mode: server :8787 + web :5173
   `get_station`) sharing the saved trips with the website. Launch with
   `node node_modules/tsx/dist/cli.mjs apps/mcp/src/index.ts` (avoid npm's
   Windows cmd shims, which can drop env vars).
-- `scripts/` — dev utilities and the fail-closed test launchers.
+- `scripts/` — dev utilities and the fail-closed test launchers; the live
+  acceptance runner fails closed (mode and provenance gates, non-zero exit
+  on any failure, retained per-run artifacts).
+- `docs/planning-requests.md` — upstream request accounting: what one
+  planning run costs, what the attempt budget counts (retries included),
+  and the fail-closed stop semantics (first 429/401/403, exhaustion →
+  honest not_determined).
 
 ## Data & privacy
 
