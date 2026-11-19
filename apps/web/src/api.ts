@@ -34,17 +34,30 @@ export interface AiPlanResponse {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(path);
+  const res = await request(path);
   return handle<T>(res);
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
+  const res = await request(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   return handle<T>(res);
+}
+
+/** Fetch wrapper: a failed fetch (server down) becomes a clear offline error. */
+async function request(path: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(path, init);
+  } catch {
+    throw new ApiError(
+      'Server unavailable — the IndEV server is not responding. Start it with npm run dev, then try again.',
+      'offline',
+      0,
+    );
+  }
 }
 
 async function handle<T>(res: Response): Promise<T> {
