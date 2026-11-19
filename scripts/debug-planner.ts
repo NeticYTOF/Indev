@@ -75,6 +75,16 @@ const statiq = {
     source: 't',
     station: details.get(id) ?? null,
   }),
+  detailsWithMeta: async (id: number) => ({
+    response: {
+      ok: true,
+      live: true,
+      retained: false,
+      source: 't',
+      station: details.get(id) ?? null,
+    },
+    fetchedAt: new Date(),
+  }),
 } as unknown as StatiqClient;
 
 const plan = await planTrip(

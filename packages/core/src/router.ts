@@ -76,7 +76,11 @@ export class OsrmRouter {
   private async getJson<T>(url: string): Promise<T> {
     let lastError: unknown;
     for (let attempt = 0; attempt <= this.retries; attempt++) {
-      if (attempt > 0) await sleep(250 * 2 ** (attempt - 1));
+      if (attempt > 0) {
+        // exponential backoff with full jitter, capped
+        const base = 250 * 2 ** Math.min(attempt, 4);
+        await sleep(Math.min(Math.random() * base, 4_000) + 100);
+      }
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.timeoutMs);
       try {

@@ -122,6 +122,16 @@ function fakeStatiq(specs: StationSpec[]): StatiqClient {
       source: 'test',
       station: details.get(id) ?? null,
     }),
+    detailsWithMeta: async (id: number) => ({
+      response: {
+        ok: true,
+        live: true,
+        retained: false,
+        source: 'test',
+        station: details.get(id) ?? null,
+      },
+      fetchedAt: new Date(),
+    }),
   } as unknown as StatiqClient;
 }
 
@@ -135,9 +145,9 @@ describe('planTrip', () => {
     expect(plan.stops).toHaveLength(0);
     expect(plan.warnings).toHaveLength(0);
     expect(plan.routeDistanceKm).toBeCloseTo(284.9, 1);
-    // 284.9 km * 175 Wh/km = 49.9 kWh of 75 -> ~33.4% arrival
-    expect(plan.totals.finalSocPct).toBeGreaterThanOrEqual(32);
-    expect(plan.totals.finalSocPct).toBeLessThanOrEqual(35);
+    // 284.9 km * 175 Wh/km = 49.86 kWh of 71.25 usable -> ~30.0% arrival
+    expect(plan.totals.finalSocPct).toBeGreaterThanOrEqual(29);
+    expect(plan.totals.finalSocPct).toBeLessThanOrEqual(32);
     expect(plan.totals.totalTimeMin).toBeCloseTo(284.9, 0); // driving only
   });
 
@@ -155,9 +165,9 @@ describe('planTrip', () => {
     expect(plan.stops[0]?.chainageKm).toBeLessThan(301);
     expect(plan.stops[1]?.chainageKm).toBeGreaterThan(597);
     expect(plan.stops[1]?.chainageKm).toBeLessThan(601);
-    // arrival SoC at stop 1 from 100% over ~300 km: ~30%
-    expect(plan.stops[0]?.arriveSocPct).toBeGreaterThanOrEqual(29);
-    expect(plan.stops[0]?.arriveSocPct).toBeLessThanOrEqual(31);
+    // arrival SoC at stop 1 from 100% over ~300 km: ~26% (usable-based)
+    expect(plan.stops[0]?.arriveSocPct).toBeGreaterThanOrEqual(25);
+    expect(plan.stops[0]?.arriveSocPct).toBeLessThanOrEqual(28);
     // stop 2 arrives at the minimal-charge buffer (~12%)
     expect(Math.round(plan.stops[1]?.arriveSocPct ?? 0)).toBe(12);
     // charging numbers exist and are positive
@@ -274,5 +284,74 @@ describe('planTrip', () => {
     expect(s0?.departureEtaMin).toBeGreaterThan(s0?.arrivalEtaMin ?? 0);
     const s1 = plan.stops[1];
     expect((s1?.arrivalEtaMin ?? 0)).toBeGreaterThan((s0?.departureEtaMin ?? 0));
+  });
+
+  it('carries the default vehicle meta with claimed and real-world range separate', async () => {
+    const plan = await planTrip({ router: fakeRouter(284.9), statiq: fakeStatiq([]) }, O, D(284.9));
+    expect(plan.vehicle.label).toContain('Harrier');
+    expect(plan.vehicle.batteryKwh).toBe(75);
+    expect(plan.vehicle.claimedRangeKm).toBe(627);
+    expect(plan.vehicle.realWorldRangeKm).toBeNull();
+  });
+
+  it('stamps fetched-at times on every station view (memo honesty)', async () => {
+    const stations: StationSpec[] = Array.from({ length: 14 }, (_, i) => ({
+      id: 300 + i,
+      name: `Statiq T ${i}`,
+      chainageKm: 50 * (i + 1),
+    }));
+    const plan = await planTrip({ router: fakeRouter(700), statiq: fakeStatiq(stations) }, O, D(700));
+    for (const s of plan.stops) {
+      const t = Date.parse(s.station.fetchedAt);
+      expect(Number.isNaN(t)).toBe(false);
+      expect(t).toBeGreaterThan(Date.now() - 60_000);
+    }
+  });
+});
+
+describe('planTrip invariants (randomized worlds)', () => {
+  // Deterministic PRNG so failures can be reproduced.
+  function mulberry32(seed: number): () => number {
+    return () => {
+      seed |= 0;
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  it('never plans an arrival below the minimum SoC, and legs stay within the cap', async () => {
+    for (let seed = 1; seed <= 3; seed++) {
+      const rnd = mulberry32(seed);
+      const totalKm = 600 + Math.floor(rnd() * 600);
+      // stations at random chainages with random small detours
+      const stations: StationSpec[] = [];
+      let ch = 30 + rnd() * 60;
+      let id = 1;
+      while (ch < totalKm - 10) {
+        stations.push({
+          id: id++,
+          name: `S${id}`,
+          chainageKm: ch,
+          offRouteKm: rnd() < 0.8 ? 0 : rnd() * 3,
+          kw: 50 + Math.floor(rnd() * 70),
+          pricePerKwh: 15 + Math.round(rnd() * 10),
+        });
+        ch += 40 + rnd() * 80;
+      }
+      const plan = await planTrip({ router: fakeRouter(totalKm), statiq: fakeStatiq(stations) }, O, D(totalKm));
+      const minArrival = 10;
+      for (const s of plan.stops) {
+        expect(s.arriveSocPct).toBeGreaterThanOrEqual(minArrival - 0.15);
+        expect(s.leaveSocPct).toBeGreaterThanOrEqual(s.arriveSocPct);
+        expect(s.legKm).toBeLessThanOrEqual(300 + 10); // 300 cap + detour slack
+        expect(s.chargeKwh).toBeGreaterThanOrEqual(0);
+      }
+      // final arrival at destination also honors the minimum
+      expect(plan.totals.finalSocPct).toBeGreaterThanOrEqual(minArrival - 1);
+      // fewest-stops sanity: with 300 km legs, stop count is bounded
+      expect(plan.stops.length).toBeLessThanOrEqual(Math.ceil(totalKm / 250) + 1);
+    }
   });
 });

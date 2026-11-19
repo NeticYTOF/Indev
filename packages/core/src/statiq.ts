@@ -3,12 +3,13 @@
  *
  * - Bearer token comes from the environment and is used ONLY here,
  *   server-side. It is never printed, logged, or included in error messages.
- * - Short-lived in-memory details cache: within one planning run we may
- *   touch the same station twice; the cache keeps that polite. The default
- *   TTL (90s) is far shorter than anything that could be called "storing
- *   charger data" - nothing is persisted.
- * - Retries cover transient upstream failures (5xx / network / 429),
- *   never 4xx (permanent).
+ * - MEMO POLICY: the in-memory details memo exists ONLY for reuse inside a
+ *   single planning run (the same station can be examined twice within one
+ *   plan). Callers must create a fresh client per planning run; memoized
+ *   data must NEVER be presented as live status. Anything showing status
+ *   carries a `fetchedAt` timestamp from `detailsWithMeta`.
+ * - Retries cover transient upstream failures (5xx / 429 / network) with
+ *   exponential backoff + jitter and a hard cap; never 4xx (permanent).
  */
 import type {
   StatiqCardsResponse,
@@ -45,7 +46,14 @@ export interface StatiqClientOptions {
 
 interface CacheEntry {
   at: number;
-  value: StatiqDetailsResponse;
+  response: StatiqDetailsResponse;
+  fetchedAt: Date;
+}
+
+export interface StationDetailsWithMeta {
+  response: StatiqDetailsResponse;
+  /** When this upstream response was actually fetched. */
+  fetchedAt: Date;
 }
 
 export class StatiqClient {
@@ -79,27 +87,43 @@ export class StatiqClient {
     return this.postJson('/stations/cards', { latitude: lat, longitude: lon });
   }
 
-  /** Full details (chargers, plugs, tariff, reviews) for one station. */
-  async details(stationId: number): Promise<StatiqDetailsResponse> {
+  /**
+   * Full details with a fetched-at timestamp. The memo returns the original
+   * fetch time (not access time) so status displays stay honest.
+   */
+  async detailsWithMeta(stationId: number): Promise<StationDetailsWithMeta> {
     const cached = this.detailsCache.get(stationId);
     if (cached && Date.now() - cached.at < this.cacheTtlMs) {
-      return cached.value;
+      return { response: cached.response, fetchedAt: cached.fetchedAt };
     }
-    const value = await this.postJson<StatiqDetailsResponse>('/stations/details', {
+    const response = await this.postJson<StatiqDetailsResponse>('/stations/details', {
       station_id: stationId,
     });
-    if (value && value.station) {
-      this.detailsCache.set(stationId, { at: Date.now(), value });
+    const fetchedAt = new Date();
+    if (response && response.station) {
+      this.detailsCache.set(stationId, { at: Date.now(), response, fetchedAt });
     }
-    return value;
+    return { response, fetchedAt };
+  }
+
+  /** Wire-shaped details (no fetch metadata). */
+  async details(stationId: number): Promise<StatiqDetailsResponse> {
+    return (await this.detailsWithMeta(stationId)).response;
+  }
+
+  /** Exponential backoff with full jitter, capped: no tight retry loops. */
+  private async backoffMs(attempt: number): Promise<void> {
+    const base = 250 * 2 ** Math.min(attempt, 4); // caps the exponential at 4s
+    const jittered = Math.random() * base; // full jitter: 0..base
+    await sleep(Math.min(jittered, 4_000) + 100);
   }
 
   private async postJson<T>(path: string, body: unknown): Promise<T> {
     let lastError: unknown;
-    // 1 initial attempt + `retries` retries
+    // 1 initial attempt + `retries` retries, exponential backoff + jitter
     for (let attempt = 0; attempt <= this.retries; attempt++) {
       if (attempt > 0) {
-        await sleep(250 * 2 ** (attempt - 1));
+        await this.backoffMs(attempt);
       }
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.timeoutMs);

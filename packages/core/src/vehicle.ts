@@ -1,43 +1,64 @@
 /**
  * Tata Harrier EV 75 kWh battery model.
  *
- * Numbers are documented assumptions (not official specs beyond capacity):
- * - usableFraction 0.95: packs hold a small brick charge at the bottom.
- * - whPerKm 175: real-world Indian highway speeds with AC -> a ~407 km
- *   full range. The owner's "300 km safe running range" couples this with
- *   the planner's 300 km max-gap rule.
- * - maxDcKw 70: the car's DC intake. Station charger power above this is
- *   capped; taper above 80% SoC approximates the real curve (fast to 80,
- *   then a slowing knee).
+ * OWNER-SUPPLIED FACTS (the only two):
+ * - 75 kWh nominal pack.
+ * - 300 km safe running range (enforced by the planner's max-leg rule).
+ *
+ * Everything else in MODEL_WORKING_ESTIMATES below is a WORKING ESTIMATE:
+ * unvalidated, not owner-approved, gathered to make the planner produce
+ * reasonable plans. Correct them there when better data exists. Do not
+ * describe this model as physically validated.
  */
 import type { Coords } from './geo.js';
+
+/**
+ * ONE place for every working estimate in the vehicle model.
+ * - usableFraction: packs hold a small brick charge at the bottom.
+ * - defaultWhPerKm: rough highway consumption for a mid-size Indian EV SUV.
+ * - maxDcKw / taper: generic fast-charge curve shape (NOT a published spec).
+ */
+export const MODEL_WORKING_ESTIMATES = {
+  usableFraction: 0.95,
+  defaultWhPerKm: 175,
+  maxDcKw: 70,
+  taperStartSocPct: 80,
+  taperEndPowerKw: 24,
+} as const;
 
 export interface VehicleConfig {
   /** Nominal pack size, kWh. */
   batteryKwh: number;
-  /** Fraction of the pack usable in practice. */
+  /** WORKING ESTIMATE: fraction of the pack usable in practice. */
   usableFraction: number;
-  /** Consumption, Wh per km, highway conditions. */
+  /** Consumption, Wh per km (derived from user's real-world range when given). */
   whPerKm: number;
-  /** Max DC power the car can take, kW. */
+  /** WORKING ESTIMATE: max DC power the car can take, kW. */
   maxDcKw: number;
-  /** SoC % where the charge curve starts tapering. */
+  /** WORKING ESTIMATE: SoC % where the charge curve starts tapering. */
   taperStartSocPct: number;
-  /** Effective power at 100% SoC, kW. */
+  /** WORKING ESTIMATE: effective power at 100% SoC, kW. */
   taperEndPowerKw: number;
 }
 
 export const HARIER_EV_75: VehicleConfig = {
-  batteryKwh: 75,
-  usableFraction: 0.95,
-  whPerKm: 175,
-  maxDcKw: 70,
-  taperStartSocPct: 80,
-  taperEndPowerKw: 24,
+  batteryKwh: 75, // owner-supplied
+  usableFraction: MODEL_WORKING_ESTIMATES.usableFraction,
+  whPerKm: MODEL_WORKING_ESTIMATES.defaultWhPerKm,
+  maxDcKw: MODEL_WORKING_ESTIMATES.maxDcKw,
+  taperStartSocPct: MODEL_WORKING_ESTIMATES.taperStartSocPct,
+  taperEndPowerKw: MODEL_WORKING_ESTIMATES.taperEndPowerKw,
 };
 
-/** State of charge in percent of the nominal pack. */
+/** State of charge in percent — OF USABLE energy (see the convention note). */
 export type SocPct = number;
+
+/*
+ * CONVENTION: SoC % is percent of USABLE energy (usable = nominal x
+ * usableFraction). 100% SoC = usableKwh, 0% = empty at the brick floor.
+ * This keeps every SoC/energy conversion coherent through a single factor,
+ * `100 / usableKwh`. Nominal pack size is display metadata only.
+ */
 
 export function usableKwh(v: VehicleConfig): number {
   return v.batteryKwh * v.usableFraction;
@@ -55,7 +76,7 @@ export function socAfterDriving(
   v: VehicleConfig = HARIER_EV_75,
 ): SocPct {
   const consumedKwh = kwhForDistance(km, v);
-  const pctPerKwh = 100 / v.batteryKwh;
+  const pctPerKwh = 100 / usableKwh(v);
   return Math.max(0, startSocPct - consumedKwh * pctPerKwh);
 }
 
@@ -69,7 +90,7 @@ export function socRequiredForArrival(
   v: VehicleConfig = HARIER_EV_75,
 ): SocPct {
   const consumedKwh = kwhForDistance(km, v);
-  const pctPerKwh = 100 / v.batteryKwh;
+  const pctPerKwh = 100 / usableKwh(v);
   return Math.min(100, targetSocPct + consumedKwh * pctPerKwh);
 }
 

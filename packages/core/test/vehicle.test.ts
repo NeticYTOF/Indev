@@ -5,6 +5,7 @@ import {
   kwhForDistance,
   kwhForSocDelta,
   socAfterDriving,
+  socRequiredForArrival,
   usableKwh,
 } from '../src/vehicle.js';
 
@@ -18,11 +19,10 @@ describe('vehicle model (Harrier EV 75 kWh)', () => {
     expect(kwhForDistance(300)).toBeCloseTo(52.5, 1);
   });
 
-  it('SoC falls correctly over a 300 km leg from 100%', () => {
-    // 52.5 kWh of 75 kWh pack = 70% consumed -> 30% SoC... but note usable
-    // energy: we report SoC against nominal 75, so 100 - 52.5/75*100 = 30%.
+  it('SoC falls correctly over a 300 km leg from 100% (usable-based SoC)', () => {
+    // 52.5 kWh of 71.25 usable = 73.7% consumed -> 26.3% SoC
     const soc = socAfterDriving(300, 100);
-    expect(soc).toBeCloseTo(30, 0);
+    expect(soc).toBeCloseTo(26.3, 1);
   });
 
   it('SoC never goes negative', () => {
@@ -62,5 +62,43 @@ describe('vehicle model (Harrier EV 75 kWh)', () => {
     expect(chargeTimeMin(80, 50, 70)).toBe(0);
     expect(chargeTimeMin(50, 50, 70)).toBe(0);
     expect(chargeTimeMin(10, 80, 0)).toBe(0);
+  });
+});
+
+describe('capacity split coherence (nominal vs usable)', () => {
+  it('SoC percent is over USABLE energy; nominal is display metadata', () => {
+    // charging 0 -> 100% adds exactly the usable energy
+    expect(kwhForSocDelta(0, 100)).toBeCloseTo(usableKwh(HARIER_EV_75), 6);
+    // discharging 100 -> 0% releases the usable energy
+    expect(kwhForSocDelta(100, 0)).toBeCloseTo(-usableKwh(HARIER_EV_75), 6);
+    // 1% SoC is 1/100th of usable, NOT of nominal (the old incoherence)
+    expect(Math.abs(kwhForSocDelta(0, 1))).toBeCloseTo(usableKwh(HARIER_EV_75) / 100, 9);
+  });
+
+  it('driving consumes usable-consistent SoC: energy removed equals energy consumed', () => {
+    for (const km of [1, 20, 45.5, 80, 137, 250]) {
+      const soc = socAfterDriving(km, 100);
+      if (soc > 0) {
+        const kwhRemoved = -kwhForSocDelta(100, soc);
+        const kwhConsumed = (km * HARIER_EV_75.whPerKm) / 1000;
+        expect(kwhRemoved).toBeCloseTo(kwhConsumed, 6);
+      }
+    }
+  });
+
+  it('socAfterDriving and socRequiredForArrival are exact inverses', () => {
+    for (const km of [0, 17, 64.3, 120, 299]) {
+      const target = 12;
+      const dep = socRequiredForArrival(km, target);
+      expect(socAfterDriving(km, dep)).toBeCloseTo(target, 9);
+    }
+  });
+
+  it('reserve math uses the same split: min-arrival SoC maps to usable energy', () => {
+    const minArrival = 10;
+    expect(Math.abs(kwhForSocDelta(0, minArrival))).toBeCloseTo(7.125, 3); // 10% of usable 71.25
+    // and driving exactly that reserve down from 10% lands at 0%
+    const km = 7.125 / (HARIER_EV_75.whPerKm / 1000);
+    expect(socAfterDriving(km, 10)).toBeCloseTo(0, 9);
   });
 });

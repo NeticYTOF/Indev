@@ -21,11 +21,13 @@ import { chargeTimeMin, kwhForSocDelta, socAfterDriving, socRequiredForArrival, 
 import type { StatiqClient } from './statiq.js';
 import type { OsrmRouter } from './router.js';
 import type { StatiqStationDetail } from './types.js';
+import { resolveVehicle, type ResolvedVehicle } from './vehicle-catalog.js';
 import {
   DEFAULT_PLAN_OPTIONS,
   type PlanOptions,
   type PlanStop,
   type PlanTotals,
+  type PlanVehicleMeta,
   type StationLiveView,
   type TripPlan,
 } from './plan-types.js';
@@ -34,6 +36,8 @@ export interface PlannerDeps {
   router: OsrmRouter;
   statiq: StatiqClient;
   vehicle?: VehicleConfig;
+  /** Resolved vehicle to stamp on the plan; defaults to the default Harrier profile. */
+  resolvedVehicle?: ResolvedVehicle;
 }
 
 interface Candidate {
@@ -85,6 +89,14 @@ export async function planTrip(
 ): Promise<TripPlan> {
   const opts = { ...DEFAULT_PLAN_OPTIONS, ...options };
   const vehicle = deps.vehicle ?? HARIER_EV_75;
+  const resolvedVehicle: ResolvedVehicle = deps.resolvedVehicle ?? resolveVehicle();
+  const vehicleMeta: PlanVehicleMeta = {
+    label: resolvedVehicle.label,
+    catalogId: resolvedVehicle.catalogId,
+    batteryKwh: resolvedVehicle.batteryKwh,
+    claimedRangeKm: resolvedVehicle.claimedRangeKm,
+    realWorldRangeKm: resolvedVehicle.realWorldRangeKm,
+  };
 
   // 1) Fastest route (free OSRM).
   const route = await deps.router.route(origin, destination);
@@ -101,12 +113,12 @@ export async function planTrip(
   const warnings: string[] = [];
   await pMap(corridor.candidates, 6, async (c) => {
     try {
-      const res = await deps.statiq.details(c.stationId);
-      if (!res.station) return;
+      const { response, fetchedAt } = await deps.statiq.detailsWithMeta(c.stationId);
+      if (!response.station) return;
       resolved.push({
         candidate: c,
-        summary: summarizeCcs2(res.station),
-        view: toStationView(res.station),
+        summary: summarizeCcs2(response.station),
+        view: toStationView(response.station, fetchedAt),
       });
     } catch {
       warnings.push(`Skipping "${c.name}" (${c.stationId}): live details unavailable.`);
@@ -168,6 +180,7 @@ export async function planTrip(
     createdAt: new Date().toISOString(),
     origin,
     destination,
+    vehicle: vehicleMeta,
     routeDistanceKm: route.distanceKm,
     routeDurationMin: route.durationMin,
     geometry: route.geometry,
@@ -351,7 +364,10 @@ function computeTotals(
 }
 
 /** Map a live Statiq station detail into the domain view (reliability: null). */
-export function toStationView(s: StatiqStationDetail): StationLiveView {
+export function toStationView(
+  s: StatiqStationDetail,
+  fetchedAt: Date = new Date(),
+): StationLiveView {
   return {
     stationId: s.stationId,
     name: s.name,
@@ -365,6 +381,7 @@ export function toStationView(s: StatiqStationDetail): StationLiveView {
     rating: s.rating ?? null,
     reviewCount: s.reviewCount ?? null,
     reliability: null, // public data has no verified reliability score
+    fetchedAt: fetchedAt.toISOString(),
     amenities: s.amenities ?? [],
     stationUrl: s.stationUrl,
     navUrl: s.navUrl,
