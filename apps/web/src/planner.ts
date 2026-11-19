@@ -25,7 +25,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
   const origin: PlaceInput = { hit: null };
   const destination: PlaceInput = { hit: null };
 
-  const form = el(`<form class="planner-form" autocomplete="off"></form>`) as HTMLFormElement;
+  const form = el(`<form class="planner-form" autocomplete="off" novalidate></form>`) as HTMLFormElement;
   section.appendChild(form);
 
   const intro = el(`<p class="planner-intro">Fastest route with the fewest charging stops, planned over live Statiq chargers.</p>`);
@@ -118,7 +118,11 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
     const aiRequestEl = document.getElementById('ai-request') as HTMLTextAreaElement | null;
     const customRequest = aiRequestEl?.value.trim() || undefined;
     const startSoc = Number((document.getElementById('start-soc') as HTMLInputElement).value);
-    const vehicle = readVehicleSelection(vehicleRow);
+    const vehicleResult = readVehicleSelection(vehicleRow);
+    if (vehicleResult.kind === 'invalid') {
+      showError(errorBox, vehicleResult.reason);
+      return;
+    }
     const aiButton = aiBox.querySelector('[data-ai-plan]') as HTMLButtonElement | null;
     if (aiButton) aiButton.disabled = true;
     hideError(errorBox);
@@ -127,7 +131,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
         origin: { label: origin.hit.label, lat: origin.hit.lat, lon: origin.hit.lon },
         destination: { label: destination.hit.label, lat: destination.hit.lat, lon: destination.hit.lon },
         startSocPct: Number.isFinite(startSoc) ? startSoc : undefined,
-        ...(vehicle ? { vehicle } : {}),
+        ...(vehicleResult.kind === 'ok' ? { vehicle: vehicleResult.vehicle } : {}),
         ...(customRequest ? { request: customRequest } : {}),
       });
       onPlanAvailable(plan, map);
@@ -151,7 +155,13 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
       return;
     }
     const startSoc = Number((document.getElementById('start-soc') as HTMLInputElement).value);
-    const vehicle = readVehicleSelection(vehicleRow);
+    const vehicleResult = readVehicleSelection(vehicleRow);
+    if (vehicleResult.kind === 'invalid') {
+      // Inline validation naming the missing input; the resolved origin and
+      // destination are kept exactly as picked - nothing is cleared.
+      showError(errorBox, vehicleResult.reason);
+      return;
+    }
 
     planButton.disabled = true;
     planButton.textContent = serverIsMock ? 'Planning synthetic route...' : 'Planning live route...';
@@ -162,7 +172,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
         destination: { label: destination.hit.label, lat: destination.hit.lat, lon: destination.hit.lon },
         startSocPct: Number.isFinite(startSoc) ? startSoc : undefined,
       };
-      if (vehicle) req.vehicle = vehicle;
+      if (vehicleResult.kind === 'ok') req.vehicle = vehicleResult.vehicle;
       const { plan } = await api.plan(req);
       onPlanAvailable(plan, map);
     } catch (err) {
@@ -199,28 +209,48 @@ export function onPlanAvailable(plan: TripPlan, map: maplibregl.Map): void {
   }
 }
 
-interface VehicleSelectionRead {
-  entryId?: string;
-  realWorldRangeKm?: number;
-  custom?: { batteryKwh: number; claimedRangeKm?: number; realWorldRangeKm: number; label?: string };
-}
+type VehicleSelectionResult =
+  | { kind: 'none' }
+  | { kind: 'ok'; vehicle: PlanRequest['vehicle'] }
+  | { kind: 'invalid'; reason: string };
 
-function readVehicleSelection(vehicleRow: HTMLElement): VehicleSelectionRead | undefined {
+/**
+ * Read the vehicle selection from the form. Returns 'invalid' with an
+ * explicit reason when a required input is missing - the real-world range
+ * is the user's input and can never be silently skipped (claims never
+ * substitute for it).
+ */
+function readVehicleSelection(vehicleRow: HTMLElement): VehicleSelectionResult {
   const select = vehicleRow.querySelector<HTMLSelectElement>('select[data-vehicle]');
-  const rangeWrap = vehicleRow.querySelector<HTMLElement>('.real-world-range');
-  if (!select) return undefined;
-  if (select.value === 'default') return undefined;
+  if (!select) return { kind: 'none' };
+  if (select.value === 'default') return { kind: 'none' };
+
   if (select.value === 'custom') {
     const kwh = Number(vehicleRow.querySelector<HTMLInputElement>('input[data-custom-kwh]')?.value);
-    const rw = Number(rangeWrap?.querySelector<HTMLInputElement>('input[data-real-world]')?.value);
-    if (!Number.isFinite(kwh) || !Number.isFinite(rw)) return undefined;
-    return { custom: { batteryKwh: kwh, realWorldRangeKm: rw } };
+    // custom real-world input lives in the custom box: read within vehicleRow
+    const rw = Number(vehicleRow.querySelector<HTMLInputElement>('input[data-real-world]')?.value);
+    if (!Number.isFinite(kwh) || kwh < 5 || kwh > 250) {
+      return { kind: 'invalid', reason: 'Enter a plausible battery size (kWh) for the custom vehicle.' };
+    }
+    if (!Number.isFinite(rw) || rw < 20 || rw > 1500) {
+      return {
+        kind: 'invalid',
+        reason: 'Enter your real-world range for the custom vehicle - it cannot be left empty, and manufacturer claims never substitute for it.',
+      };
+    }
+    return { kind: 'ok', vehicle: { custom: { batteryKwh: kwh, realWorldRangeKm: rw } } };
   }
-  const rwInput = rangeWrap?.querySelector<HTMLInputElement>('input[data-real-world]');
-  const rw = rwInput && Number.isFinite(Number(rwInput.value)) ? Number(rwInput.value) : undefined;
-  const sel: VehicleSelectionRead = { entryId: select.value };
-  if (rw != null && rw > 0) sel.realWorldRangeKm = rw;
-  return sel;
+
+  const entry = select.value;
+  const rw = Number(vehicleRow.querySelector<HTMLInputElement>('input[data-real-world]')?.value);
+  if (!Number.isFinite(rw) || rw < 20 || rw > 1500) {
+    return {
+      kind: 'invalid',
+      reason:
+        'Enter your real-world range with this vehicle (km) - it is required for planning; the manufacturer claim cannot stand in for it.',
+    };
+  }
+  return { kind: 'ok', vehicle: { entryId: entry, realWorldRangeKm: rw } };
 }
 
 function buildVehicleSelect(vehicleRow: HTMLElement, catalog: VehicleCatalogEntry[], defaultId: string): void {
