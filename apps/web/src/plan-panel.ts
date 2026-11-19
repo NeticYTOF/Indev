@@ -97,7 +97,7 @@ export function renderPlanPanel(
 function wirePlanActions(actions: HTMLElement, plan: TripPlan): void {
   actions.querySelector('[data-save]')?.addEventListener('click', async () => {
     const btn = actions.querySelector<HTMLButtonElement>('[data-save]');
-    if (!btn) return;
+    if (!btn || btn.disabled) return;
     btn.disabled = true;
     try {
       await api.saveTrip(plan);
@@ -105,6 +105,7 @@ function wirePlanActions(actions: HTMLElement, plan: TripPlan): void {
       toast('Trip saved.');
     } catch (err) {
       btn.disabled = false;
+      if (document.activeElement === document.body) btn.focus({ preventScroll: true });
       const message = err instanceof Error ? err.message : 'Save failed.';
       toast(message, 'bad');
     }
