@@ -37,13 +37,15 @@ describe('buildChildEnv (mode-exclusive acceptance env)', () => {
       STATIQ_API_TOKEN: 'live-secret-token',
       AI_MODEL: 'gpt-x',
     });
-    // deleted, not merely overridden: the live server reads mode from absence
-    expect('INDEV_MOCK' in env).toBe(false);
+    // mode is PINNED live ('0') - loadEnv's .env fills only MISSING keys,
+    // so neither the parent nor the repo .env can flip this run to mock
+    expect(env.INDEV_MOCK).toBe('0');
     expect('INDEV_SKIP_DOTENV' in env).toBe(false); // live reads repo .env
     expect(env.STATIQ_API_TOKEN).toBe('live-secret-token'); // channel intact
-    expect(env.AI_MODEL).toBeUndefined();
-    expect(env.AI_API_KEY).toBeUndefined();
-    expect(env.AI_BASE_URL).toBeUndefined();
+    // AI is off by construction: presence-pinned EMPTY values
+    expect(env.AI_BASE_URL).toBe('');
+    expect(env.AI_API_KEY).toBe('');
+    expect(env.AI_MODEL).toBe('');
   });
 
   it('an empty parent env still yields a well-formed mock env', () => {
@@ -57,7 +59,7 @@ describe('buildChildEnv (mode-exclusive acceptance env)', () => {
     // no .env presence, no inherited token: the live server exits 1 itself
     // (its own fail-closed gate), which the runner reports as a failure
     const env = buildChildEnv('live', { INDEV_MOCK: '1' });
-    expect('INDEV_MOCK' in env).toBe(false);
+    expect(env.INDEV_MOCK).toBe('0'); // pinned live, not merely absent
     expect(env.STATIQ_API_TOKEN).toBeUndefined();
   });
 });

@@ -7,9 +7,12 @@
  *  - a UNIQUE run directory (timestamped): server logs are NEVER
  *    overwritten across runs, and run artifacts are EVIDENCE - the runner
  *    never deletes or auto-cleans them;
- *  - mode-exclusive child env (buildChildEnv): LIVE runs can never inherit
- *    parent mock/AI settings, MOCK runs are tokenless by construction
- *    (token stripped, .env skipped) so a mock check can never go live;
+ *  - mode-exclusive child env (buildChildEnv): LIVE runs are pinned
+ *    explicit (INDEV_MOCK='0', AI_*='' - presence-pinned empty, so the
+ *    repo .env can neither flip the mode nor enable AI; only the
+ *    credential channel stays open via .env) and never inherit parent
+ *    mock/AI settings; MOCK runs are tokenless by construction (token
+ *    stripped, .env skipped) so a mock check can never go live;
  *  - a SOURCE gate: the plan's provenance must match the mode
  *    (mock => synthetic, live => live) - exit is non-zero otherwise;
  *  - the HTTP status and the process exit code captured explicitly
@@ -44,24 +47,34 @@ const FETCH_WALL_MS = SERVER_RUN_BUDGET_MS + 30_000;
 /**
  * Mode-exclusive child environment. Strips EVERY mode-sensitive variable
  * from the parent, then re-adds exactly what the mode needs:
- *  - live: no INDEV_MOCK / no SKIP_DOTENV (reads repo .env for the token),
- *    AI config stripped (acceptance never plans via AI);
+ *  - live: EXPLICIT live + AI-off, pinned so the repo .env cannot
+ *    contaminate them (loadEnv's .env fills only MISSING keys, so an
+ *    existing '0'/'' wins by construction - even a .env carrying
+ *    INDEV_MOCK=1 or AI_* can never flip this run's mode or AI):
+ *      INDEV_MOCK='0'  - explicit live
+ *      AI_*=''         - AI disabled (empty values are presence-pinned;
+ *                      aiEnabled needs all three truthy)
+ *    Only the credential channel stays open: the live server reads
+ *    STATIQ_API_TOKEN from the repo .env (or the parent env).
  *  - mock: INDEV_MOCK=1 + INDEV_SKIP_DOTENV=1 and NO token, so the child
  *    is tokenless-by-construction and cannot load live credentials.
  */
 export function buildChildEnv(mode, parentEnv) {
   const env = { ...parentEnv };
-  // the AI planner never participates in acceptance runs of either mode
-  delete env.AI_BASE_URL;
-  delete env.AI_API_KEY;
-  delete env.AI_MODEL;
   if (mode === 'mock') {
     env.INDEV_MOCK = '1';
     env.INDEV_SKIP_DOTENV = '1'; // never even load the repo .env
     delete env.STATIQ_API_TOKEN; // tokenless by construction
+    delete env.AI_BASE_URL;
+    delete env.AI_API_KEY;
+    delete env.AI_MODEL;
   } else {
-    delete env.INDEV_MOCK; // live must never inherit parent mock settings
     delete env.INDEV_SKIP_DOTENV; // live reads the repo .env for the token
+    delete env.INDEV_MOCK; // ...then pin explicit values that .env cannot override:
+    env.INDEV_MOCK = '0'; // explicit LIVE even if the repo .env says mock
+    env.AI_BASE_URL = ''; // AI off by construction (presence-pinned empty)
+    env.AI_API_KEY = '';
+    env.AI_MODEL = '';
   }
   return env;
 }
