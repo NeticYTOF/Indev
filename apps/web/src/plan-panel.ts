@@ -1,0 +1,259 @@
+/**
+ * Plan results: totals, honest banners (degraded / synthetic / warnings),
+ * and per-stop cards: battery in/out, charge, tariff price, time,
+ * rating/reviews, last-used, reliability (unavailable), brand, uncertainty,
+ * fetched-at freshness, Google Maps directions link.
+ */
+import * as maplibregl from 'maplibre-gl';
+import type { TripPlan, PlanStop } from '@indeev/core';
+import { el, escapeHtml } from './planner.js';
+import { api } from './api.js';
+import { downloadAnimatedExport } from './export.js';
+import { toast } from './toast.js';
+import { formatDuration, formatEta, formatInr } from './format.js';
+
+export function renderPlanPanel(
+  panel: HTMLElement,
+  map: maplibregl.Map,
+  plan: TripPlan,
+): void {
+  // The planner form stays on top; results render into a section below it.
+  let results = panel.querySelector<HTMLElement>('.plan-results');
+  if (!results) {
+    results = el('<section class="plan-results" aria-label="Trip plan"></section>') as HTMLElement;
+    panel.appendChild(results);
+  }
+  results.innerHTML = '';
+
+  // ---- banners ----
+  const banners = el('<div class="banners"></div>');
+  if (plan.source === 'synthetic') {
+    banners.appendChild(el('<div class="banner banner-synthetic">Synthetic data — this plan comes from mock mode, not live chargers.</div>'));
+  }
+  if (plan.status === 'degraded') {
+    banners.appendChild(el('<div class="banner banner-warn">Coverage incomplete — some route samples could not be scanned. Treat charger coverage as partial.</div>'));
+  }
+  for (const w of plan.warnings) {
+    banners.appendChild(el(`<div class="banner banner-warn">${escapeHtml(w)}</div>`));
+  }
+  if (banners.childElementCount > 0) results.appendChild(banners);
+
+  // ---- header ----
+  const head = el(`
+    <div class="plan-head">
+      <div class="plan-route">
+        <span class="origin">${escapeHtml(plan.origin.label)}</span>
+        <span class="arrow">→</span>
+        <span class="destination">${escapeHtml(plan.destination.label)}</span>
+      </div>
+      <div class="plan-vehicle">${escapeHtml(plan.vehicle.label)}${plan.vehicle.realWorldRangeKm != null ? ` · your real-world range ${plan.vehicle.realWorldRangeKm} km` : ''}${plan.vehicle.claimedRangeKm != null ? ` · claim ${plan.vehicle.claimedRangeKm} km (mfr)` : ''}</div>
+    </div>
+  `);
+  results.appendChild(head);
+
+  // ---- totals strip ----
+  const totals = el(`
+    <div class="totals">
+      <div class="totals-grid">
+        <div class="total"><span class="total-num">${formatDuration(plan.totals.totalTimeMin)}</span><span class="total-label">Total time</span></div>
+        <div class="total"><span class="total-num">${Math.round(plan.routeDistanceKm)} km</span><span class="total-label">Distance</span></div>
+        <div class="total"><span class="total-num">${plan.totals.estPriceInr != null ? formatInr(plan.totals.estPriceInr) : '—'}</span><span class="total-label">Est. charging cost</span></div>
+        <div class="total"><span class="total-num">${plan.stops.length}</span><span class="total-label">Charging stop${plan.stops.length === 1 ? '' : 's'}</span></div>
+        <div class="total"><span class="total-num">${formatDuration(plan.totals.chargeTimeMin)}</span><span class="total-label">Charging time</span></div>
+        <div class="total"><span class="total-num">${Math.round(plan.totals.finalSocPct)}%</span><span class="total-label">Arrival charge</span></div>
+      </div>
+    </div>
+  `);
+  results.appendChild(totals);
+
+  // ---- actions ----
+  const actions = el(`
+    <div class="plan-actions">
+      <button type="button" class="btn btn-ghost" data-save>Trip is not saved yet — click to save</button>
+      <button type="button" class="btn btn-ghost" data-export>Animated export</button>
+      <a class="btn btn-ghost" data-gmaps href="https://www.google.com/maps/dir/?api=1&origin=${plan.origin.lat},${plan.origin.lon}&destination=${plan.destination.lat},${plan.destination.lon}${plan.stops.length > 0 ? `&waypoints=${plan.stops.map((s) => `${s.station.lat}%2C${s.station.lon}`).join('%7C')}` : ''}" target="_blank" rel="noreferrer">Google Maps directions</a>
+    </div>
+  `);
+  results.appendChild(actions);
+
+  wirePlanActions(actions as HTMLElement, plan);
+  results.querySelectorAll<HTMLElement>('[data-refresh]').forEach((btn) => {
+    btn.addEventListener('click', () => void revalidateStop(btn, plan));
+  });
+
+  // stops render below actions
+  const stopsWrap = el('<div class="stops"></div>');
+  if (plan.stops.length === 0) {
+    stopsWrap.appendChild(el('<div class="no-stops">No charging stops needed — the destination is within your charge.</div>'));
+  }
+  plan.stops.forEach((stop, i) => {
+    stopsWrap.appendChild(renderStopCard(stop, i));
+  });
+  results.appendChild(stopsWrap);
+}
+
+function wirePlanActions(actions: HTMLElement, plan: TripPlan): void {
+  actions.querySelector('[data-save]')?.addEventListener('click', async () => {
+    const btn = actions.querySelector<HTMLButtonElement>('[data-save]');
+    if (!btn) return;
+    btn.disabled = true;
+    try {
+      await api.saveTrip(plan);
+      btn.textContent = 'Saved to your trips';
+      toast('Trip saved.');
+    } catch (err) {
+      btn.disabled = false;
+      const message = err instanceof Error ? err.message : 'Save failed.';
+      toast(message, 'bad');
+    }
+  });
+  actions.querySelector('[data-export]')?.addEventListener('click', () => {
+    try {
+      downloadAnimatedExport(plan);
+      toast('Animated export downloaded.');
+    } catch {
+      toast('Export failed.', 'bad');
+    }
+  });
+}
+
+async function revalidateStop(btn: HTMLElement, plan: TripPlan): Promise<void> {
+  const stationId = Number(btn.dataset.refresh);
+  const card = btn.closest('.stop-card') as HTMLElement | null;
+  if (!card) return;
+  const index = Number(card.dataset.stopIndex);
+  const stop = plan.stops[index];
+  if (!stop || stop.station.stationId !== stationId) return;
+  const box = document.createElement('div');
+  box.className = 'revalidate-box';
+  box.textContent = 'Fetching fresh live status…';
+  card.querySelector('.stop-body')?.appendChild(box);
+  btn.setAttribute('disabled', 'true');
+  try {
+    const res = await fetch(`/api/stations/${stationId}`);
+    if (!res.ok) {
+      box.textContent = 'Station details unavailable right now.';
+      return;
+    }
+    const { station } = (await res.json()) as {
+      station: {
+        rating: number | null;
+        reviewCount: number | null;
+        reliability: null;
+        synthetic?: boolean;
+        ccs2: { usable: number; free: number; occupied: number; faulted: number; uncertain: number; maxKw: number | null; pricePerKwh: number | null };
+        chargers: Array<{ lastUsedOn: string | null }>;
+      };
+    };
+    const lastUsed = station.chargers.map((c) => c.lastUsedOn).filter(Boolean).sort().pop() ?? 'unknown';
+    box.innerHTML = `
+      <div class="stop-meta">
+        <span class="meta">${station.rating != null ? `★ ${Math.round(station.rating * 10) / 10} (${(station.reviewCount ?? 0).toLocaleString('en-IN')} reviews)` : 'No rating'}</span>
+        <span class="meta">Last used ${escapeHtml(String(lastUsed))}</span>
+        <span class="meta">Reliability: unavailable</span>
+        <span class="meta fetched">Fetched just now</span>
+      </div>
+      <div class="chips">
+        <span class="chip">${station.ccs2.usable} usable CCS2 plug${station.ccs2.usable === 1 ? '' : 's'}</span>
+        ${station.ccs2.free > 0 ? `<span class="chip">${station.ccs2.free} free</span>` : ''}
+        ${station.ccs2.faulted > 0 ? '<span class="chip chip-bad">Faulted plugs</span>' : ''}
+        ${station.ccs2.uncertain > 0 ? '<span class="chip chip-uncertain">Uncertain status</span>' : ''}
+        ${station.synthetic ? '<span class="chip chip-synthetic">Synthetic</span>' : ''}
+      </div>`;
+  } catch {
+    box.textContent = 'Station details unavailable right now.';
+  }
+}
+
+function renderStopCard(stop: PlanStop, index: number): HTMLElement {
+  const s = stop.station;
+  const brandLabel = s.brand.charAt(0).toUpperCase() + s.brand.slice(1);
+  const directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${s.lat}%2C${s.lon}`;
+  const card = el(`
+    <article class="stop-card" data-stop-index="${index}">
+      <div class="stop-head">
+        <span class="stop-number">${index + 1}</span>
+        <div class="stop-title">
+          <span class="stop-name">${escapeHtml(s.name)}</span>
+          <span class="stop-brand brand-${s.brand}">${brandLabel}</span>
+        </div>
+        <span class="stop-tariff">${stop.pricePerKwh != null ? `Rs. ${Math.round(stop.pricePerKwh)}/kWh` : 'Tariff unknown'}</span>
+      </div>
+      <div class="stop-body">
+        <div class="soc-row">
+          ${socBar('Arrive', stop.arriveSocPct)}
+          <span class="charge-arrow" title="${Math.round(stop.chargeKwh)} kWh">${Math.round(stop.chargeKwh)} kWh</span>
+          ${socBar('Leave', stop.leaveSocPct)}
+        </div>
+        <div class="stop-stats">
+          <span class="stat">Charge ${formatDuration(stop.chargeTimeMin)}</span>
+          <span class="stat">Arrive at ${formatEta(stop.arrivalEtaMin)}</span>
+          <span class="stat">Depart at +${formatEta(stop.departureEtaMin)}</span>
+          <span class="stat">Detour ${stop.detourKm.toFixed(1)} km</span>
+        </div>
+        <div class="stop-meta">
+          <span class="meta">${s.rating != null ? `★ ${Math.round(s.rating * 10) / 10} (${(s.reviewCount ?? 0).toLocaleString('en-IN')} reviews)` : 'No rating'}</span>
+          <span class="meta">Last used ${lastUsedLabel(s.chargers)}</span>
+          <span class="meta">Reliability: unavailable</span>
+          <span class="meta fetched">Status fetched ${fetchedAgo(s.fetchedAt)}</span>
+        </div>
+        ${uncertaintyChips(s)}
+        ${s.synthetic ? '<div class="synthetic-flag">Synthetic station (mock data)</div>' : ''}
+      </div>
+      <div class="stop-foot">
+        <a class="btn btn-compact btn-ghost" href="${directionsUrl}" target="_blank" rel="noreferrer">Directions</a>
+        ${s.stationUrl ? `<a class="btn btn-compact btn-ghost" href="${escapeHtml(s.stationUrl)}" target="_blank" rel="noreferrer">Station page</a>` : ''}
+        <button type="button" class="btn btn-compact btn-ghost" data-refresh="${s.stationId}">Revalidate</button>
+      </div>
+    </article>
+  `);
+  return card;
+}
+
+function socBar(labelText: string, soc: number): string {
+  const pct = Math.max(0, Math.min(100, soc));
+  return `
+    <div class="soc-col">
+      <span class="soc-label">${labelText}</span>
+      <div class="soc-bar" role="img" aria-label="${labelText} ${Math.round(soc)}%">
+        <span class="soc-fill" style="width:${pct}%"></span>
+      </div>
+      <span class="soc-value">${Math.round(soc)}%</span>
+    </div>`;
+}
+
+function lastUsedLabel(chargers: Array<{ lastUsedOn: string | null }>): string {
+  const dates = chargers.map((c) => c.lastUsedOn).filter((d): d is string => Boolean(d));
+  if (dates.length === 0) return 'unknown';
+  // dd/mm/yyyy; pick the most recent
+  const parsed = dates
+    .map((d) => {
+      const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(d);
+      return m ? new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1])) : null;
+    })
+    .filter((d): d is Date => d != null);
+  if (parsed.length === 0) return dates[0] as string;
+  const latest = parsed.sort((a, b) => b.getTime() - a.getTime())[0] as Date;
+  return `${latest.getDate()}/${latest.getMonth() + 1}/${latest.getFullYear()}`;
+}
+
+function fetchedAgo(iso: string): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return 'unknown time ago';
+  const mins = Math.max(0, Math.round((Date.now() - t) / 60_000));
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const h = Math.round(mins / 60);
+  return `${h} h ago`;
+}
+
+function uncertaintyChips(s: PlanStop['station']): string {
+  const chips: string[] = [];
+  const anyContradiction = s.chargers.some((ch) => ch.plugs.some((p) => p.contradiction));
+  if (anyContradiction) chips.push('<span class="chip chip-uncertain">Status uncertain</span>');
+  const faulted = s.chargers.some((ch) => ch.plugs.some((p) => p.health === 'faulted'));
+  if (faulted) chips.push('<span class="chip chip-bad">Some plugs faulted</span>');
+  const ccs2 = s.chargers.some((ch) => ch.type === 'DC' && ch.plugs.some((p) => p.type.toLowerCase().includes('ccs')));
+  if (!ccs2) chips.push('<span class="chip chip-warn">No CCS2 DC found for this car</span>');
+  return chips.length > 0 ? `<div class="chips">${chips.join('')}</div>` : '';
+}

@@ -8,9 +8,11 @@
     "build": "vite build"
   },
   "dependencies": {
+    "@indeev/core": "*",
     "maplibre-gl": "^6.19.0"
   },
   "devDependencies": {
+    "@fontsource/inter": "^5.1.0",
     "vite": "^6.0.0"
   }
 }

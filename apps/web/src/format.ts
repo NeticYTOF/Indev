@@ -1,0 +1,109 @@
+/**
+ * Display formatters. Pure functions, unit-tested.
+ */
+
+/** "3 h 42 min" or "42 min". */
+export function formatDuration(totalMin: number): string {
+  if (!Number.isFinite(totalMin) || totalMin < 0) return '—';
+  const m = Math.round(totalMin);
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  if (h === 0) return `${rem} min`;
+  if (rem === 0) return `${h} h`;
+  return `${h} h ${rem} min`;
+}
+
+/** "284.9 km" -> "285 km". */
+export function formatKm(km: number): string {
+  if (!Number.isFinite(km)) return '—';
+  return `${Math.round(km)} km`;
+}
+
+/** "Rs. 1,234" (Indian digit grouping); null-safe. */
+export function formatInr(rupees: number | null | undefined): string {
+  if (rupees == null) return '—';
+  return `Rs. ${Math.round(rupees).toLocaleString('en-IN')}`;
+}
+
+/** "Rs. 22.75/kWh". */
+export function formatTariff(rupeesPerKwh: number | null | undefined): string {
+  if (rupeesPerKwh == null) return '—';
+  const v = Math.round(rupeesPerKwh * 100) / 100;
+  return `Rs. ${v}/kWh`;
+}
+
+/** "18.4 kWh". */
+export function formatKwh(kwh: number | null | undefined): string {
+  if (kwh == null) return '—';
+  return `${Math.round(kwh * 10) / 10} kWh`;
+}
+
+/** "26%" battery. */
+export function formatSoc(soc: number | null | undefined): string {
+  if (soc == null) return '—';
+  return `${Math.round(soc)}%`;
+}
+
+/** dd/mm/yyyy (Statiq) -> "18 Nov 2026"; unparseable input returned as-is. */
+export function formatLastUsed(raw: string | null | undefined): string {
+  if (!raw || typeof raw !== 'string') return '—';
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(raw.trim());
+  if (!m) return raw;
+  const [, dd, mm, yyyy] = m;
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const monthIndex = Number(mm) - 1;
+  if (monthIndex < 0 || monthIndex > 11) return raw;
+  return `${Number(dd)} ${months[monthIndex]} ${yyyy}`;
+}
+
+const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** ISO date -> "19 Nov 2026, 14:05" (or compact for space-constrained chips). */
+export function formatDateTime(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const date = `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]} ${d.getFullYear()}`;
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${date}, ${hh}:${mm}`;
+}
+
+/** "42 min ago" style relative label for fetched-at timestamps. */
+export function formatTimeAgo(iso: string | null | undefined, now = Date.now()): string {
+  if (!iso) return 'unknown time';
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return 'unknown time';
+  const s = Math.max(0, Math.round((now - t) / 1000));
+  if (s < 15) return 'just now';
+  if (s < 60) return `${s} s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  return `${h} h ago`;
+}
+
+/** "4.72" with a star glyph -> "★ 4.72"; null-safe. */
+export function formatRating(rating: number | null | undefined, reviewCount?: number | null): string {
+  if (rating == null) return 'No rating';
+  const star = '★';
+  const base = `${star} ${Math.round(rating * 10) / 10}`;
+  if (reviewCount == null) return base;
+  return `${base} (${Math.round(reviewCount).toLocaleString('en-IN')})`;
+}
+
+/** ETA minute offset from trip start -> "3 h 26 in" (relative to departure). */
+export function formatEta(minuteOffset: number | null | undefined): string {
+  if (minuteOffset == null) return '—';
+  return formatDuration(minuteOffset);
+}
+
+export function socTone(soc: number | null | undefined): 'high' | 'mid' | 'low' {
+  if (soc == null) return 'low';
+  if (soc >= 45) return 'high';
+  if (soc >= 20) return 'mid';
+  return 'low';
+}
+
+/** "Reliability: unavailable" — the honest label (null, never 0). */
+export const RELIABILITY_LABEL = 'Unavailable';

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#101623" />
+    <meta name="description" content="IndEV — EV route planner for India with live Statiq charger data." />
+    <title>IndEV — EV Route Planner for India</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23101623'/%3E%3Cpath d='M17.5 5 9 18h6l-1.5 9L22 14h-6z' fill='%23548fff'/%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <div id="app">
+      <div id="map" aria-label="Route map"></div>
+      <header class="topbar">
+        <div class="topbar-inner">
+          <div class="brand">
+            <span class="brand-mark" aria-hidden="true"></span>
+            <span class="brand-name">IndEV</span>
+            <span class="brand-tag">India EV route planner</span>
+          </div>
+          <div class="topbar-actions">
+            <span id="health-badge" class="badge hidden" role="status"></span>
+            <button id="trips-button" class="btn btn-ghost" type="button">Saved trips</button>
+          </div>
+        </div>
+      </header>
+      <aside id="planner-panel" class="panel" aria-label="Trip planner"></aside>
+      <aside id="trips-drawer" class="drawer hidden" aria-label="Saved trips"></aside>
+      <div id="toast-root" aria-live="polite"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
