@@ -1,7 +1,8 @@
+import fs from 'node:fs/promises';
 import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp, type AppDeps } from '../src/app.js';
 import {
   CountersStore,
@@ -733,3 +734,56 @@ describe('mock mode (synthetic data for UI work)', () => {
     expect(body.station.navUrl).toBeNull();
   });
 });
+
+it('returns the actual saved trip and committed outcome when lock cleanup fails', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'indev-http-lock-')); tempDirs.push(dir);
+  const path = join(dir, 'trips.json');
+  const deps = await makeDeps({ mock: true, trips: new TripsStore({ filePath: path }) }); const app = createApp(deps);
+  const planned = await app.request('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ origin: ORIGIN, destination: DEST }) });
+  const { plan } = await planned.json();
+  const spy = vi.spyOn(fs, 'rmdir').mockRejectedValue(new Error('injected cleanup refusal'));
+  try {
+    const response = await app.request('/api/trips', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan }) });
+    expect(response.status).toBe(201); const body = await response.json();
+    expect(body.trip.id).toBe(plan.id); expect(body.storage).toEqual({ committed: true, lockReleased: false });
+    expect(body.warnings.join(' ')).toContain('Do not retry');
+    expect(JSON.parse(await readFile(path, 'utf8'))).toHaveLength(1);
+  } finally { spy.mockRestore(); }
+});
+
+it.each([true, false])('preserves delete completion and no-op outcomes despite cleanup failure: %s', async exists => {
+  const dir = await mkdtemp(join(tmpdir(), 'indev-http-delete-lock-')); tempDirs.push(dir);
+  const path = join(dir, 'trips.json'); await writeFile(path, JSON.stringify(exists ? [{ id: 'A' }] : []));
+  const app = createApp(await makeDeps({ mock: true, trips: new TripsStore({ filePath: path }) }));
+  const spy = vi.spyOn(fs, 'rmdir').mockRejectedValue(new Error('injected cleanup refusal'));
+  try {
+    const response = await app.request('/api/trips/A', { method: 'DELETE' });
+    expect(response.status).toBe(exists ? 200 : 404);
+    expect((await response.json()).storage).toEqual({ committed: exists, lockReleased: false });
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual([]);
+  } finally { spy.mockRestore(); }
+});
+
+it('delivers an HTTP plan with unconfirmed counter warning after actual commit and cleanup failure', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'indev-http-counter-lock-')); tempDirs.push(dir);
+  const path = join(dir, 'counter.json'); const counters = new CountersStore({ filePath: path });
+  const app = createApp(await makeDeps({ mock: true, counters }));
+  const spy = vi.spyOn(fs, 'rmdir').mockRejectedValue(new Error('injected cleanup refusal'));
+  try {
+    const response = await app.request('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ origin: ORIGIN, destination: DEST }) });
+    expect(response.status).toBe(200); const { plan } = await response.json();
+    expect(plan.warnings.join(' ')).toContain('persistence could not be confirmed');
+    expect((await counters.load()).chargersSeen).toBe(plan.stationsSeen);
+  } finally { spy.mockRestore(); }
+});
+
+it('returns explicit locked HTTP failure without modifying a busy store', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'indev-http-busy-')); tempDirs.push(dir);
+  const path = join(dir, 'trips.json'); await writeFile(path, '[]'); await fs.mkdir(path + '.lock');
+  const app = createApp(await makeDeps({ mock: true, trips: new TripsStore({ filePath: path }) }));
+  const response = await app.request('/api/trips/A', { method: 'DELETE' });
+  expect(response.status).toBe(423); const body = await response.json();
+  expect(body.code).toBe('storage_busy'); expect(body.error).toContain('No write was attempted');
+  expect(await readFile(path, 'utf8')).toBe('[]');
+  expect(await fs.readdir(path + '.lock')).toEqual([]);
+}, 10_000);

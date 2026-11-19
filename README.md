@@ -95,3 +95,34 @@ The checks cover mobile 390x844 and desktop 1280x800, title/guidance visibility
 inside the planner scrollport, and restored retry-button focus. Browser specs
 and config are included in `npm run typecheck`. Failure screenshots/traces and
 successful reveal screenshots are written under ignored `test-results/`.
+
+## Shared JSON storage writes
+
+HTTP and MCP writers use the same per-file exclusive sidecar directory lock
+for the whole read-modify-replace operation. Readers still read atomic JSON
+snapshots without taking that lock. Existing JSON schemas and separate live
+and mock filenames are unchanged. No new dependency or migration is required.
+
+Stop every old HTTP/MCP writer before deploying this change. Older code does
+not honor these locks. This protocol is for cooperative processes on a local
+filesystem using stable paths. Parent-directory aliases resolve to one lock;
+existing data-file symlinks, hardlinks and nonregular targets are refused.
+Linux-local behavior is tested. Windows, network/cloud-synced filesystems and
+power-loss durability are not validated by this change.
+
+Acquisition waits at most five seconds of contention, then refuses the write.
+There is no age-based or PID-based takeover. A killed writer can leave a lock
+that blocks further writes while the last complete snapshot remains readable.
+Recovery is deliberately manual and offline: all writers must be stopped and
+the saved snapshot and lock evidence preserved for review first. This change
+does not provide an automatic recovery command. Never delete a lock while a
+writer might still be alive. An interrupted replacement may also leave an
+unused temporary file; it is not replayed automatically.
+
+A write may commit before lock cleanup fails. HTTP save/delete responses keep
+the completed result and include a warning plus explicit storage outcome;
+MCP saves keep the saved trip ID and include the warning in the plan/summary.
+A no-op removal is not described as a commit. Counter cleanup failures warn
+that persistence is unconfirmed without withholding a valid plan. None of
+these operations is automatically retried. Do not repeat a counter increment
+to compensate for an uncertain outcome.

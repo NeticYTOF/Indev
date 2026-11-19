@@ -1,7 +1,8 @@
+import fs from 'node:fs/promises';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CountersStore,
   OsrmRouter,
@@ -317,4 +318,21 @@ describe('structured plan last-used dates', () => {
     const result = planToStructured(plan) as { stops: Array<{ lastUsedOn: string | null }> };
     expect(result.stops[0]!.lastUsedOn).toBe(expected);
   });
+});
+
+it('returns the actual saved trip ID and warnings after successful MCP save with cleanup failure', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'indev-mcp-lock-')); tempDirs.push(dir);
+  const path = join(dir, 'saved-trips.json');
+  const deps = await makeDeps({ createStatiq: () => liveStatiqFake(), trips: new TripsStore({ filePath: path }) });
+  const spy = vi.spyOn(fs, 'rmdir').mockRejectedValue(new Error('injected cleanup refusal'));
+  try {
+    const result = await planTripHandler(deps, { origin: 'Delhi', destination: 'Jaipur', save: 'Saved once' });
+    expect(result.savedTripId).toBeTruthy();
+    expect(result.summary).toContain('Storage operation completed');
+    expect(result.summary).toContain('Do not retry');
+    const saved = JSON.parse(await readFile(path, 'utf8'));
+    expect(saved).toHaveLength(1); expect(saved[0].id).toBe(result.savedTripId);
+    expect(result.plan.warnings.join(' ')).toContain('persistence could not be confirmed');
+    expect((await deps.counters.load()).chargersSeen).toBe(result.plan.stationsSeen);
+  } finally { spy.mockRestore(); }
 });
