@@ -1,3 +1,28 @@
+/** Nearest point on a screen-space polyline (for marker placement). */
+function projectOntoPolyline(
+  poly: Array<{ x: number; y: number }>,
+  p: { x: number; y: number },
+): { x: number; y: number } {
+  let best = { x: poly[0]?.x ?? 0, y: poly[0]?.y ?? 0 };
+  let bestD = Infinity;
+  for (let i = 1; i < poly.length; i++) {
+    const a = poly[i - 1] as { x: number; y: number };
+    const b = poly[i] as { x: number; y: number };
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+    const cx = a.x + t * dx;
+    const cy = a.y + t * dy;
+    const d = (p.x - cx) ** 2 + (p.y - cy) ** 2;
+    if (d < bestD) {
+      bestD = d;
+      best = { x: cx, y: cy };
+    }
+  }
+  return best;
+}
+
 /**
  * Animated trip export: a self-contained SVG card where the route draws
  * itself, stops pop in sequence, and the stats fade up. Flat colors only.
@@ -44,7 +69,16 @@ export function buildAnimatedExportSvg(plan: TripPlan): string {
 
   const originP = px(pts[0] as { lat: number; lon: number });
   const destP = px(pts[pts.length - 1] as { lat: number; lon: number });
-  const stopPts = plan.stops.map((s) => px({ lat: s.station.lat, lon: s.station.lon }));
+
+  // Markers sit ON the drawn route: project each stop onto the rendered
+  // polyline (schematic convention - a marker marks the stop's position
+  // along the route, and synthetic fixtures whose coordinates sit off the
+  // schematic line stay visually on the line).
+  const routeScreenPts = pts.map((p) => px(p));
+  const stopPts = plan.stops.map((s) => {
+    const raw = px({ lat: s.station.lat, lon: s.station.lon });
+    return projectOntoPolyline(routeScreenPts, raw);
+  });
 
   const totalPathLen = 2600; // generous; actual length is shorter and that's fine
   const drawTime = 2.2; // seconds for the route draw
@@ -101,8 +135,11 @@ export function buildAnimatedExportSvg(plan: TripPlan): string {
   </style>
 
   <text x="${padX}" y="52" font-size="30" font-weight="700" fill="#101623">${routeTitle}</text>
-  <text x="${padX}" y="76" font-size="15" fill="#7d8698">${vehicleLine}${plan.source === 'synthetic' ? ' · SYNTHETIC DATA (MOCK)' : ''}</text>
+  <text x="${padX}" y="76" font-size="15" fill="#7d8698">${vehicleLine}${plan.source === 'synthetic' ? ' · SYNTHETIC DATA (MOCK) — SCHEMATIC GEOMETRY' : ''}</text>
 
+  <!-- static base route: full path at low opacity so previews without
+       SMIL/CSS animation still show the route -->
+  <path d="${path}" fill="none" stroke="#2463eb" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="0.18"/>
   <path d="${path}" fill="none" stroke="#ffffff" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" opacity="0.001"/>
   <path class="draw" d="${path}" fill="none" stroke="#2463eb" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
 
@@ -114,9 +151,9 @@ export function buildAnimatedExportSvg(plan: TripPlan): string {
   </g>
   ${stopCircles}
 
-  <line x1="${padX}" y1="${H - 96}" x2="${W - padX}" y2="${H - 96}" stroke="#e3e7ee" stroke-width="1"/>
+  <line x1="${padX}" y1="${H - 100}" x2="${W - padX}" y2="${H - 100}" stroke="#e3e7ee" stroke-width="1"/>
   <g class="fade">${statBlocks}</g>
-  <text class="fade" x="${W - padX}" y="${H - 96 + 22}" font-size="12" fill="#a8b0c0" text-anchor="end">IndEV — planned ${escapeXml(new Date(plan.createdAt).toLocaleDateString('en-IN'))}${plan.status === 'degraded' ? ' · partial coverage' : ''}</text>
+  <text class="fade" x="${padX}" y="${H - 16}" font-size="11" fill="#a8b0c0">IndEV — planned ${escapeXml(new Date(plan.createdAt).toLocaleDateString('en-IN'))}${plan.status === 'degraded' ? ' · partial coverage' : ''}${plan.source === 'synthetic' ? ' · synthetic schematic, not live geometry' : ''}</text>
 </svg>`;
 }
 
