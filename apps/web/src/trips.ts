@@ -209,6 +209,8 @@ function renderSavedSummary(panel: HTMLElement, trip: SavedTrip): void {
 
   results.querySelectorAll<HTMLElement>('[data-revalidate]').forEach((btn) => {
     btn.addEventListener('click', async () => {
+      if (btn.hasAttribute('disabled')) return;
+      btn.setAttribute('disabled', 'true');
       const card = btn.closest('.stop-card') as HTMLElement;
       const stationId = Number(card.dataset.stationId);
       const box = card.querySelector('.revalidate-box') as HTMLElement;
@@ -249,6 +251,10 @@ function renderSavedSummary(panel: HTMLElement, trip: SavedTrip): void {
           </div>`;
       } catch {
         box.textContent = 'Station details unavailable right now.';
+      } finally {
+        // Manual refresh stays available after either outcome, never auto-retry.
+        btn.removeAttribute('disabled');
+        if (document.activeElement === document.body) btn.focus({ preventScroll: true });
       }
     });
   });
