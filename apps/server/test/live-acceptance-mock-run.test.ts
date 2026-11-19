@@ -2,15 +2,25 @@
  * Live acceptance runner integration (MOCK path only - never upstream).
  *
  * End-to-end proofs against real spawned children:
- *  1. happy path: a --mock run passes both gates (health mock:true, plan
- *     source synthetic), exits 0 per exitCodeFor, and retains every
- *     artifact in its unique run dir (server.log with the startup line,
- *     plan.json, meta.json) - the historical defect lost server.log on
- *     the success path, and the old runner always exited 0.
- *  2. MODE GATE (fail-closed): a non-mock server answering health on the
+ *  1. happy path: a --mock run passes the mode and INSTANCE gates (health
+ *     mock:true + THIS launch's id, plan source synthetic), exits 0 per
+ *     exitCodeFor, and retains every artifact in its unique run dir
+ *     (server.log with the startup line, plan.json, meta.json) - the
+ *     historical defect lost server.log on the success path, and the old
+ *     runner always exited 0.
+ *  2. MODE GATE (fail-closed): a NON-mock server answering health on the
  *     runner's port must fail the --mock run: exit non-zero, outcome
  *     mode-mismatch, failure retained as a labeled artifact. A live-mode
  *     server can never serve the mock acceptance path quietly.
+ *  3. INSTANCE GATE (fail-closed, the proven race): a SAME-MODE server
+ *     from ANOTHER launch answering health on the runner's port must fail
+ *     the run BEFORE any plan request - exit non-zero, outcome
+ *     instance-mismatch, and ZERO /api/plan hits on the impostor. This is
+ *     the proven cause of the recurring empty-log success (two parallel
+ *     suites shared fixed port 8891); it must never be possible again.
+ *
+ * Every test uses a DYNAMIC ephemeral port (allocate, release, spawn) so
+ * parallel suites can never share a fixed test port.
  *
  * Like every acceptance artifact, run dirs are retained as evidence
  * (never deleted by the test).
@@ -24,9 +34,20 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-/** Dedicated ports: a stale process must never answer instead of our child. */
-const MOCK_RUN_PORT = '8891';
-const MODE_GATE_PORT = '8892';
+
+/** A free ephemeral port (listen(0) then close): no fixed test port can
+ *  collide with a parallel suite (the proven 8891 sharing). */
+async function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.once('error', reject);
+    srv.listen(0, 'localhost', () => {
+      const addr = srv.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      srv.close(() => resolve(port));
+    });
+  });
+}
 
 function listRunDirs(): string[] {
   return readdirSync(ROOT)
@@ -69,6 +90,7 @@ describe('live acceptance runner (mock integration, fail-closed by construction)
     'a --mock run passes both gates, exits 0 and retains every artifact',
     async () => {
       const before = new Set(listRunDirs());
+      const MOCK_RUN_PORT = String(await freePort());
       const { code, signal } = await runRunner(['--mock'], { LIVE_PORT: MOCK_RUN_PORT });
       expect(signal ?? null).toBeNull(); // exited by itself
 
@@ -98,7 +120,7 @@ describe('live acceptance runner (mock integration, fail-closed by construction)
         outcome: string;
         sourceMatch: boolean;
         fetchWallMs?: number;
-        health?: { mock: boolean; runBudget?: { deadlineMs?: number } };
+        health?: { mock: boolean; launchId?: string | null; runBudget?: { deadlineMs?: number } };
       };
       expect(meta.mode).toBe('mock');
       expect(meta.outcome).toBe('plan-ok');
@@ -115,6 +137,11 @@ describe('live acceptance runner (mock integration, fail-closed by construction)
       const metaJson = JSON.stringify(meta);
       expect(metaJson).not.toContain('STATIQ_API_TOKEN');
       expect(metaJson).not.toContain('AI_API_KEY');
+      // INSTANCE GATE end-to-end: the health answer carried THIS launch's
+      // id (the runner assigned a fresh INDEV_LAUNCH_ID; its own child
+      // echoed it) - the gate passed on the runner's OWN server instance
+      expect(meta.health?.launchId).toEqual(expect.any(String));
+      expect(meta.health?.launchId).not.toBe('');
       // artifacts are evidence: the run dir stays in place, never deleted
     },
     180_000,
@@ -127,6 +154,7 @@ describe('live acceptance runner (mock integration, fail-closed by construction)
       // must detect the mismatch before any plan request, exit non-zero
       // and retain the labeled failure artifact.
       let sawHealth = false;
+      let sawPlanRequest = false;
       const impostor: Server = createServer((req, res) => {
         if (String(req.url).includes('/api/health')) {
           sawHealth = true;
@@ -134,9 +162,13 @@ describe('live acceptance runner (mock integration, fail-closed by construction)
           res.end(JSON.stringify({ ok: true, mock: false, chargersSeen: 0, ai: false }));
           return;
         }
+        if (String(req.url).includes('/api/plan')) {
+          sawPlanRequest = true;
+        }
         res.writeHead(404);
         res.end();
       });
+      const MODE_GATE_PORT = String(await freePort());
       await new Promise<void>((r) => impostor.listen(Number(MODE_GATE_PORT), 'localhost', () => r()));
 
       let child: ChildProcess | null = null;
@@ -152,6 +184,8 @@ describe('live acceptance runner (mock integration, fail-closed by construction)
         // acceptance path, and the mismatch is explicit in the output
         expect(code).not.toBe(0);
         expect(out).toContain('mode-mismatch');
+        // rejection BEFORE any plan request: the impostor never saw one
+        expect(sawPlanRequest).toBe(false);
 
         // labeled failure artifact + meta evidence, retained in a new dir
         const runDir = newestRunDir(before);
@@ -163,6 +197,88 @@ describe('live acceptance runner (mock integration, fail-closed by construction)
         };
         expect(meta.outcome).toBe('mode-mismatch');
         expect(meta.health?.mock).toBe(false);
+        expect(existsSync(join(runDir, 'server.log'))).toBe(true);
+        expect(existsSync(join(runDir, 'server-stderr.log'))).toBe(true);
+      } finally {
+        impostor.close();
+        child?.kill();
+      }
+    },
+    180_000,
+  );
+
+  it(
+    'INSTANCE GATE: an unrelated SAME-MODE server on the port fails the run closed BEFORE any plan request',
+    async () => {
+      // THE PROVEN PROVENANCE RACE, made deterministic: a foreign mock-mode
+      // server (another launch's instance, exactly what a parallel suite
+      // on a shared fixed port looked like) answers health with mock:true
+      // AND ITS OWN launch id. The mode gate alone would PASS - only the
+      // INSTANCE gate can catch it. The runner must reject as
+      // instance-mismatch BEFORE deriving the wall or sending any plan
+      // request: the impostor's request log must show health polls and
+      // ZERO /api/plan hits.
+      let sawHealth = false;
+      let planRequests = 0;
+      const impostor: Server = createServer((req, res) => {
+        if (String(req.url).includes('/api/health')) {
+          sawHealth = true;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          // SAME MODE as the runner expects - only the IDENTITY differs
+          res.end(
+            JSON.stringify({
+              ok: true,
+              mock: true,
+              chargersSeen: 0,
+              ai: false,
+              // another launch's child: it echoes ITS OWN id, not ours
+              launchId: 'some-other-launch-uuid',
+              runBudget: {
+                maxUpstreamCalls: 200,
+                deadlineMs: 4 * 60_000,
+                retries: 2,
+              },
+            }),
+          );
+          return;
+        }
+        if (String(req.method) === 'POST' && String(req.url).includes('/api/plan')) {
+          planRequests++;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+      const INSTANCE_GATE_PORT = String(await freePort());
+      await new Promise<void>((r) => impostor.listen(Number(INSTANCE_GATE_PORT), 'localhost', () => r()));
+
+      let child: ChildProcess | null = null;
+      try {
+        const before = new Set(listRunDirs());
+        const result = await runRunner(['--mock'], { LIVE_PORT: INSTANCE_GATE_PORT });
+        child = result.child;
+        const { code, signal, out } = result;
+        expect(signal ?? null).toBeNull();
+        expect(sawHealth).toBe(true); // the impostor served the health polls
+
+        // fail-closed: NOT exit 0 despite the SAME MODE - only identity
+        // differs, and the mismatch is explicit in the output
+        expect(code).not.toBe(0);
+        expect(out).toContain('instance-mismatch');
+
+        // REJECTION BEFORE THE PLAN REQUEST: the impostor never saw one
+        expect(planRequests).toBe(0);
+
+        // labeled failure artifact + meta evidence, retained in a new dir
+        const runDir = newestRunDir(before);
+        const planText = readFileSync(join(runDir, 'plan.json'), 'utf8');
+        expect(planText).toContain('instance-mismatch');
+        const meta = JSON.parse(readFileSync(join(runDir, 'meta.json'), 'utf8')) as {
+          outcome: string;
+          health?: { mock: boolean; launchId?: string | null };
+        };
+        expect(meta.outcome).toBe('instance-mismatch');
+        expect(meta.health?.mock).toBe(true); // the run really was same-mode
+        expect(meta.health?.launchId).toBe('some-other-launch-uuid');
         expect(existsSync(join(runDir, 'server.log'))).toBe(true);
         expect(existsSync(join(runDir, 'server-stderr.log'))).toBe(true);
       } finally {

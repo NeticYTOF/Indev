@@ -16,6 +16,22 @@ import { probeHealth, probeSyntheticPlan } from '../../../scripts/ui-verify.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
+/** A free ephemeral port (listen(0) then close). The 8787/5173 dev ports
+ *  are NEVER used by test runs, and no fixed test port can collide with a
+ *  PARALLEL suite (the proven 8891 sharing that caused the acceptance
+ *  provenance race). */
+async function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.once('error', reject);
+    srv.listen(0, 'localhost', () => {
+      const addr = srv.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
 interface FakeServerHandle {
   server: Server;
   port: number;
@@ -125,9 +141,11 @@ describe('ui-verify launcher (integration)', () => {
       envWithCredentials.AI_API_KEY = 'sk-ai-live';
       envWithCredentials.AI_MODEL = 'test-model';
 
-      // isolated ports for this test run (never 8787/5173)
-      const srvPort = 8891;
-      const webPort = 5191;
+      // isolated DYNAMIC ports for this test run (never 8787/5173, and
+      // never a fixed port that a PARALLEL suite can share - the proven
+      // 8891 sharing that caused the acceptance provenance race)
+      const srvPort = await freePort();
+      const webPort = await freePort();
       const child = spawn(process.execPath, [join('scripts', 'ui-verify.mjs')], {
         cwd: ROOT,
         env: {
