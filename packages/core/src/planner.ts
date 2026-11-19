@@ -309,6 +309,7 @@ async function planCore(
     destination,
     vehicle: vehicleMeta,
     status,
+    source: 'live',
     routeDistanceKm: route.distanceKm,
     routeDurationMin: route.durationMin,
     geometry: route.geometry,

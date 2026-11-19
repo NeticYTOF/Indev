@@ -42,7 +42,7 @@ export interface AppDeps {
 }
 
 /** Server-side bounds for a planning request. */
-const SERVER_RUN_BUDGET = { deadlineMs: 4 * 60_000, maxUpstreamCalls: 200 };
+export const SERVER_RUN_BUDGET = { deadlineMs: 4 * 60_000, maxUpstreamCalls: 200 };
 
 const PLANNING_CODE_TO_STATUS: Record<string, number> = {
   not_determined: 422,
@@ -181,6 +181,20 @@ export function createApp(deps: AppDeps): Hono {
         return c.json({ error: 'Plan stops are malformed', code: 'bad_request' }, 400);
       }
     }
+    // PROVENANCE: the live store only accepts live plans; the mock store
+    // only accepts synthetic ones. Neither store ever mixes provenance.
+    const expectedSource = deps.mock ? 'synthetic' : 'live';
+    if (plan.source !== expectedSource) {
+      return c.json(
+        {
+          error: deps.mock
+            ? 'Only synthetic (mock) plans can be saved to the mock store'
+            : 'Only live plans can be saved to the real trip store',
+          code: 'wrong_provenance',
+        },
+        400,
+      );
+    }
     const saved = await deps.trips.save(plan, (body as { name?: string }).name);
     return c.json({ trip: saved }, 201);
   });
@@ -313,6 +327,7 @@ function mockPlan(
       realWorldRangeKm: null,
     },
     status: 'ok',
+    source: 'synthetic',
     routeDistanceKm: 415.2,
     routeDurationMin: 432,
     geometry: [
@@ -380,9 +395,10 @@ function mockStationView(stationId: number, name: string, chainageKm: number) {
     reviewCount: 128,
     reliability: null,
     fetchedAt: new Date().toISOString(),
+    synthetic: true,
     amenities: ['Cafe', 'Restroom'],
-    stationUrl: 'https://www.statiq.in/mock',
-    navUrl: 'https://www.google.com/maps/search/?api=1&query=27.7,76.6',
+    stationUrl: null,
+    navUrl: null,
     chargers: [
       {
         chargerId: stationId * 10,

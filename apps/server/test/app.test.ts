@@ -271,7 +271,6 @@ describe('saved trips (shared with MCP)', () => {
     const res = await app.request('/api/trips', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      // saved-trip-shaped payload (stations, not stops) must be rejected
       body: JSON.stringify({
         plan: {
           id: 'bad',
@@ -291,6 +290,90 @@ describe('saved trips (shared with MCP)', () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { code: string };
     expect(body.code).toBe('bad_request');
+  });
+
+  it('never lets a synthetic plan enter the live store', async () => {
+    const deps = await makeDeps();
+    const app = createApp(deps);
+    const synthetic = {
+      plan: {
+        id: 'mock-123',
+        createdAt: '2026-11-19T12:00:00Z',
+        origin: ORIGIN,
+        destination: DEST,
+        vehicle: { label: 'Tata Harrier EV (75 kWh)', catalogId: 'tata-harrier-ev-75', batteryKwh: 75, claimedRangeKm: 627, realWorldRangeKm: null },
+        status: 'ok',
+        source: 'synthetic',
+        routeDistanceKm: 415.2,
+        routeDurationMin: 432,
+        geometry: [[28.6, 77.2], [26.9, 75.8]],
+        stops: [],
+        totals: { distanceKm: 415.2, driveTimeMin: 432, chargeTimeMin: 32, totalTimeMin: 464, chargeKwh: 30, estPriceInr: 648, finalSocPct: 64 },
+      },
+    };
+    const res = await app.request('/api/trips', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(synthetic),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe('wrong_provenance');
+    // and nothing leaked into the store
+    const list = (await (await app.request('/api/trips')).json()) as { trips: unknown[] };
+    expect(list.trips).toHaveLength(0);
+  });
+
+  it('never lets a live plan enter the mock store', async () => {
+    const deps = await makeDeps({ mock: true, createStatiq: () => { throw new Error('live call in mock mode!'); } });
+    const app = createApp(deps);
+    const live = {
+      plan: {
+        id: 'plan-xyz',
+        createdAt: '2026-11-19T12:00:00Z',
+        origin: ORIGIN,
+        destination: DEST,
+        vehicle: { label: 'Tata Harrier EV (75 kWh)', catalogId: 'tata-harrier-ev-75', batteryKwh: 75, claimedRangeKm: 627, realWorldRangeKm: null },
+        status: 'ok',
+        source: 'live',
+        routeDistanceKm: 285,
+        routeDurationMin: 240,
+        geometry: [[28.6, 77.2], [26.9, 75.8]],
+        stops: [],
+        totals: { distanceKm: 285, driveTimeMin: 240, chargeTimeMin: 0, totalTimeMin: 240, chargeKwh: 0, estPriceInr: null, finalSocPct: 33 },
+      },
+    };
+    const res = await app.request('/api/trips', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(live),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe('wrong_provenance');
+    const list = (await (await app.request('/api/trips')).json()) as { trips: unknown[] };
+    expect(list.trips).toHaveLength(0);
+  });
+
+  it('saves its own synthetic plans in mock mode', async () => {
+    const deps = await makeDeps({ mock: true, createStatiq: () => { throw new Error('live call in mock mode!'); } });
+    const app = createApp(deps);
+    const planRes = await app.request('/api/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: ORIGIN, destination: DEST }),
+    });
+    const { plan } = (await planRes.json()) as { plan: Record<string, unknown> };
+    const saveRes = await app.request('/api/trips', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan, name: 'Mock run' }),
+    });
+    expect(saveRes.status).toBe(201);
+    const { trip } = (await saveRes.json()) as { trip: { source: string; stations: Array<Record<string, unknown>> } };
+    expect(trip.source).toBe('synthetic');
+    // mock stations carry no fabricated URLs and are flagged synthetic
+    expect((trip.stations[0] ?? {}).stationUrl).toBeUndefined(); // saved refs are minimal
   });
 });
 
@@ -313,8 +396,12 @@ describe('mock mode (synthetic data for UI work)', () => {
 
     const st = await app.request('/api/stations/9101');
     expect(st.status).toBe(200);
-    const body = (await st.json()) as { station: { name: string; reliability: null } };
+    const body = (await st.json()) as { station: { name: string; reliability: null; synthetic: boolean; stationUrl: string | null; navUrl: string | null } };
     expect(body.station.name).toContain('Statiq');
     expect(body.station.reliability).toBeNull();
+    expect(body.station.synthetic).toBe(true);
+    // no fabricated real-domain URLs on synthetic stations
+    expect(body.station.stationUrl).toBeNull();
+    expect(body.station.navUrl).toBeNull();
   });
 });

@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { CountersStore, OsrmRouter, PhotonGeocoder, StatiqClient, TripsStore } from '@indeev/core';
 import { aiEnabled, loadEnv } from './env.js';
-import { createApp } from './app.js';
+import { createApp, SERVER_RUN_BUDGET } from './app.js';
 
 const root = process.cwd();
 const env = loadEnv(root);
@@ -16,8 +16,11 @@ if (!env.mock && !env.statiqToken) {
 }
 
 mkdirSync(env.dataDir, { recursive: true });
-const trips = new TripsStore({ filePath: join(env.dataDir, 'saved-trips.json') });
-const counters = new CountersStore({ filePath: join(env.dataDir, 'counters.json') });
+// PROVENANCE ISOLATION: mock mode uses separate store files so synthetic
+// records can never mix with (or clobber) the real saved trips.
+const storeSuffix = env.mock ? '.mock' : '';
+const trips = new TripsStore({ filePath: join(env.dataDir, `saved-trips${storeSuffix}.json`) });
+const counters = new CountersStore({ filePath: join(env.dataDir, `counters${storeSuffix}.json`) });
 
 const app = createApp({
   mock: env.mock,
@@ -25,7 +28,13 @@ const app = createApp({
   counters,
   router: new OsrmRouter(),
   geocoder: new PhotonGeocoder(),
-  createStatiq: () => new StatiqClient({ token: env.statiqToken as string }),
+  // Fresh client per planning run (single-run memo policy), armed with the
+  // same deadline so Retry-After waits that cannot fit fail as throttled.
+  createStatiq: () =>
+    new StatiqClient({
+      token: env.statiqToken as string,
+      runDeadlineAt: Date.now() + SERVER_RUN_BUDGET.deadlineMs,
+    }),
 });
 
 const server = serve({ fetch: app.fetch, port: env.port }, (info) => {

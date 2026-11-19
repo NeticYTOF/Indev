@@ -46,9 +46,13 @@ export interface StationLiveView {
   reliability: null;
   /** When this station's live data was actually fetched (memo honesty). */
   fetchedAt: string;
+  /** True only on synthetic (mock) stations; the UI labels them. */
+  synthetic?: true;
   amenities: string[];
-  stationUrl: string;
-  navUrl: string;
+  /** Upstream station page; null on synthetic stations (never fabricated). */
+  stationUrl: string | null;
+  /** Upstream-provided nav shortcut; null on synthetic stations. */
+  navUrl: string | null;
   chargers: ChargerView[];
 }
 
@@ -96,6 +100,9 @@ export interface PlanVehicleMeta {
 /** Scan integrity of the plan: degraded plans carry visible holes. */
 export type PlanStatus = 'ok' | 'degraded';
 
+/** Where a plan came from: live upstream, or synthetic mock data. */
+export type PlanSource = 'live' | 'synthetic';
+
 export interface TripPlan {
   id: string;
   createdAt: string;
@@ -103,6 +110,8 @@ export interface TripPlan {
   destination: PlaceRef;
   vehicle: PlanVehicleMeta;
   status: PlanStatus;
+  /** Provenance: live plans only may enter the real saved-trips store. */
+  source: PlanSource;
   routeDistanceKm: number;
   routeDurationMin: number;
   geometry: Coords[];
