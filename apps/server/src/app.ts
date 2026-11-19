@@ -468,6 +468,13 @@ export function createApp(deps: AppDeps): Hono {
     // plan budget override does not (single-call revalidation has no run).
     const statiq = deps.createStatiq({ retries: statiqRetries });
     const { response, fetchedAt } = await statiq.detailsWithMeta(id);
+    // Never revalidate one station with another station's plug data.
+    // An invalid upstream reply is unavailable evidence, not a successful
+    // refresh or proof that the requested station does not exist.
+    if (!response || response.ok !== true ||
+        (response.station && response.station.stationId !== id)) {
+      return c.json({ error: 'Station details could not be verified. Please retry.', code: 'upstream_invalid' }, 502);
+    }
     if (!response.station) {
       return c.json({ error: 'Station not found', code: 'not_found' }, 404);
     }
