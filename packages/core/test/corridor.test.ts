@@ -46,6 +46,19 @@ const route: Coords[] = [
 ];
 
 describe('scanCorridor', () => {
+  it.each([
+    { ok: true }, { ok: true, stations: null }, { ok: true, stations: {} },
+    { ok: false, stations: [] },
+  ])('records malformed marker payload as coverage holes, not successful empty samples: %j', async (payload) => {
+    const client = { markers: async () => payload } as unknown as StatiqClient;
+    const res = await scanCorridor(client, route, { stepKm: 100 });
+    expect(res.samples).toBe(0);
+    expect(res.failedSamples).toHaveLength(res.samplesPlanned);
+    expect(res.samples + res.failedSamples.length).toBe(res.samplesPlanned);
+    expect(res.candidates).toEqual([]);
+    expect(res.warnings).toHaveLength(res.samplesPlanned);
+  });
+
   it('dedupes across overlapping samples and filters off-route stations', async () => {
     const near = marker(1, 28.005, 77.0); // ~0.55 km off the route
     const far = marker(2, 28.2, 77.0); // ~22 km off the route -> filtered
