@@ -25,6 +25,14 @@ const SRV_PORT = Number(process.env.UIV_SERVER_PORT || 8788);
 const WEB_PORT = Number(process.env.UIV_WEB_PORT || 5174);
 const DATA_DIR = join(ROOT, '.tmp-ui-verify-data');
 
+/** Live credentials/AI config NEVER pass into the mock UI-test children. */
+const CREDENTIAL_KEYS = ['STATIQ_API_TOKEN', 'AI_API_KEY', 'AI_BASE_URL', 'AI_MODEL'];
+function sanitizedChildEnv() {
+  const env = { ...process.env };
+  for (const key of CREDENTIAL_KEYS) delete env[key];
+  return env;
+}
+
 /** Probe health on a base URL; returns health JSON or null. */
 async function probeHealth(baseUrl) {
   try {
@@ -84,10 +92,12 @@ async function main() {
     {
       cwd: ROOT,
       env: {
-        ...process.env,
+        ...sanitizedChildEnv(),
         INDEV_MOCK: '1',
         PORT: String(SRV_PORT),
         DATA_DIR: DATA_DIR,
+        // never even load the repo .env: no live credentials in this process
+        INDEV_SKIP_DOTENV: '1',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
@@ -121,7 +131,8 @@ async function main() {
     }
     const startupLine = serverLog.split('\n').find((l) => l.includes('mock:')) ?? '(no startup line)';
     console.log(`[gate] startup line verified -> ${startupLine.trim()}`);
-    console.log(`[gate] /api/health mock=true verified.`);
+    console.log('[gate] /api/health mock=true verified.');
+    console.log('[gate] credential-free stack: live credentials/AI config stripped from children; .env skipped.');
 
     // 3) synthetic-plan probe
     const syntheticOk = await probeSyntheticPlan(`http://localhost:${SRV_PORT}`);
@@ -135,7 +146,7 @@ async function main() {
     // 4) vite on an isolated port proxying to our verified server
     web = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'serve', 'apps/web', '--port', String(WEB_PORT), '--strictPort'], {
       cwd: ROOT,
-      env: { ...process.env, API_PROXY_TARGET: `http://localhost:${SRV_PORT}` },
+      env: { ...sanitizedChildEnv(), API_PROXY_TARGET: `http://localhost:${SRV_PORT}` },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     web.stdout.on('data', (d) => process.stdout.write(`[web] ${d}`));

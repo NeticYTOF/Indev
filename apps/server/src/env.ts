@@ -3,6 +3,10 @@
  *
  * Loads .env from the repo root when present; real environment variables
  * always win. The STATIQ_API_TOKEN is read but never logged.
+ *
+ * INDEV_SKIP_DOTENV=1 (set by the mock UI stacks) skips the .env file
+ * entirely, so credential-free verification stacks never even load live
+ * credentials into their process env.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,15 +23,17 @@ export interface ServerEnv {
 }
 
 export function loadEnv(root: string): ServerEnv {
-  const envPath = join(root, '.env');
-  if (existsSync(envPath)) {
-    for (const line of readFileSync(envPath, 'utf8').split(/\r?\n/)) {
-      const m = /^[A-Za-z_][A-Za-z0-9_]*=(.*)$/.exec(line.trim());
-      if (!m) continue;
-      const key = line.trim().slice(0, line.trim().indexOf('='));
-      const value = (m[1] ?? '').trim().replace(/^["']|["']$/g, '');
-      if (!(key in process.env)) {
-        process.env[key] = value;
+  if (process.env.INDEV_SKIP_DOTENV !== '1') {
+    const envPath = join(root, '.env');
+    if (existsSync(envPath)) {
+      for (const line of readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+        const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line.trim());
+        if (!m) continue;
+        const key = m[1] as string;
+        const value = (m[2] ?? '').trim().replace(/^["']|["']$/g, '');
+        if (!(key in process.env)) {
+          process.env[key] = value;
+        }
       }
     }
   }

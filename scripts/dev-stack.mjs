@@ -21,6 +21,14 @@ const SRV_PORT = Number(process.env.DEVSTACK_SERVER_PORT || 8787);
 const WEB_PORT = Number(process.env.DEVSTACK_WEB_PORT || 5173);
 const DATA_DIR = join(ROOT, '.tmp-ui');
 
+/** Live credentials/AI config NEVER pass into the mock UI-test children. */
+const CREDENTIAL_KEYS = ['STATIQ_API_TOKEN', 'AI_API_KEY', 'AI_BASE_URL', 'AI_MODEL'];
+function sanitizedChildEnv() {
+  const env = { ...process.env };
+  for (const key of CREDENTIAL_KEYS) delete env[key];
+  return env;
+}
+
 async function getJson(url, init, timeoutMs = 4000) {
   try {
     const res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
@@ -51,11 +59,13 @@ async function main() {
     {
       cwd: ROOT,
       env: {
-        ...process.env,
+        ...sanitizedChildEnv(),
         // set in-process: immune to cmd-shim env dropping
         INDEV_MOCK: '1',
         PORT: String(SRV_PORT),
         DATA_DIR,
+        // never even load the repo .env: no live credentials in this process
+        INDEV_SKIP_DOTENV: '1',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
@@ -105,9 +115,11 @@ async function main() {
       return;
     }
     console.log('[gate] verified: health.mock=true, plan.source=synthetic.');
+    console.log('[gate] credential-free stack: live credentials/AI config stripped from children; .env skipped.');
 
     web = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'serve', 'apps/web', '--port', String(WEB_PORT), '--strictPort'], {
       cwd: ROOT,
+      env: { ...sanitizedChildEnv() },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     web.stdout.on('data', (d) => process.stdout.write(`[web] ${d}`));

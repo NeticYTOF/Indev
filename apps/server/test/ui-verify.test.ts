@@ -114,12 +114,27 @@ describe('ui-verify launcher (integration)', () => {
     'boots isolated mock stack and prints READY only after fail-closed gates pass',
     { timeout: 120_000 },
     async () => {
+      // Regression: the parent env carries live credentials and AI config;
+      // the launcher must strip them from BOTH children and still reach READY.
+      const envWithCredentials: Record<string, string> = {};
+      for (const [k, v] of Object.entries(process.env)) {
+        if (v !== undefined) envWithCredentials[k] = v;
+      }
+      envWithCredentials.STATIQ_API_TOKEN = 'sk-live-should-never-pass-through';
+      envWithCredentials.AI_BASE_URL = 'https://ai.test/v1';
+      envWithCredentials.AI_API_KEY = 'sk-ai-live';
+      envWithCredentials.AI_MODEL = 'test-model';
+
       // isolated ports for this test run (never 8787/5173)
       const srvPort = 8891;
       const webPort = 5191;
       const child = spawn(process.execPath, [join('scripts', 'ui-verify.mjs')], {
         cwd: ROOT,
-        env: { ...process.env, UIV_SERVER_PORT: String(srvPort), UIV_WEB_PORT: String(webPort) },
+        env: {
+          ...envWithCredentials,
+          UIV_SERVER_PORT: String(srvPort),
+          UIV_WEB_PORT: String(webPort),
+        },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let out = '';
@@ -158,6 +173,12 @@ describe('ui-verify launcher (integration)', () => {
           ready,
           `launcher did not reach READY. stdout: ${out.slice(0, 2000)} stderr: ${errOut.slice(0, 2000)}`,
         ).toBe(true);
+
+        // Regression (finding 4): READY was reached even though the parent
+        // carried live credentials - and the launcher reports they were
+        // stripped from the children.
+        expect(out).toContain('credential-free stack');
+        expect(out).not.toContain('sk-live-should-never-pass-through');
 
         // Independent assertions of the gates:
         const health = await probeHealth(`http://localhost:${srvPort}`);
