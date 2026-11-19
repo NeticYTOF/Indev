@@ -101,7 +101,14 @@ export function createApp(deps: AppDeps): Hono {
   app.onError((err, c) => {
     if (err instanceof PlanningError) {
       const status = PLANNING_CODE_TO_STATUS[err.code] ?? 422;
-      return c.json({ error: err.message, code: err.code }, status as never);
+      // The fine-grained cause travels in the HTTP body too, not just the
+      // audit outcome: the UI needs it to give cause-true guidance (a
+      // budget-exhausted run is NOT "the API is throttling - retry now").
+      // Absent for cause-less errors (no_route, infeasible).
+      return c.json(
+        { error: err.message, code: err.code, ...(err.cause ? { cause: err.cause } : {}) },
+        status as never,
+      );
     }
     if (err instanceof VehicleSelectionError) {
       return c.json({ error: err.message, code: 'bad_vehicle' }, 400);

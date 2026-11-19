@@ -7,8 +7,11 @@ import {
   CountersStore,
   OsrmRouter,
   PhotonGeocoder,
+  PlanningError,
   StatiqClient,
   TripsStore,
+  UpstreamBudget,
+  UpstreamRunStoppedError,
   type RouteResult,
   type StatiqDetailsResponse,
   type StatiqMarkersResponse,
@@ -148,6 +151,80 @@ describe('POST /api/plan', () => {
     const body = (await res.json()) as { code: string; error: string };
     expect(body.code).toBe('bad_vehicle');
     expect(body.error).toContain('real-world range');
+  });
+
+  it('returns the fine-grained cause in a budget-exhausted not_determined body', async () => {
+    // markers throws the run-fatal budget stop -> the planner maps it to an
+    // honest not_determined; the CAUSE must travel in the HTTP body so the
+    // UI can stop calling every failure "the API is throttling".
+    const statiq = {
+      markers: async (): Promise<StatiqMarkersResponse> => {
+        throw new UpstreamRunStoppedError('budget-exhausted', 3, 3);
+      },
+    } as unknown as StatiqClient;
+    const deps = await makeDeps({ createStatiq: () => statiq });
+    const app = createApp(deps);
+    const res = await app.request('/api/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: ORIGIN, destination: DEST }),
+    });
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string; code: string; cause?: string };
+    expect(body.code).toBe('not_determined');
+    expect(body.cause).toBe('budget-exhausted');
+    expect(body.error).toContain('NOT a verdict');
+  });
+
+  it('returns the throttled cause when the run budget records a fatal stop', async () => {
+    // The double mirrors the real client: it receives the run budget via
+    // attachRunBudget, stops it at the first markers call (429 + wait) and
+    // throws. The body must carry cause:'throttled' plus the server-demanded
+    // wait - "retry in a minute" is only honest for THIS cause.
+    let runBudget: UpstreamBudget | null = null;
+    const statiq = {
+      attachRunBudget: (b: UpstreamBudget): void => {
+        runBudget = b;
+      },
+      markers: async (): Promise<StatiqMarkersResponse> => {
+        runBudget?.stop('throttled', 60_000);
+        throw new UpstreamRunStoppedError('throttled', 1, 200, 60_000);
+      },
+    } as unknown as StatiqClient;
+    const deps = await makeDeps({ createStatiq: () => statiq });
+    const app = createApp(deps);
+    const res = await app.request('/api/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: ORIGIN, destination: DEST }),
+    });
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string; code: string; cause?: string };
+    expect(body.code).toBe('not_determined');
+    expect(body.cause).toBe('throttled');
+    expect(body.error).toContain('wait 60s');
+  });
+
+  it('omits cause for cause-less planning errors (no_route)', async () => {
+    // A router with no route throws PlanningError('no_route') without a
+    // cause; the body must NOT carry a cause key.
+    const router = {
+      route: async (): Promise<RouteResult> => {
+        throw new PlanningError('No route found between these places.', 'no_route');
+      },
+    } as unknown as OsrmRouter;
+    const deps = await makeDeps({ createStatiq: () => liveStatiqFake(), router });
+    const app = createApp(deps);
+    const res = await app.request('/api/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: ORIGIN, destination: DEST }),
+    });
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string; code: string; cause?: string };
+    expect(body.code).toBe('no_route');
+    expect(body.cause).toBeUndefined();
+    expect('cause' in body).toBe(false);
   });
 });
 
