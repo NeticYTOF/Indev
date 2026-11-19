@@ -10,10 +10,12 @@
  *   carries a `fetchedAt` timestamp from `detailsWithMeta`.
  * - The rolling-window limiter spaces calls out (anti-burst) and hard-caps
  *   calls per 60s; it is abort-aware so a run deadline cancels cleanly.
- * - 429 responses are honored via Retry-After when present; retries are
- *   capped and combined with exponential backoff + jitter. Persistent
- *   throttling fails CLOSED at the planner level: "plan not determined",
- *   never a falsely-confident plan.
+ * - RETRY POLICY: budgeted planning runs (see attachRunBudget) fail CLOSED
+ *   on the FIRST 429/401/403 - the whole run stops, no sleep-then-retry,
+ *   no further upstream traffic from any concurrent worker - and the
+ *   parsed Retry-After (delay-seconds OR HTTP-date) is recorded for
+ *   honest reporting. Without a budget (single-call station revalidation)
+ *   429s are honored via the full Retry-After with capped retries.
  */
 import type {
   StatiqCardsResponse,
@@ -21,6 +23,7 @@ import type {
   StatiqMarkersResponse,
 } from './types.js';
 import { sleep as defaultSleep } from './utils.js';
+import { UpstreamBudget, UpstreamRunStoppedError } from './upstream-budget.js';
 
 export const DEFAULT_STATIQ_BASE_URL =
   'https://harrier-evroute.aaravnirajsingh.workers.dev/api';
@@ -36,6 +39,24 @@ export class StatiqApiError extends Error {
     // include request headers (token safety).
     super(`Statiq API ${status} on ${path}: ${body.slice(0, 200)}`);
     this.name = 'StatiqApiError';
+  }
+}
+
+/**
+ * Run-fatal 4xx under an attached run budget (first 429/401/403).
+ * Never retried; the whole planning run fails closed (the planner maps
+ * this to an honest not_determined outcome with coverage evidence).
+ */
+export class StatiqRunFatalError extends StatiqApiError {
+  constructor(
+    readonly stopCause: 'throttled' | 'auth',
+    status: number,
+    path: string,
+    body: string,
+    retryAfterMs?: number,
+  ) {
+    super(status, path, body, retryAfterMs);
+    this.name = 'StatiqRunFatalError';
   }
 }
 
@@ -126,6 +147,8 @@ export class StatiqClient {
   private readonly doSleep: (ms: number) => Promise<void>;
   private readonly runDeadlineAt: number | undefined;
   private readonly onUpstreamCall: ((entry: UpstreamAuditEntry) => void) | undefined;
+  /** Shared per-run attempt budget (attached by the planner for live runs). */
+  private runBudget: UpstreamBudget | undefined;
   private upstreamAttempts = 0;
   private readonly detailsCache = new Map<number, CacheEntry>();
   private lastCallAt = Number.NEGATIVE_INFINITY;
@@ -183,6 +206,16 @@ export class StatiqClient {
   /** Wire-shaped details (no fetch metadata). */
   async details(stationId: number, signal?: AbortSignal): Promise<StatiqDetailsResponse> {
     return (await this.detailsWithMeta(stationId, signal)).response;
+  }
+
+  /**
+   * Attach the shared per-run attempt budget. Every transport attempt
+   * (retries included) reserves against it, and the first 429/401/403
+   * stops the whole run fail-closed. The client is per planning run
+   * (single-run memo policy); attach BEFORE the first upstream call.
+   */
+  attachRunBudget(budget: UpstreamBudget): void {
+    this.runBudget = budget;
   }
 
   /**
@@ -281,6 +314,10 @@ export class StatiqClient {
     let lastRetryAfterMs: number | undefined;
     // 1 initial attempt + `retries` retries; aborts are never retried
     for (let attempt = 0; attempt <= this.retries; attempt++) {
+      // Run budget gate: reserves every TRANSPORT try (retries included)
+      // against the shared hard cap and fails closed the moment the run
+      // is stopped. Nothing after this point may dispatch if it throws.
+      this.runBudget?.reserveAttempt();
       if (attempt > 0) {
         const override = lastRetryAfterMs;
         lastRetryAfterMs = undefined;
@@ -298,6 +335,16 @@ export class StatiqClient {
         await this.backoffMs(attempt, override, signal);
       }
       await this.acquireSlot(signal);
+      // A stop that fired while this worker waited at the limiter must
+      // never reach the network: fail fast before dispatch.
+      if (this.runBudget?.stopped) {
+        throw new UpstreamRunStoppedError(
+          this.runBudget.stopped,
+          this.runBudget.attemptsMade,
+          this.runBudget.maxAttempts,
+          this.runBudget.retryAfterMs,
+        );
+      }
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.timeoutMs);
       const onOuterAbort = () => controller.abort();
@@ -317,7 +364,16 @@ export class StatiqClient {
         if (!res.ok) {
           const retryAfter =
             res.status === 429 ? this.parseRetryAfterMs(res.headers?.get('retry-after')) : undefined;
-          // 4xx (except 429) are permanent: do not retry.
+          // Under a run budget the FIRST 429/401/403 STOPS the run:
+          // fail closed - no sleep-then-retry, no bypassing the server's
+          // limit, no further traffic from any concurrent worker.
+          if (this.runBudget && (res.status === 401 || res.status === 403 || res.status === 429)) {
+            const stopCause = res.status === 429 ? 'throttled' : 'auth';
+            this.runBudget.stop(stopCause, retryAfter);
+            throw new StatiqRunFatalError(stopCause, res.status, path, text, retryAfter);
+          }
+          // No budget (single-call revalidation): 4xx (except 429) are
+          // permanent and not retried; 429/5xx retry honoring Retry-After.
           if (res.status >= 500 || res.status === 429) {
             lastError = new StatiqApiError(res.status, path, text, retryAfter);
             lastRetryAfterMs = retryAfter;
@@ -327,6 +383,11 @@ export class StatiqClient {
         }
         return JSON.parse(text) as T;
       } catch (err) {
+        // run-fatal and budget-gate errors are never retried, never
+        // counted as sample failures: they unwind the whole planning run
+        if (err instanceof StatiqRunFatalError || err instanceof UpstreamRunStoppedError) {
+          throw err;
+        }
         // aborts propagate immediately; they are never retried
         if (signal?.aborted || (signal && isAbortLike(err))) {
           this.audit(path, 0);
@@ -350,11 +411,18 @@ export class StatiqClient {
     throw new StatiqApiError(0, path, lastError instanceof Error ? lastError.message : 'network error');
   }
 
-  /** Parse Retry-After (delay-seconds form). */
+  /**
+   * Parse Retry-After: the delay-seconds form ("120") OR the HTTP-date
+   * form ("Wed, 21 Oct 2015 07:28:00 GMT", resolved against the client
+   * clock so fake-clock tests stay deterministic). Unparseable -> undefined
+   * (the caller falls back to default backoff timing).
+   */
   private parseRetryAfterMs(header: string | null | undefined): number | undefined {
     if (!header) return undefined;
-    const seconds = Number(header.trim());
-    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
-    return undefined; // HTTP-date form: fall back to default backoff
+    const trimmed = header.trim();
+    if (/^\d+(?:\.\d+)?$/.test(trimmed)) return Number(trimmed) * 1000;
+    const dateMs = Date.parse(trimmed);
+    if (!Number.isNaN(dateMs)) return Math.max(0, dateMs - this.now());
+    return undefined;
   }
 }

@@ -3,6 +3,7 @@ export * from './types.js';
 export * from './plugs.js';
 export * from './brands.js';
 export * from './statiq.js';
+export * from './upstream-budget.js';
 export * from './router.js';
 export * from './geocode.js';
 export * from './vehicle.js';
