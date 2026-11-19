@@ -72,6 +72,16 @@ function liveStatiqFake() {
 }
 
 describe('plan_trip handler', () => {
+  it('retains custom vehicle claimed range in km separately from real-world range', async () => {
+    const deps = await makeDeps({ createStatiq: () => liveStatiqFake() });
+    const args = { origin: 'Delhi', destination: 'Jaipur', customVehicle: {
+      label: 'Custom fixture', batteryKwh: 60, claimedRangeKm: 500, realWorldRangeKm: 350,
+    } };
+    const result = await planTripHandler(deps, args);
+    expect(result.plan.vehicle.claimedRangeKm).toBe(500);
+    expect(result.plan.vehicle.realWorldRangeKm).toBe(350);
+  });
+
   it('delivers and saves a valid plan with an explicit warning when counter telemetry fails', async () => {
     const deps = await makeDeps({ createStatiq: () => liveStatiqFake(), counters: { addChargersSeen: async () => { throw new Error('counter corrupt'); } } as unknown as CountersStore });
     const result = await planTripHandler(deps, { origin: 'Delhi', destination: 'Jaipur', save: 'Counter warning fixture' });
