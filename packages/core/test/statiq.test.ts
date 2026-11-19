@@ -281,4 +281,85 @@ describe('rate limiter (mocked transport + mocked clock)', () => {
     await expect(client.markers(1, 1)).rejects.toBeInstanceOf(StatiqApiError);
     expect(transportTimes).toHaveLength(3); // initial + 2 retries, no tight loop
   });
+
+  it('never truncates a large Retry-After beyond the old 90s cap', async () => {
+    let n = 0;
+    const { client, transportTimes } = deterministicClient({
+      retries: 2,
+      respond: () => {
+        n++;
+        if (n === 1) {
+          return { status: 429, body: '{"error":"wait"}', headers: { 'Retry-After': '120' } };
+        }
+        return { status: 200 };
+      },
+    });
+    await client.markers(1, 1);
+    expect(transportTimes).toHaveLength(2);
+    // second attempt must wait the FULL 120s (no 90s truncation)
+    expect((transportTimes[1] as number) - (transportTimes[0] as number)).toBeGreaterThanOrEqual(120_000);
+  });
+
+  it('fails fast as throttled when Retry-After cannot fit before the run deadline', async () => {
+    let nowMs = 0;
+    const transportTimes: number[] = [];
+    let n = 0;
+    const transport = (async () => {
+      n++;
+      transportTimes.push(nowMs);
+      if (n === 1) {
+        return new Response('{"error":"Please wait a minute."}', { status: 429, headers: { 'Retry-After': '60' } });
+      }
+      return new Response(JSON.stringify(emptyMarkers), { status: 200 });
+    }) as typeof fetch;
+    const client = new StatiqClient({
+      token: 't',
+      baseUrl: 'https://x.test/api',
+      fetchImpl: transport,
+      now: () => nowMs,
+      sleepImpl: async (ms: number) => {
+        nowMs += ms;
+      },
+      retries: 2,
+      minCallGapMs: 1,
+      maxCallsPerMinute: 1_000,
+      runDeadlineAt: 30_000, // only 30s left; server demands 60s
+    });
+    const err = await client.markers(1, 1).catch((e) => e);
+    expect(err).toBeInstanceOf(StatiqApiError);
+    expect((err as StatiqApiError).status).toBe(429);
+    expect((err as StatiqApiError).retryAfterMs).toBeGreaterThanOrEqual(60_000);
+    // no early retry: the throttled error surfaces without a second call
+    expect(transportTimes).toHaveLength(1);
+  });
+
+  it('notices aborts during a long Retry-After wait (abort-aware sleep)', async () => {
+    let nowMs = 0;
+    const controller = new AbortController();
+    const transportTimes: number[] = []
+    const transport = (async () => {
+      transportTimes.push(nowMs);
+      return new Response('{"error":"wait"}', { status: 429, headers: { 'Retry-After': '600' } });
+    }) as typeof fetch;
+    const client = new StatiqClient({
+      token: 't',
+      baseUrl: 'https://x.test/api',
+      fetchImpl: transport,
+      now: () => nowMs,
+      sleepImpl: async (ms: number) => {
+        nowMs += ms;
+        // an external deadline fires 250ms into the demanded 600s wait
+        if (nowMs >= 250 && !controller.signal.aborted) controller.abort();
+      },
+      retries: 1,
+      minCallGapMs: 1,
+      maxCallsPerMinute: 1_000,
+    });
+    const err = await client.markers(1, 1, controller.signal).catch((e) => e);
+    expect(err).toBeInstanceOf(StatiqAbortError);
+    // no retry happened after the abort
+    expect(transportTimes).toHaveLength(1);
+    // the fake clock barely advanced past the abort point: cancel noticed fast
+    expect(nowMs).toBeLessThan(1_000);
+  });
 });

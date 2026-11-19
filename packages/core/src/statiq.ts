@@ -75,6 +75,12 @@ export interface StatiqClientOptions {
   now?: () => number;
   /** Injectable sleep for deterministic limiter tests. */
   sleepImpl?: (ms: number) => Promise<void>;
+  /**
+   * Wall-clock deadline (ms epoch) for the planning run this client serves.
+   * If a 429's Retry-After cannot fit before this deadline, the call fails
+   * fast with the throttled error instead of retrying early.
+   */
+  runDeadlineAt?: number;
 }
 
 interface CacheEntry {
@@ -100,6 +106,7 @@ export class StatiqClient {
   private readonly minCallGapMs: number;
   private readonly now: () => number;
   private readonly doSleep: (ms: number) => Promise<void>;
+  private readonly runDeadlineAt: number | undefined;
   private readonly detailsCache = new Map<number, CacheEntry>();
   private lastCallAt = Number.NEGATIVE_INFINITY;
   private callStamps: number[] = [];
@@ -120,6 +127,7 @@ export class StatiqClient {
     this.minCallGapMs = opts.minCallGapMs ?? 2_000;
     this.now = opts.now ?? Date.now;
     this.doSleep = opts.sleepImpl ?? defaultSleep;
+    this.runDeadlineAt = opts.runDeadlineAt;
   }
 
   /** Stations near a point (~13 km radius, capped at 256 by the upstream). */
@@ -154,21 +162,6 @@ export class StatiqClient {
   /** Wire-shaped details (no fetch metadata). */
   async details(stationId: number, signal?: AbortSignal): Promise<StatiqDetailsResponse> {
     return (await this.detailsWithMeta(stationId, signal)).response;
-  }
-
-  /**
-   * Backoff between attempts. When the upstream sent Retry-After (parsed
-   * to ms), it is honored (capped at 90s) with a small jitter allowance.
-   * Otherwise: exponential with full jitter, capped at 4s.
-   */
-  private async backoffMs(attempt: number, retryAfterMs?: number): Promise<void> {
-    if (retryAfterMs != null && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
-      await this.doSleep(Math.min(retryAfterMs, 90_000) + Math.random() * 250);
-      return;
-    }
-    const base = 250 * 2 ** Math.min(attempt, 4); // caps the exponential at 4s
-    const jittered = Math.random() * base; // full jitter: 0..base
-    await this.doSleep(Math.min(jittered, 4_000) + 100);
   }
 
   /**
@@ -213,6 +206,37 @@ export class StatiqClient {
     }
   }
 
+  /**
+   * Abort-aware sleep: polls in <=200ms chunks so a deadline abort is
+   * noticed within one poll cycle - even mid Retry-After wait.
+   */
+  private async sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+    let remaining = Math.max(0, ms);
+    for (;;) {
+      if (signal?.aborted) throw new StatiqAbortError();
+      if (remaining <= 0) return;
+      const chunk = Math.min(remaining, 200);
+      await this.doSleep(chunk);
+      remaining -= chunk;
+    }
+  }
+
+  /**
+   * Backoff between attempts. A 429's Retry-After is honored IN FULL -
+   * never truncated - plus a small jitter on top (so never earlier than
+   * the server demanded). Otherwise: exponential with full jitter, capped
+   * at 4s. All sleeps are abort-aware.
+   */
+  private async backoffMs(attempt: number, retryAfterMs: number | undefined, signal?: AbortSignal): Promise<void> {
+    if (retryAfterMs != null && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+      await this.sleepAbortable(retryAfterMs + Math.random() * 250, signal);
+      return;
+    }
+    const base = 250 * 2 ** Math.min(attempt, 4); // caps the exponential at 4s
+    const jittered = Math.random() * base; // full jitter: 0..base
+    await this.sleepAbortable(Math.min(jittered, 4_000) + 100, signal);
+  }
+
   private async postJson<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
     let lastError: unknown;
     let lastRetryAfterMs: number | undefined;
@@ -221,7 +245,18 @@ export class StatiqClient {
       if (attempt > 0) {
         const override = lastRetryAfterMs;
         lastRetryAfterMs = undefined;
-        await this.backoffMs(attempt, override);
+        // Never truncate the server-demanded wait: if honoring the full
+        // Retry-After cannot fit inside this run's remaining deadline, fail
+        // fast with the throttled error instead of retrying early.
+        if (
+          override != null &&
+          this.runDeadlineAt != null &&
+          this.now() + override > this.runDeadlineAt
+        ) {
+          if (lastError instanceof StatiqApiError) throw lastError;
+          throw new StatiqApiError(429, path, 'throttled; Retry-After exceeds run deadline', override);
+        }
+        await this.backoffMs(attempt, override, signal);
       }
       await this.acquireSlot(signal);
       const controller = new AbortController();
