@@ -108,7 +108,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
 
   // Mode provenance: the pending label must reflect the server mode from
   // /api/health - never assume live.
-  let serverIsMock = false;
+  let serverIsMock: boolean | null = null;
   void api
     .health()
     .then((h) => {
@@ -212,9 +212,8 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
   let busyTimer: number | null = null;
   let busyStartedAt = 0;
   const startBusy = (): void => {
-    if (serverIsMock) return; // synthetic plans are instant - no live claims
-    // Plan and AI runs can overlap (separately disabled buttons); never
-    // leak the previous run's interval - clear before starting another.
+    if (serverIsMock !== false) return; // only confirmed live mode gets live claims
+    // Defensive cleanup: single-flight gives this timer one run owner.
     if (busyTimer !== null) window.clearInterval(busyTimer);
     busyStartedAt = Date.now();
     busyElapsed.textContent = '0s elapsed';
@@ -338,7 +337,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
 
     // One planning run at a time - see the gate declaration above.
     if (!gate.tryBegin()) return;
-    setLoading(true, serverIsMock ? 'Planning synthetic route…' : 'Planning live route…');
+    setLoading(true, serverIsMock === null ? 'Planning route…' : serverIsMock ? 'Planning synthetic route…' : 'Planning live route…');
     setActionsBusy(true);
     hideError(errorBox);
     startBusy();
