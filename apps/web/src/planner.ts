@@ -635,8 +635,11 @@ function makeSearchField(
   });
 
   input.addEventListener('blur', () => {
-    // slight delay so click on suggestion registers before the list hides
-    setTimeout(() => list.classList.add('hidden'), 180);
+    // Allow suggestion clicks to register, but do not let an old blur
+    // hide choices after the user has already returned to this field.
+    setTimeout(() => {
+      if (document.activeElement !== input) list.classList.add('hidden');
+    }, 180);
   });
   input.addEventListener('focus', () => {
     if (list.children.length > 0) list.classList.remove('hidden');
