@@ -11,6 +11,7 @@ import { el, escapeHtml } from './planner.js';
 import { api } from './api.js';
 import { downloadAnimatedExport } from './export.js';
 import { toast } from './toast.js';
+import { storageWarningText, storageWarningElement } from './storage-warning.js';
 import { formatDuration, formatEta, formatInr, lastUsedLabel, formatDateTime, formatTariff } from './format.js';
 import { safeHttpUrl } from './safe-url.js';
 
@@ -100,9 +101,11 @@ function wirePlanActions(actions: HTMLElement, plan: TripPlan): void {
     if (!btn || btn.disabled) return;
     btn.disabled = true;
     try {
-      await api.saveTrip(plan);
+      const response = await api.saveTrip(plan);
       btn.textContent = 'Saved to your trips';
-      toast('Trip saved.');
+      const warning = storageWarningText(response);
+      if (warning) actions.after(storageWarningElement(`Trip saved. ${warning}`));
+      toast(warning ? `Trip saved. ${warning}` : 'Trip saved.', warning ? 'warn' : 'info', warning ? 12_000 : 4_200);
     } catch (err) {
       btn.disabled = false;
       if (document.activeElement === document.body) btn.focus({ preventScroll: true });

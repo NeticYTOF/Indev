@@ -12,6 +12,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { withStoreLock } from './store-lock.js';
 import type { TripPlan } from './plan-types.js';
 
 /** Minimal station reference kept in a saved trip. */
@@ -101,9 +102,9 @@ export class TripsStore {
     this.filePath = opts.filePath;
   }
 
-  private async readAllRaw(): Promise<SavedTrip[]> {
+  private async readAllRaw(filePath = this.filePath): Promise<SavedTrip[]> {
     try {
-      const text = await readFile(this.filePath, 'utf8');
+      const text = await readFile(filePath, 'utf8');
       const parsed = JSON.parse(text);
       if (!Array.isArray(parsed)) throw new Error('Saved trips file must contain an array');
       return parsed as SavedTrip[];
@@ -123,11 +124,11 @@ export class TripsStore {
   }
 
   /** Atomic write: temp file in the same directory, then rename. */
-  private async writeAll(trips: SavedTrip[]): Promise<void> {
-    await mkdir(dirname(this.filePath), { recursive: true });
-    const tmp = join(dirname(this.filePath), `.tmp-${randomUUID()}.json`);
+  private async writeAll(filePath: string, trips: SavedTrip[]): Promise<void> {
+    await mkdir(dirname(filePath), { recursive: true });
+    const tmp = join(dirname(filePath), `.tmp-${randomUUID()}.json`);
     await writeFile(tmp, JSON.stringify(trips, null, 2), 'utf8');
-    await rename(tmp, this.filePath);
+    await rename(tmp, filePath);
   }
 
   list(): Promise<SavedTrip[]> {
@@ -141,8 +142,8 @@ export class TripsStore {
 
   /** Save a plan (minimal form). Returns the saved trip. */
   async save(plan: TripPlan, name?: string): Promise<SavedTrip> {
-    return this.serialize(async () => {
-      const trips = await this.readAllRaw();
+    return this.serialize(() => withStoreLock(this.filePath, async (filePath, markCommitted) => {
+      const trips = await this.readAllRaw(filePath);
       const saved = toSavedTrip(plan, name);
       const idx = trips.findIndex((t) => t.id === saved.id);
       if (idx >= 0) {
@@ -150,18 +151,20 @@ export class TripsStore {
       } else {
         trips.unshift(saved);
       }
-      await this.writeAll(trips);
+      await this.writeAll(filePath, trips);
+      markCommitted();
       return saved;
-    });
+    }));
   }
 
   async remove(id: string): Promise<boolean> {
-    return this.serialize(async () => {
-      const trips = await this.readAllRaw();
+    return this.serialize(() => withStoreLock(this.filePath, async (filePath, markCommitted) => {
+      const trips = await this.readAllRaw(filePath);
       const next = trips.filter((t) => t.id !== id);
       if (next.length === trips.length) return false;
-      await this.writeAll(next);
+      await this.writeAll(filePath, next);
+      markCommitted();
       return true;
-    });
+    }));
   }
 }

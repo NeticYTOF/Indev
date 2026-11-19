@@ -10,6 +10,7 @@ import { api } from './api.js';
 import { el, escapeHtml } from './planner.js';
 import { drawTrip } from './map.js';
 import { toast } from './toast.js';
+import { storageWarningText, storageWarningElement } from './storage-warning.js';
 import { formatDuration, formatDateTime } from './format.js';
 
 /**
@@ -100,6 +101,8 @@ function renderTripRow(trip: SavedTrip, map: maplibregl.Map, drawer: HTMLElement
     btn.disabled = true;
     try {
       const res = await api.deleteTrip(trip.id);
+      const body: unknown = await res.json().catch(() => null);
+      const warning = storageWarningText(body);
       if (res.ok) {
         // The refresh below replaces the drawer's DOM wholesale - the
         // clicked button dies with it. Land focus on the stable owner
@@ -108,8 +111,10 @@ function renderTripRow(trip: SavedTrip, map: maplibregl.Map, drawer: HTMLElement
           document.getElementById('trips-button')?.focus();
         }
         renderTripsDrawer(drawer, map); // refresh list
-        toast('Trip deleted.');
+        if (warning) drawer.querySelector('.drawer-head')?.after(storageWarningElement(`Trip deleted. ${warning}`));
+        toast(warning ? `Trip deleted. ${warning}` : 'Trip deleted.', warning ? 'warn' : 'info', warning ? 12_000 : 4_200);
       } else {
+        if (warning) drawer.querySelector('.drawer-head')?.after(storageWarningElement(warning));
         btn.disabled = false;
         if (document.activeElement === document.body) btn.focus();
         toast('Could not delete the trip.', 'bad');

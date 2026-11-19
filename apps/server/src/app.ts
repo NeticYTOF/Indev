@@ -14,6 +14,10 @@
 import { Hono } from 'hono';
 import {
   CountersStore,
+  StoreLockCleanupError,
+  StoreLockBusyError,
+  STORE_LOCK_CLEANUP_WARNING,
+  type SavedTrip,
   recordPlanCounter,
   OsrmRouter,
   PhotonGeocoder,
@@ -100,6 +104,9 @@ export function createApp(deps: AppDeps): Hono {
   const statiqRetries = deps.statiqRetries;
 
   app.onError((err, c) => {
+    if (err instanceof StoreLockBusyError) {
+      return c.json({ error: err.message, code: 'storage_busy' }, 423);
+    }
     if (err instanceof PlanningError) {
       const status = PLANNING_CODE_TO_STATUS[err.code] ?? 422;
       // The fine-grained cause travels in the HTTP body too, not just the
@@ -447,14 +454,30 @@ export function createApp(deps: AppDeps): Hono {
     ) {
       return c.json({ error: 'Saved trip coordinates or names are malformed', code: 'bad_request' }, 400);
     }
-    const saved = await deps.trips.save(plan, name as string | undefined);
-    return c.json({ trip: saved }, 201);
+    try {
+      const saved = await deps.trips.save(plan, name as string | undefined);
+      return c.json({ trip: saved }, 201);
+    } catch (error) {
+      if (error instanceof StoreLockCleanupError && error.committed) {
+        return c.json({ trip: error.result as SavedTrip, warnings: [STORE_LOCK_CLEANUP_WARNING], storage: { committed: true, lockReleased: false } }, 201);
+      }
+      throw error;
+    }
   });
 
   app.delete('/api/trips/:id', async (c) => {
-    const removed = await deps.trips.remove(c.req.param('id'));
-    if (!removed) return c.json({ error: 'Trip not found', code: 'not_found' }, 404);
-    return c.json({ ok: true });
+    let removed: boolean;
+    let cleanupFailed = false;
+    try {
+      removed = await deps.trips.remove(c.req.param('id'));
+    } catch (error) {
+      if (!(error instanceof StoreLockCleanupError) || typeof error.result !== 'boolean') throw error;
+      removed = error.result;
+      cleanupFailed = true;
+    }
+    const extra = cleanupFailed ? { warnings: [STORE_LOCK_CLEANUP_WARNING], storage: { committed: removed, lockReleased: false } } : {};
+    if (!removed) return c.json({ error: 'Trip not found', code: 'not_found', ...extra }, 404);
+    return c.json({ ok: true, ...extra });
   });
 
   app.get('/api/stations/:id', async (c) => {

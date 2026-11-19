@@ -11,6 +11,8 @@
  */
 import {
   CountersStore,
+  StoreLockCleanupError,
+  STORE_LOCK_CLEANUP_WARNING,
   recordPlanCounter,
   OsrmRouter,
   PhotonGeocoder,
@@ -143,8 +145,14 @@ export async function planTripHandler(
 
   let savedTripId: string | undefined;
   if (args.save?.trim()) {
-    const saved = await deps.trips.save(plan, args.save.trim());
-    savedTripId = saved.id;
+    try {
+      const saved = await deps.trips.save(plan, args.save.trim());
+      savedTripId = saved.id;
+    } catch (error) {
+      if (!(error instanceof StoreLockCleanupError) || !error.committed) throw error;
+      savedTripId = (error.result as SavedTrip).id;
+      plan.warnings.push(STORE_LOCK_CLEANUP_WARNING);
+    }
   }
 
   return { summary: summarizePlan(plan), plan, savedTripId };

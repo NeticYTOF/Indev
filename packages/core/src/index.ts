@@ -14,5 +14,6 @@ export * from './plan-types.js';
 export * from './planner.js';
 export * from './ai-plan.js';
 export * from './trips.js';
+export * from './store-lock.js';
 export * from './counters.js';
 export * from './utils.js';

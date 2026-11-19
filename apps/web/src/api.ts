@@ -100,6 +100,6 @@ export const api = {
   aiPlan: (req: AiPlanRequest) => post<AiPlanResponse>('/api/ai/plan', req),
   trips: () => get<{ trips: SavedTrip[] }>('/api/trips'),
   trip: (id: string) => get<{ trip: SavedTrip }>(`/api/trips/${encodeURIComponent(id)}`),
-  saveTrip: (plan: TripPlan, name?: string) => post<{ trip: SavedTrip }>('/api/trips', { plan, name }),
+  saveTrip: (plan: TripPlan, name?: string) => post<{ trip: SavedTrip; warnings?: unknown }>('/api/trips', { plan, name }),
   deleteTrip: (id: string) => fetch(`/api/trips/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 };

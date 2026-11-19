@@ -7,6 +7,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { withStoreLock, StoreLockCleanupError } from './store-lock.js';
 
 export interface CountersState {
   /** Cumulative unique stations examined live across all planning runs. */
@@ -22,8 +23,12 @@ export class CountersStore {
   }
 
   async load(): Promise<CountersState> {
+    return this.readState(this.filePath);
+  }
+
+  private async readState(filePath: string): Promise<CountersState> {
     try {
-      const text = await readFile(this.filePath, 'utf8');
+      const text = await readFile(filePath, 'utf8');
       const parsed = JSON.parse(text) as Partial<CountersState> | null;
       if (!parsed || typeof parsed !== 'object' ||
           !Number.isSafeInteger(parsed.chargersSeen) || (parsed.chargersSeen as number) < 0) {
@@ -42,15 +47,16 @@ export class CountersStore {
   addChargersSeen(count: number): Promise<CountersState> {
     // Atomic rename alone does not protect a read-modify-write: overlapping
     // completed runs could read the same old count and lose increments.
-    const update = async (): Promise<CountersState> => {
-      const state = await this.load();
+    const update = (): Promise<CountersState> => withStoreLock(this.filePath, async (filePath, markCommitted) => {
+      const state = await this.readState(filePath);
       state.chargersSeen += Math.max(0, Math.trunc(count));
-      await mkdir(dirname(this.filePath), { recursive: true });
-      const tmp = join(dirname(this.filePath), `.tmp-${randomUUID()}.json`);
+      await mkdir(dirname(filePath), { recursive: true });
+      const tmp = join(dirname(filePath), `.tmp-${randomUUID()}.json`);
       await writeFile(tmp, JSON.stringify(state, null, 2), 'utf8');
-      await rename(tmp, this.filePath);
+      await rename(tmp, filePath);
+      markCommitted();
       return state;
-    };
+    });
     const next = this.writeQueue.then(update, update);
     this.writeQueue = next.catch(() => {});
     return next;
@@ -65,7 +71,9 @@ export async function recordPlanCounter(
 ): Promise<void> {
   try {
     await store.addChargersSeen(plan.stationsSeen);
-  } catch {
-    plan.warnings.push('Charger counter unavailable: this run was not added to the saved running count. The trip plan is still available.');
+  } catch (error) {
+    plan.warnings.push(error instanceof StoreLockCleanupError
+      ? 'Charger counter persistence could not be confirmed because writer lock cleanup failed. Do not repeat this increment. The trip plan is still available.'
+      : 'Charger counter unavailable: this run was not added to the saved running count. The trip plan is still available.');
   }
 }
