@@ -8,9 +8,11 @@
  *   safety buffer, so arrival SoC stays low and time is not wasted.
  * - Do not detour far for a preferred charger: stations beyond
  *   `primaryDetourKm` off-route are used only if the primary band fails.
- * - Exhaustive candidate coverage (owner directive): details are fetched
- *   for EVERY corridor candidate in both detour bands, in one bounded-
- *   parallel batch - no window-based pruning.
+ * - Exhaustive candidate coverage (owner directive): every unique
+ *   candidate in both detour bands is checked via individual per-station
+ *   lookups with multiple checks in flight - no bulk endpoint, no
+ *   window/candidate pruning. Concurrency never reduces the request
+ *   count or removes pacing.
  * - Brand preference Statiq > Tata > BPCL > HP > others breaks ties only
  *   inside a small chainage cluster, never at the cost of an extra stop.
  * - Charger data is fetched live during this run and never persisted.
@@ -184,8 +186,11 @@ export async function planTripDetailed(
     samplesAttempted: 0,
     samplesOk: 0,
     samplesFailed: 0,
-    candidatesDiscovered: 0,
+    candidatesPlanned: 0,
+    candidatesProcessed: 0,
     candidatesDetailed: 0,
+    scanMs: 0,
+    detailsStartedAt: null,
   };
 
   let clientBudgeted = false;
@@ -227,11 +232,19 @@ export interface RunProgressStats {
   samplesAttempted: number;
   samplesOk: number;
   samplesFailed: number;
-  candidatesDiscovered: number;
+  /** Unique candidate pool planned for the details phase (both bands). */
+  candidatesPlanned: number;
+  /** Candidates whose per-station lookup COMPLETED (fetched, empty or skipped). */
+  candidatesProcessed: number;
+  /** Candidates successfully detailed into the selection pool. */
   candidatesDetailed: number;
+  /** Corridor scan phase wall time, ms (set when the scan returns). */
+  scanMs: number;
+  /** Details-phase start (Date.now() epoch; null until the phase starts). */
+  detailsStartedAt: number | null;
 }
 
-/** Human-readable coverage line for not_determined evidence. */
+/** Human-readable aggregate for not_determined evidence (run level). */
 function coverageEvidence(stats: RunProgressStats): string {
   const bits: string[] = [];
   if (stats.samplesAttempted > 0) {
@@ -240,9 +253,19 @@ function coverageEvidence(stats: RunProgressStats): string {
         (stats.samplesFailed > 0 ? ` (${stats.samplesFailed} failed)` : ''),
     );
   }
-  if (stats.candidatesDiscovered > 0) {
-    bits.push(`candidate details fetched ${stats.candidatesDetailed}/${stats.candidatesDiscovered}`);
+  if (stats.candidatesPlanned > 0) {
+    const remaining = Math.max(0, stats.candidatesPlanned - stats.candidatesProcessed);
+    bits.push(
+      `candidates processed ${stats.candidatesProcessed}/${stats.candidatesPlanned}` +
+        ` (${stats.candidatesDetailed} detailed, ${remaining} remaining)`,
+    );
   }
+  const timings: string[] = [];
+  if (stats.scanMs > 0) timings.push(`scan phase ~${Math.round(stats.scanMs)}ms`);
+  if (stats.detailsStartedAt != null) {
+    timings.push(`details phase ~${Math.max(0, Math.round(Date.now() - stats.detailsStartedAt))}ms so far`);
+  }
+  if (timings.length > 0) bits.push(timings.join(', '));
   return bits.length > 0 ? ` ${bits.join('; ')}.` : '';
 }
 
@@ -334,16 +357,20 @@ async function planCore(
   const totalKm = cum[cum.length - 1] as number;
 
   // 2) Live corridor scan for candidate stations.
+  const scanStartedAt = Date.now();
   const corridor = await scanCorridor(guardedStatiq, route.geometry, {
     maxOffRouteKm: opts.fallbackDetourKm,
     signal: hooks.signal,
   });
   const warnings: string[] = [...corridor.warnings];
-  // Progress stats for honest failure evidence (what the run covered so far).
+  // Phase accounting: scan wall time + the aggregate candidate pool this run
+  // PLANS to check (unique stations, both detour bands) - recorded BEFORE
+  // the details phase so a mid-details failure can report processed/remaining.
+  hooks.stats.scanMs = Date.now() - scanStartedAt;
   hooks.stats.samplesAttempted = corridor.samplesAttempted;
   hooks.stats.samplesOk = corridor.samples;
   hooks.stats.samplesFailed = corridor.failedSamples.length;
-  hooks.stats.candidatesDiscovered = corridor.candidates.length;
+  hooks.stats.candidatesPlanned = corridor.candidates.length;
 
   // FAIL CLOSED: persistent throttling or a scan with too many holes can
   // never be presented as a verified plan.
@@ -352,8 +379,9 @@ async function planCore(
     corridor.samplesAttempted > 0 ? corridor.failedSamples.length / corridor.samplesAttempted : 0;
   if (throttled > 0) {
     throw new PlanningError(
-      'Plan not determined: the charger API is throttling requests (429). ' +
-        'Nothing here is verified - please retry in a minute. No trip was saved.',
+      'Plan not determined: the charger API is throttling requests (429).' +
+        `${coverageEvidence(hooks.stats)} Nothing here is verified` +
+        ' - please retry in a minute. No trip was saved.',
       'not_determined',
       'sample-throttled',
     );
@@ -368,26 +396,35 @@ async function planCore(
   }
 
   // 3) Live details + CCS2 DC classification for EVERY corridor candidate.
-  //    OWNER DIRECTIVE (urgent correction): exhaustive candidate coverage -
-  //    all candidates in BOTH detour bands are fetched in ONE bounded-
-  //    parallel batch; no window-based pruning, no lazy skips. Selection
-  //    still prefers the primary band and never detours far for a brand,
-  //    but it CONSULTS every fetched candidate. The batch dispatchers queue
-  //    at the client's rolling limiter: concurrency here does not raise
-  //    QPS (2s gaps, 25/60s cap), it only removes dead time between
-  //    dispatches so a whole batch overlaps its limiter waits.
+  //    OWNER DIRECTIVE: individual per-station lookups with multiple checks
+  //    in flight - every unique candidate is checked. There is NO bulk
+  //    endpoint and NO window/candidate pruning: the whole unique pool
+  //    (both detour bands) is looked up one station at a time, with a few
+  //    lookups in flight so upstream latency can overlap the pacing gap.
+  //    Selection still prefers the primary band and never detours far for a
+  //    brand, but it CONSULTS every fetched candidate.
+  //
+  //    CONCURRENCY EVIDENCE (offline harness, Linux; latency shaped like the
+  //    replica): at 40ms latency / 200ms gaps, 12 calls took ~2244ms with 3
+  //    workers and ~2242ms with 100 (max 1 request actually in flight); at
+  //    600ms latency 3 workers overlapped (~2955ms). Multiple checks in
+  //    flight therefore help only when latency exceeds the gap - they never
+  //    reduce the request count and never remove pacing: the limiter alone
+  //    decides pace (25/60s + 2s are conservative PROJECT SAFETY DEFAULTS,
+  //    not a provider contract).
   const detailCache = new Map<number, Candidate>();
   const fetchCandidate = async (c: CorridorCandidate): Promise<void> => {
     if (detailCache.has(c.stationId)) return;
     try {
       const { response, fetchedAt } = await guardedStatiq.detailsWithMeta(c.stationId);
-      if (!response.station) return;
-      detailCache.set(c.stationId, {
-        candidate: c,
-        summary: summarizeCcs2(response.station),
-        view: toStationView(response.station, fetchedAt),
-      });
-      hooks.stats.candidatesDetailed = detailCache.size;
+      if (response.station) {
+        detailCache.set(c.stationId, {
+          candidate: c,
+          summary: summarizeCcs2(response.station),
+          view: toStationView(response.station, fetchedAt),
+        });
+        hooks.stats.candidatesDetailed = detailCache.size;
+      }
     } catch (err) {
       // run-fatal stops (budget gate, first throttle/auth) and deadline
       // aborts unwind the run; they are not per-candidate skips
@@ -400,12 +437,18 @@ async function planCore(
       }
       warnings.push(`Skipping "${c.name}" (${c.stationId}): live details unavailable.`);
     }
+    // processed counts every COMPLETED per-station lookup (fetched, empty
+    // or skipped) - run-fatal unwinds do not reach this line.
+    hooks.stats.candidatesProcessed += 1;
   };
 
-  // The WHOLE candidate batch, both detour bands, in one bounded-parallel
-  // pass. pMap keeps a few dispatchers waiting at the limiter so its 2s
-  // gaps stay saturated; the limiter alone decides actual pace.
+  // The WHOLE unique pool, both detour bands: individual per-station
+  // lookups through pMap(4) (multiple checks in flight, never a bulk
+  // endpoint). pMap only lets latency overlap the pacing gap; the client's
+  // limiter alone decides pace - request count and pacing are unchanged
+  // by concurrency (see the offline evidence in the comment above).
   const CANDIDATE_FETCH_CONCURRENCY = 4;
+  hooks.stats.detailsStartedAt = Date.now();
   await pMap(corridor.candidates, CANDIDATE_FETCH_CONCURRENCY, fetchCandidate);
   const usable: Candidate[] = [...detailCache.values()]
     .filter((r) => r.summary.isUsable)

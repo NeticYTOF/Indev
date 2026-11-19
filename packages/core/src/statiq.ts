@@ -10,6 +10,9 @@
  *   carries a `fetchedAt` timestamp from `detailsWithMeta`.
  * - The rolling-window limiter spaces calls out (anti-burst) and hard-caps
  *   calls per 60s; it is abort-aware so a run deadline cancels cleanly.
+ *   Its defaults (25 calls / 60s, 2s min gap) are CONSERVATIVE PROJECT
+ *   SAFETY DEFAULTS - our own politeness choice, NOT a provider contract:
+ *   the upstream publishes no rate-limit headers we rely on.
  * - RETRY POLICY: budgeted planning runs (see attachRunBudget) fail CLOSED
  *   on the FIRST 429/401/403 - the whole run stops, no sleep-then-retry,
  *   no further upstream traffic from any concurrent worker - and the
@@ -86,11 +89,16 @@ export interface StatiqClientOptions {
   timeoutMs?: number;
   retries?: number;
   /**
-   * Rolling-window limit: max upstream calls per 60s (default 25).
-   * Smoothed by minCallGapMs below, so the budget cannot burst.
+   * Rolling-window limit: max upstream calls per 60s. Default 25 is a
+   * CONSERVATIVE PROJECT SAFETY DEFAULT, NOT a provider contract (the
+   * upstream publishes no rate headers we rely on). Smoothed by
+   * minCallGapMs below, so the budget cannot burst.
    */
   maxCallsPerMinute?: number;
-  /** Minimum gap between upstream calls (default 2000ms, anti-burst). */
+  /**
+   * Minimum gap between upstream calls. Default 2000ms is likewise a
+   * PROJECT SAFETY DEFAULT, NOT a provider contract.
+   */
   minCallGapMs?: number;
   /** Injectable clock for deterministic limiter tests. */
   now?: () => number;

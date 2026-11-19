@@ -80,9 +80,10 @@ interface ResolvedCorridorOptions {
 const DEFAULTS: ResolvedCorridorOptions = {
   stepKm: 12,
   maxOffRouteKm: 5,
-  // Dispatchers queue at the client's rolling limiter: concurrency only
-  // keeps the limiter fed (no dead time between batch waves); the limiter
-  // still enforces the 2s gaps and the 25/60s cap. It never raises QPS.
+  // Multiple marker checks in flight: lets upstream latency overlap the
+  // pacing gap. It does NOT reduce the request count and does NOT remove
+  // pacing - the shared 25/60s + 2s limiter (project safety defaults,
+  // not a provider contract) alone decides pace.
   concurrency: 4,
 };
 
