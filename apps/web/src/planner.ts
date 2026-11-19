@@ -22,6 +22,20 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
   section.className = 'planner';
   root.appendChild(section);
 
+  // mobile sheet affordances: handle bar + dismiss control (the FAB reopens)
+  const sheetHeader = el(`
+    <div class="sheet-header" aria-hidden="true">
+      <span class="sheet-handle"></span>
+    </div>
+  `);
+  section.appendChild(sheetHeader);
+  const dismiss = el(`<button type="button" class="btn btn-ghost btn-compact sheet-dismiss" aria-label="Hide planner">▾</button>`);
+  sheetHeader.appendChild(dismiss);
+  dismiss.addEventListener('click', () => {
+    root.classList.remove('open');
+    document.getElementById('sheet-open')?.classList.remove('hidden');
+  });
+
   const origin: PlaceInput = { hit: null };
   const destination: PlaceInput = { hit: null };
 

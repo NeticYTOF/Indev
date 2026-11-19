@@ -1067,11 +1067,73 @@ body {
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+/* ---------- mobile sheet: FAB opener + handle ---------- */
+
+.sheet-fab {
+  position: absolute;
+  right: 16px;
+  bottom: calc(18px + var(--safe-b));
+  z-index: 35;
+  border: none;
+  min-height: 48px;
+  padding: 0 18px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+  font-size: 15px;
+  box-shadow: var(--shadow-map);
+}
+
+.sheet-fab:hover {
+  background: var(--accent-strong);
+}
+
+.sheet-header {
+  position: relative;
+  display: none; /* desktop never needs it */
+  justify-content: center;
+  align-items: center;
+  padding: 10px 0 2px;
+}
+
+.sheet-handle {
+  width: 44px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--line-2);
+}
+
+.sheet-dismiss {
+  position: absolute;
+  right: 12px;
+  top: 8px;
+  min-width: 40px;
+  min-height: 40px;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--ink-2);
+}
+
+.sheet-fab {
+  display: none; /* mobile-only by default */
+}
+
+@media (max-width: 720px) {
+  .sheet-fab:not(.hidden) {
+    display: inline-flex;
+  }
+}
+
 /* ---------- responsive: mobile ---------- */
 
 @media (max-width: 720px) {
   .topbar-inner {
-    padding: 0 14px;
+    padding: 0 12px;
+    gap: 8px;
+  }
+  .brand {
+    gap: 8px;
   }
   .brand-tag {
     display: none;
@@ -1081,6 +1143,18 @@ body {
   }
   #trips-button {
     padding: 0 10px;
+    font-size: 13px;
+    min-height: 36px;
+  }
+  #health-badge {
+    max-width: 130px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sheet-header {
+    display: flex;
   }
 
   .panel {
@@ -1089,19 +1163,22 @@ body {
     right: 0;
     bottom: 0;
     width: auto;
-    max-height: 62%;
+    max-height: 70%;
     border-radius: var(--r-lg) var(--r-lg) 0 0;
     border-left: none;
     border-right: none;
     border-bottom: none;
     padding-bottom: var(--safe-b);
     transform: translateY(100%);
-    transition: transform var(--t-med) var(--ease);
+    transition: transform var(--t-med) var(--ease), visibility 0s var(--t-med);
     box-shadow: var(--shadow-map);
+    visibility: hidden;
   }
 
   .panel.open {
     transform: translateY(0);
+    visibility: visible;
+    transition: transform var(--t-med) var(--ease);
   }
 
   .drawer {

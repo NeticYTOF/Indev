@@ -34,6 +34,12 @@ void (async () => {
 const planner = document.getElementById('planner-panel') as HTMLElement;
 renderPlanner(planner, map);
 
+// mobile: the planner starts OPEN so the form is reachable first-paint;
+// the FAB only appears once the sheet is dismissed.
+if (window.innerWidth <= 720) {
+  planner.classList.add('open');
+}
+
 const drawer = document.getElementById('trips-drawer') as HTMLElement;
 const tripsButton = document.getElementById('trips-button') as HTMLButtonElement;
 tripsButton.addEventListener('click', () => {
@@ -43,6 +49,14 @@ tripsButton.addEventListener('click', () => {
   } else {
     drawer.classList.add('hidden');
   }
+});
+
+// mobile: FAB reopens the dismissed planner sheet; tray state stays in sync
+const sheetFab = document.getElementById('sheet-open') as HTMLButtonElement | null;
+sheetFab?.addEventListener('click', () => {
+  const planner = document.getElementById('planner-panel') as HTMLElement;
+  planner.classList.add('open');
+  sheetFab.classList.add('hidden');
 });
 
 window.addEventListener('keydown', (e) => {
