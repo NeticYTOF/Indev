@@ -94,8 +94,10 @@ describe('geocode race guard (makeSearchField ordering)', () => {
   });
 
   it('typing/clearing and picking invalidate in-flight responses', () => {
-    // input listener (covers clearing: invalidate precedes the q<2 branch)
-    // + the pick handler = exactly two call sites.
+    // Shared reset (typing/clearing/swap) plus the pick handler.
+    expect(plannerSrc).toContain('invalidateSuggestions(); // old query choices and responses are stale');
+    expect(plannerSrc).toContain('originField.invalidateSuggestions();');
+    expect(plannerSrc).toContain('destField.invalidateSuggestions();');
     expect((plannerSrc.match(/session\.invalidate\(\);/g) ?? []).length).toBe(2);
   });
 });
