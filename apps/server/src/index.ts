@@ -1,9 +1,10 @@
 import { serve } from '@hono/node-server';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { CountersStore, OsrmRouter, PhotonGeocoder, StatiqClient, TripsStore } from '@indeev/core';
+import { CountersStore, OsrmRouter, PhotonGeocoder, TripsStore } from '@indeev/core';
 import { aiEnabled, loadEnv } from './env.js';
 import { createApp, SERVER_RUN_BUDGET } from './app.js';
+import { buildStatiqFactory } from './statiq-factory.js';
 import type { UpstreamAuditEntry } from '@indeev/core';
 
 const root = process.cwd();
@@ -23,37 +24,39 @@ const storeSuffix = env.mock ? '.mock' : '';
 const trips = new TripsStore({ filePath: join(env.dataDir, `saved-trips${storeSuffix}.json`) });
 const counters = new CountersStore({ filePath: join(env.dataDir, `counters${storeSuffix}.json`) });
 
+// The EFFECTIVE planning envelope for this launch: explicit validated
+// overrides (malformed ones failed LOUDLY at boot) or the server defaults -
+// byte-identical when absent. ONE source of truth for the app, the health
+// report AND the client wiring (they can never disagree again).
+const effectiveRunBudget = {
+  maxUpstreamCalls: env.planMaxCalls ?? SERVER_RUN_BUDGET.maxUpstreamCalls,
+  deadlineMs: env.planDeadlineMs ?? SERVER_RUN_BUDGET.deadlineMs,
+};
+
 const app = createApp({
   mock: env.mock,
   trips,
   counters,
   router: new OsrmRouter(),
   geocoder: new PhotonGeocoder(),
-  // EXPLICIT bounded planning-budget override (coordinated acceptance):
-  // present vars were validated at boot (malformed ones failed LOUDLY);
-  // absent vars keep the SERVER_RUN_BUDGET defaults byte-identical.
-  ...(env.planMaxCalls !== undefined || env.planDeadlineMs !== undefined
-    ? {
-        planRunBudget: {
-          maxUpstreamCalls: env.planMaxCalls ?? SERVER_RUN_BUDGET.maxUpstreamCalls,
-          deadlineMs: env.planDeadlineMs ?? SERVER_RUN_BUDGET.deadlineMs,
-        },
-      }
-    : {}),
+  // The effective budget flows into createApp (both planning handlers +
+  // the /api/health introspection) and into the client factory below from
+  // the same composed object.
+  planRunBudget: effectiveRunBudget,
   ...(env.planRetries !== undefined ? { statiqRetries: env.planRetries } : {}),
-  // Fresh client per planning run (single-run memo policy), armed with the
-  // same deadline so Retry-After waits that cannot fit fail as throttled.
-  // Sanitized upstream audit: endpoint + status + time + running count only.
-  createStatiq: () => {
-    const client = new StatiqClient({
-      token: env.statiqToken as string,
-      runDeadlineAt: Date.now() + SERVER_RUN_BUDGET.deadlineMs,
-      onUpstreamCall: (entry: UpstreamAuditEntry) => {
-        console.log(JSON.stringify({ type: 'upstream', ...entry }));
-      },
-    });
-    return client;
-  },
+  // Fresh client per planning run (single-run memo policy), wired with the
+  // EFFECTIVE deadline so Retry-After waits that cannot fit fail as
+  // throttled - matching the budget /api/health reports, never the source
+  // default. The factory forwards the per-launch retries override; absent
+  // values keep the client's own defaults. Sanitized upstream audit: one
+  // entry per attempt (endpoint + status + time + running count only).
+  createStatiq: buildStatiqFactory({
+    token: env.statiqToken as string,
+    deadlineMs: effectiveRunBudget.deadlineMs,
+    onUpstreamCall: (entry: UpstreamAuditEntry) => {
+      console.log(JSON.stringify({ type: 'upstream', ...entry }));
+    },
+  }),
   // Sanitized run summary: outcome + call count. No route data ever.
   onRunComplete: (outcome, upstreamCalls) => {
     console.log(JSON.stringify({ type: 'plan-run', outcome, upstreamCalls }));
