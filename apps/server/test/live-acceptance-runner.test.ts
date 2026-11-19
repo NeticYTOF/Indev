@@ -21,11 +21,12 @@
  *   throwaway `node -e` child / fake - never a server, never upstream.
  */
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildChildEnv, exitCodeFor, fetchWallMs, waitChildClose } from '../../../scripts/live-acceptance.mjs';
+import { buildChildEnv, exitCodeFor, fetchWallMs, planRequest, PlanRequestError, waitChildClose } from '../../../scripts/live-acceptance.mjs';
 
 describe('buildChildEnv (mode-exclusive acceptance env)', () => {
   it('mock mode is tokenless by construction and skips the repo .env', () => {
@@ -286,5 +287,104 @@ describe('waitChildClose: stream-complete persistence (delayed drain)', () => {
     expect(received).toContain(`drill-line-${LINES - 1}`);
     expect(received.trimEnd().endsWith(LAST)).toBe(true);
     expect(typeof stderrReceived).toBe('string');
+  }, 10_000);
+});
+
+/**
+ * BOUNDED PLAN-TRANSPORT REGRESSION (offline, delayed local HTTP only).
+ *
+ * Source-grounded defect: the old plan request went through fetch, whose
+ * bundled undici applies DEFAULT headers/body timeouts (300s on the
+ * 6.29-series) INDEPENDENT of the AbortSignal - a coordinated wall beyond
+ * 300s would be silently truncated at 5 minutes (the PROBABLE cause of
+ * the observed active failure; never provable from its artifacts because
+ * the old catch lost the cause). The repaired transport (planRequest over
+ * node:http) has NO hidden defaults: the configured wall is the only
+ * deadline. At seconds scale this regression proves both directions of
+ * that contract, with no provider probes - a local http server delays its
+ * response on purpose:
+ *
+ * - response slower than the wall -> failure at phase 'deadline' with
+ *   code RUNNER_WALL, capturing BOTH elapsed clocks (wall ~ monotonic when
+ *   nothing suspends), so a runtime suspension (wall >> monotonic) is
+ *   never mislabeled as provider latency;
+ * - response within the wall -> completes with status/body; a hidden
+ *   internal cap (the undici-300s class of failure) would truncate a
+ *   LONG configured wall, so completing at all proves the wall is
+ *   honored, not shortened by an internal default.
+ */
+describe('planRequest: the configured wall is the only deadline', () => {
+  /** Local server that ignores the request body and delays its response. */
+  function delayedServer(delayMs: number): Promise<{
+    port: number;
+    close: () => Promise<void>;
+  }> {
+    return new Promise((resolveReady) => {
+      const srv = createServer((req, res) => {
+        req.resume(); // consume/ignore the POST body
+        setTimeout(() => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, delayed: delayMs }));
+        }, delayMs);
+      });
+      srv.listen(0, 'localhost', () => {
+        const addr = srv.address();
+        const port = typeof addr === 'object' && addr ? addr.port : 0;
+        resolveReady({
+          port,
+          close: () =>
+            new Promise<void>((r) => {
+              srv.close(() => r());
+              // force-close any lingering connections so close() settles
+              srv.closeAllConnections?.();
+            }),
+        });
+      });
+    });
+  }
+
+  it('a response slower than the wall fails at phase deadline with a captured, labeled cause', async () => {
+    const srv = await delayedServer(400);
+    try {
+      const err = (await planRequest(srv.port, 100, JSON.stringify({ probe: 1 })).catch(
+        (e) => e,
+      )) as PlanRequestError;
+      expect(err).toBeInstanceOf(PlanRequestError);
+      // the OLD transport lost the cause in a generic catch; now the phase,
+      // code and message label the failure explicitly
+      expect(err.phase).toBe('deadline');
+      expect(err.code).toBe('RUNNER_WALL');
+      expect(err.message).toContain('runner wall');
+      // BOTH elapsed clocks are captured: wall ~ monotonic on an unsuspended
+      // run (a wide gap would indicate suspension, not provider latency)
+      expect(err.wallElapsedMs).toBeGreaterThanOrEqual(100);
+      expect(err.wallElapsedMs).toBeLessThan(4_000);
+      expect(err.monotonicElapsedMs).toBeGreaterThanOrEqual(100);
+      expect(err.monotonicElapsedMs).toBeLessThan(4_000);
+      expect(Math.abs(err.wallElapsedMs - err.monotonicElapsedMs)).toBeLessThan(1_000);
+    } finally {
+      await srv.close();
+    }
+  }, 10_000);
+
+  it('a response within the wall completes - no hidden internal cap truncates a long wall', async () => {
+    // the undici defect class: a hidden default SHORTER than the configured
+    // wall killed long runs. At seconds scale: a 400ms-delayed response
+    // under a 2000ms wall MUST complete - completing proves the wall is the
+    // only bound, and the status/body round-trip proves the full response
+    // is captured (never truncated)
+    const srv = await delayedServer(400);
+    try {
+      const res = await planRequest(srv.port, 2_000, JSON.stringify({ probe: 2 }));
+      expect(res.httpStatus).toBe(200);
+      expect(res.ok).toBe(true);
+      expect(JSON.parse(res.text)).toEqual({ ok: true, delayed: 400 });
+      // BOTH clocks ride on the success record too (meta evidence)
+      expect(res.ms).toBeGreaterThanOrEqual(400);
+      expect(typeof res.monotonicMs).toBe('number');
+      expect(Math.abs(res.ms - res.monotonicMs)).toBeLessThan(1_000);
+    } finally {
+      await srv.close();
+    }
   }, 10_000);
 });
