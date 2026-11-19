@@ -28,18 +28,26 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
   section.className = 'planner';
   root.appendChild(section);
 
-  // mobile sheet affordances: handle bar + dismiss control (the FAB reopens)
+  // Mobile sheet affordances: grab handle (decorative) + dismiss control.
+  // The visible sheet must NOT inherit aria-hidden: the handle alone is
+  // decorative; the dismiss button stays in the accessibility tree.
   const sheetHeader = el(`
-    <div class="sheet-header" aria-hidden="true">
-      <span class="sheet-handle"></span>
+    <div class="sheet-header">
+      <span class="sheet-handle" aria-hidden="true"></span>
     </div>
   `);
   section.appendChild(sheetHeader);
-  const dismiss = el(`<button type="button" class="btn btn-ghost btn-compact sheet-dismiss" aria-label="Hide planner">▾</button>`);
+  const dismiss = el(`<button type="button" class="btn btn-ghost btn-compact sheet-dismiss" aria-label="Hide trip planner">▾</button>`);
   sheetHeader.appendChild(dismiss);
   dismiss.addEventListener('click', () => {
     root.classList.remove('open');
-    document.getElementById('sheet-open')?.classList.remove('hidden');
+    const fab = document.getElementById('sheet-open');
+    if (fab) {
+      fab.classList.remove('hidden');
+      fab.setAttribute('aria-expanded', 'false');
+      // Return focus to the control that owns the sheet state.
+      if (window.innerWidth <= 720) fab.focus();
+    }
   });
 
   const origin: PlaceInput = { hit: null };
@@ -291,6 +299,8 @@ export function onPlanAvailable(plan: TripPlan, map: maplibregl.Map): void {
   renderPlanPanel(panel, map, plan);
   if (window.innerWidth <= 720) {
     panel.classList.add('open');
+    // keep the FAB's expanded state true for assistive tech
+    document.getElementById('sheet-open')?.setAttribute('aria-expanded', 'true');
   }
 }
 

@@ -35,11 +35,32 @@ void (async () => {
 const planner = document.getElementById('planner-panel') as HTMLElement;
 renderPlanner(planner, map);
 
+const isMobile = (): boolean => window.innerWidth <= 720;
+
 // mobile: the planner starts OPEN so the form is reachable first-paint;
-// the FAB only appears once the sheet is dismissed.
-if (window.innerWidth <= 720) {
+// the FAB only appears once the sheet is dismissed. The FAB's expanded
+// state is kept in sync so screen readers hear the sheet as open.
+const sheetFab = document.getElementById('sheet-open') as HTMLButtonElement | null;
+const setSheetOpen = (open: boolean): void => {
+  planner.classList.toggle('open', open);
+  sheetFab?.setAttribute('aria-expanded', String(open));
+  if (open) {
+    sheetFab?.classList.add('hidden');
+  } else if (isMobile()) {
+    sheetFab?.classList.remove('hidden');
+  }
+};
+if (isMobile()) {
   planner.classList.add('open');
+  sheetFab?.setAttribute('aria-expanded', 'true');
 }
+
+sheetFab?.addEventListener('click', () => {
+  setSheetOpen(true);
+  // Move focus into the sheet so keyboard/AT users land inside it.
+  const firstField = planner.querySelector<HTMLElement>('input, select, textarea, button');
+  (firstField ?? planner).focus();
+});
 
 const drawer = document.getElementById('trips-drawer') as HTMLElement;
 const tripsButton = document.getElementById('trips-button') as HTMLButtonElement;
@@ -52,14 +73,16 @@ tripsButton.addEventListener('click', () => {
   }
 });
 
-// mobile: FAB reopens the dismissed planner sheet; tray state stays in sync
-const sheetFab = document.getElementById('sheet-open') as HTMLButtonElement | null;
-sheetFab?.addEventListener('click', () => {
-  const planner = document.getElementById('planner-panel') as HTMLElement;
-  planner.classList.add('open');
-  sheetFab.classList.add('hidden');
-});
-
+// Escape closes the drawer first; on mobile it can also dismiss the sheet,
+// returning focus to the FAB that owns its expanded state.
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') drawer.classList.add('hidden');
+  if (e.key !== 'Escape') return;
+  if (!drawer.classList.contains('hidden')) {
+    drawer.classList.add('hidden');
+    return;
+  }
+  if (isMobile() && planner.classList.contains('open')) {
+    setSheetOpen(false);
+    sheetFab?.focus();
+  }
 });
