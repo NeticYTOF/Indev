@@ -139,6 +139,35 @@ const DEST = { label: 'Destination', lat: TOTAL_KM / KM_PER_DEG, lon: 0 };
 const AI_CFG = { baseUrl: 'https://ai.test/v1', apiKey: 'sk-test', model: 'test-model' };
 
 describe('POST /api/ai/plan', () => {
+  it('rejects an AI first stop that cannot be reached at the requested starting charge', async () => {
+    const app = createApp(await makeDeps({ ai: AI_CFG,
+      aiCall: async () => JSON.stringify({ chosenStationIds: [705, 711] }) }));
+    const response = await app.request('/api/ai/plan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: ORIGIN, destination: DEST, startSocPct: 25 }),
+    });
+    expect(response.status).toBe(200);
+    const { plan, ai } = await response.json();
+    expect(ai.applied).toBe(false);
+    expect(ai.reason).toContain('reserve');
+    expect(plan.stops[0].station.stationId).toBe(700);
+  });
+
+  it('retains requested starting charge in an applied valid AI sequence', async () => {
+    const app = createApp(await makeDeps({ ai: AI_CFG,
+      aiCall: async () => JSON.stringify({ chosenStationIds: [700, 705, 711] }) }));
+    const response = await app.request('/api/ai/plan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: ORIGIN, destination: DEST, startSocPct: 25 }),
+    });
+    expect(response.status).toBe(200);
+    const { plan, ai } = await response.json();
+    expect(ai.applied).toBe(true);
+    expect(plan.stops[0].arriveSocPct).toBeGreaterThanOrEqual(10);
+    expect(plan.stops[0].arriveSocPct).toBeLessThan(15);
+    expect(plan.stops[0].chargeKwh).toBeGreaterThan(40);
+  });
+
   it('is off by default: 503 ai_disabled', async () => {
     const app = createApp(await makeDeps()); // no ai config
     const res = await app.request('/api/ai/plan', {
