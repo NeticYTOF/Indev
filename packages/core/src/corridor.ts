@@ -174,11 +174,13 @@ export async function scanCorridor(
       if (!res || res.ok !== true || !Array.isArray(res.stations)) {
         throw new Error('Invalid marker response');
       }
-      okSamples++;
-      report();
-      for (const s of res.stations ?? []) {
+      for (const s of res.stations) {
         if (!seen.has(s.stationId)) seen.set(s.stationId, s);
       }
+      // Consuming a malformed marker can fail too. Count success only
+      // after consumption, so each completed sample has one outcome.
+      okSamples++;
+      report();
     } catch (err) {
       // Run-fatal errors unwind the whole run; they must never masquerade
       // as skipped samples (budget gate, first throttle/auth, deadlines).
