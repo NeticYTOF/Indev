@@ -9,7 +9,7 @@ import './styles.css';
 import { api, type HealthInfo } from './api.js';
 import { createMap } from './map.js';
 import { renderPlanner } from './planner.js';
-import { renderTripsDrawer } from './trips.js';
+import { renderTripsDrawer, hideTripsDrawer } from './trips.js';
 import { toast } from './toast.js';
 
 const map = createMap(document.getElementById('map') as HTMLElement);
@@ -69,7 +69,9 @@ tripsButton.addEventListener('click', () => {
     renderTripsDrawer(drawer, map);
     drawer.classList.remove('hidden');
   } else {
-    drawer.classList.add('hidden');
+    // Canonical close: restore focus if the click path lost it to the
+    // hide (here focus is already on the owner button - harmless no-op).
+    hideTripsDrawer(drawer);
   }
 });
 
@@ -78,7 +80,7 @@ tripsButton.addEventListener('click', () => {
 window.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (!drawer.classList.contains('hidden')) {
-    drawer.classList.add('hidden');
+    hideTripsDrawer(drawer);
     return;
   }
   if (isMobile() && planner.classList.contains('open')) {

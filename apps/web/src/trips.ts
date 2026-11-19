@@ -12,6 +12,22 @@ import { drawTrip } from './map.js';
 import { toast } from './toast.js';
 import { formatDuration } from './format.js';
 
+/**
+ * Hide the saved-trips drawer. Closing it leaves every in-drawer focus
+ * target display:none - without an explicit move, keyboard focus silently
+ * falls to <body> and the user restarts from the top of the tab order.
+ * Focus is restored ONLY when the hide actually destroyed it (focus was
+ * inside the drawer); an Escape pressed while typing in a planner field
+ * must not yank focus from that field.
+ */
+export function hideTripsDrawer(drawer: HTMLElement): void {
+  const focusInside = drawer.contains(document.activeElement);
+  drawer.classList.add('hidden');
+  if (focusInside) {
+    document.getElementById('trips-button')?.focus();
+  }
+}
+
 export function renderTripsDrawer(drawer: HTMLElement, map: maplibregl.Map): void {
   drawer.innerHTML = '';
   const head = el(`
@@ -22,7 +38,7 @@ export function renderTripsDrawer(drawer: HTMLElement, map: maplibregl.Map): voi
   `);
   drawer.appendChild(head);
   head.querySelector('[data-close]')?.addEventListener('click', () => {
-    drawer.classList.add('hidden');
+    hideTripsDrawer(drawer);
   });
 
   const list = el('<div class="trip-list"></div>');
@@ -70,7 +86,8 @@ function renderTripRow(trip: SavedTrip, map: maplibregl.Map, drawer: HTMLElement
   `);
 
   row.querySelector('[data-open]')?.addEventListener('click', () => {
-    drawer.classList.add('hidden');
+    drawer.classList.add('hidden'); // hide directly: focus lands on the
+    // trip summary below, not on the drawer's owner control
     openSavedTrip(trip, map);
   });
 
@@ -109,6 +126,11 @@ function openSavedTrip(trip: SavedTrip, map: maplibregl.Map): void {
   if (window.innerWidth <= 720) {
     panel.classList.add('open');
   }
+  // The button that opened this trip vanished with the drawer - land
+  // focus on the attention target (the freshly rendered summary) instead
+  // of letting it fall to <body>. After the sheet opens, so the target is
+  // visible (hidden elements are not focusable).
+  panel.querySelector<HTMLElement>('.plan-results')?.focus();
   toast('Saved trip loaded — station cards fetch current details on request.');
 }
 
@@ -118,6 +140,9 @@ function renderSavedSummary(panel: HTMLElement, trip: SavedTrip): void {
     results = el('<section class="plan-results" aria-label="Saved trip"></section>') as HTMLElement;
     panel.appendChild(results);
   }
+  // The section may be REUSED from a live plan (no tabindex there): make
+  // it programmatically focusable so openSavedTrip can land focus on it.
+  results.setAttribute('tabindex', '-1');
   results.innerHTML = `
     <div class="banners">
       ${trip.source === 'synthetic' ? '<div class="banner banner-synthetic">Synthetic saved trip (mock data).</div>' : ''}
