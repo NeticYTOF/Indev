@@ -553,6 +553,7 @@ async function planCore(
   }
 
   while (
+    Math.max(0, totalKm - cursor.chainageKm + cursor.detourKm) > opts.maxLegKm ||
     socAfterDriving(
       Math.max(0, totalKm - cursor.chainageKm + cursor.detourKm),
       // a charging stop may charge before the final run; the origin cannot
