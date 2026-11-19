@@ -110,6 +110,10 @@ export async function planTripHandler(
     }
     hasSelection = true;
   }
+  if (!args.customVehicle && args.vehicleRealWorldRangeKm != null) {
+    selection.realWorldRangeKm = args.vehicleRealWorldRangeKm;
+    hasSelection = true;
+  }
   let resolved: ResolvedVehicle;
   try {
     resolved = resolveVehicle(hasSelection ? selection : undefined);

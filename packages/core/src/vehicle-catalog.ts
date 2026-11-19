@@ -203,6 +203,11 @@ function deriveConfig(
  * - Custom vehicle: user must provide battery + real-world range.
  */
 export function resolveVehicle(selection?: VehicleSelection): ResolvedVehicle {
+  // A range-only selection refers to the default vehicle. An explicit
+  // user range must not disappear just because the optional id is absent.
+  if (selection && !selection.entryId && !selection.custom && selection.realWorldRangeKm != null) {
+    selection = { ...selection, entryId: DEFAULT_HARRIER_ENTRY_ID };
+  }
   if (!selection || (!selection.entryId && !selection.custom)) {
     return {
       config: HARIER_EV_75,
