@@ -232,6 +232,12 @@ export async function getStationHandler(
   deps: McpToolDeps,
   stationId: number,
 ): Promise<{ summary: string; station: StationViewMcp }> {
+  if (deps.mock) {
+    throw new PlanningError(
+      'Live station details are unavailable while the MCP server runs in mock mode (INDEV_MOCK=1).',
+      'not_determined',
+    );
+  }
   // Always a FRESH client: station status is never served from a memo.
   const statiq = deps.createStatiq();
   const { response, fetchedAt } = await statiq.detailsWithMeta(stationId);
