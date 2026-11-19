@@ -154,8 +154,17 @@ describe('waitChildClose: stream-complete persistence (delayed drain)', () => {
       { stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let received = '';
+    let stderrReceived = '';
     child.stdout.on('data', (d) => {
       received += String(d);
+    });
+    // Mirror the production runner EXACTLY: BOTH streams carry data handlers
+    // from spawn (live-acceptance.mjs attaches stdout+stderr handlers), so
+    // both flow and the child 'close' semantics are unambiguous. Leaving
+    // piped stderr unhandled would bet the regression's determinism on
+    // Node's close-vs-unconsumed-stream corner cases.
+    child.stderr.on('data', (d) => {
+      stderrReceived += String(d);
     });
     // Controlled drain delay: nothing may flow until the test resumes.
     // This substitutes the OS-luck of the real race with a deterministic
@@ -185,6 +194,8 @@ describe('waitChildClose: stream-complete persistence (delayed drain)', () => {
       // delivered post-exit
       expect(received).toContain(`drill-line-${LINES - 1}`);
       expect(received.trimEnd().endsWith(LAST)).toBe(true);
+      // both-streams drain held: stderr flowed too (empty for this child)
+      expect(typeof stderrReceived).toBe('string');
     } finally {
       rmSync(dir, { recursive: true, force: true }); // fixture log, not run evidence
     }
