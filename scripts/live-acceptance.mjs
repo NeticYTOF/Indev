@@ -280,13 +280,18 @@ async function main() {
       };
     }
   } catch (err) {
-    outcome = {
-      outcome: err instanceof RunnerFail ? err.outcome : 'runner-error',
-      error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
-    };
-    // durability: even a fetch wall/transport error is retained as evidence
+    if (err instanceof RunnerFail) {
+      outcome = { outcome: err.outcome, error: `${err.name}: ${err.message}` };
+    } else {
+      outcome = {
+        outcome: 'runner-error',
+        error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+      };
+    }
+    // durability: the failure is retained as a labeled artifact, including
+    // transport errors (fetch walls) - the outcome name travels with it
     try {
-      writeFileSync(planPath, `(transportError ${outcome.error})`);
+      writeFileSync(planPath, `(${outcome.outcome}: ${outcome.error})`);
     } catch {
       /* best effort */
     }
