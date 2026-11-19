@@ -17,14 +17,18 @@
     "mcp": "npm run dev -w apps/mcp",
     "test": "vitest run --maxWorkers=2",
     "test:watch": "vitest",
-    "typecheck": "tsc -p packages/core --noEmit && tsc -p apps/server --noEmit && tsc -p apps/mcp --noEmit && tsc -p apps/web --noEmit"
+    "typecheck": "tsc -p packages/core --noEmit && tsc -p apps/server --noEmit && tsc -p apps/mcp --noEmit && tsc -p apps/web --noEmit && npm run typecheck:browser",
+    "test:browser": "playwright test",
+    "test:browser:setup": "playwright install chromium",
+    "typecheck:browser": "tsc -p tsconfig.browser.json --noEmit"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "concurrently": "^9.1.0",
     "tsx": "^4.19.0",
     "typescript": "^5.9.0",
-    "vitest": "^5.1.1"
+    "vitest": "^5.1.1",
+    "@playwright/test": "1.65.1"
   },
   "allowScripts": {
     "esbuild@0.28.2": true
