@@ -126,10 +126,15 @@ interface WireOpts {
   markerAttemptFailOnce?: boolean;
   /** First transport call per STATION ID -> 500, subsequent -> 200. */
   detailAttemptFailOnce?: boolean;
-  /** REAL-timer delay per markers call (ms) - for deadline tests; the fake
-   *  client clock cannot advance this, deliberately (the transport's own
-   *  latency is what the wall budget must cover). */
-  markerDelayMs?: number;
+  /** CONTROLLED PENDING MARKER RESPONSES: marker calls NEVER complete on
+   *  their own - each rejects with a fetch-shaped AbortError exactly when
+   *  its request's abort signal fires (the run deadline). This gives
+   *  deadline fixtures a deterministic mid-scan shape with exact counts:
+   *  the wall-clock latency racing that plagued the earlier markerDelayMs
+   *  design is gone (with the corridor's 4 concurrent workers, a 10ms
+   *  transport delay let the whole 60-sample scan finish before a 200ms
+   *  deadline). */
+  markerPendingUntilAbort?: boolean;
 }
 
 /**
@@ -165,8 +170,22 @@ function wireStatiq(
       const key = `${latitude.toFixed(4)},${longitude.toFixed(4)}`;
       const seen = (markerAttempts.get(key) ?? 0) + 1;
       markerAttempts.set(key, seen);
-      if (opts.markerDelayMs) {
-        await new Promise((r) => setTimeout(r, opts.markerDelayMs));
+      // CONTROLLED PENDING RESPONSE: never resolves on its own; rejects
+      // fetch-shaped (AbortError) exactly when this request's abort signal
+      // fires - the production deadline-abort path, deterministically.
+      if (opts.markerPendingUntilAbort) {
+        await new Promise<never>((_resolve, reject) => {
+          const onAbort = () => {
+            const e = new Error('This operation was aborted');
+            e.name = 'AbortError';
+            reject(e);
+          };
+          if (init?.signal?.aborted) {
+            onAbort();
+            return;
+          }
+          init?.signal?.addEventListener('abort', onAbort, { once: true });
+        });
       }
       if (opts.markerAttemptFailOnce && seen === 1) {
         return new Response('{"error":"transient 500"}', { status: 500 });
@@ -386,31 +405,55 @@ describe('planner runs over a real budgeted client (wire transport)', () => {
   });
 
   it('a deadline abort MID-SCAN fails as an honest not_determined:deadline', async () => {
-    // Real-timer marker latency (10ms per call) drives the wall budget: the
-    // 60-sample scan needs ~600ms of real transport time, so a 200ms
-    // deadline lands mid-scan deterministically (the fake client clock keeps
-    // pacing cheap; only the transport latency is real). The abort surfaces
-    // at the workers' abort-aware gates and the run unwinds as deadline.
-    const { client, calls } = wireStatiq({ specs: POOL, markerDelayMs: 10 });
-    const err = await planTrip(
+    // FIXTURE REPAIR (Linux found the prior shape racing): it assumed
+    // serialized dispatch (60 x 10ms = 600ms > 200ms), but the corridor
+    // scans with FOUR concurrent workers - a 10ms transport latency lets
+    // the whole 60-sample scan dispatch-and-complete well before a 200ms
+    // deadline, so the plan could succeed instead of aborting.
+    //
+    // Repaired design - CONTROLLED PENDING RESPONSES + a CONCURRENCY-AWARE
+    // BARRIER, no longer-deadline hack and no production change: marker
+    // calls never complete on their own (they reject fetch-shaped exactly
+    // when their abort signal fires). The barrier waits until all 4 scan
+    // workers (the production scanCorridor concurrency) hold pending
+    // requests; the abort then provably lands mid-scan with work in flight.
+    const { client, calls } = wireStatiq({ specs: POOL, markerPendingUntilAbort: true });
+    const planPromise = planTrip(
       { router: fakeRouter(700), statiq: client },
       O,
       D700,
-      { runBudget: { deadlineMs: 200, maxUpstreamCalls: 1_000 } },
+      { runBudget: { deadlineMs: 100, maxUpstreamCalls: 1_000 } },
     ).catch((e) => e);
+    // BARRIER: wait until all 4 corridor workers hold pending marker
+    // requests (production scan concurrency = 4; no further dispatch is
+    // possible while every worker is blocked). Real-timer polling here is
+    // observation only - the dispatches themselves are fake-clock-paced
+    // and fire within microseconds; the poll sees 4 within a few ticks.
+    const barrierDeadline = Date.now() + 5_000;
+    while (
+      calls.filter((c) => c.endpoint === 'markers').length < 4 &&
+      Date.now() < barrierDeadline
+    ) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    // concurrency-aware gate: exactly the production worker count in
+    // flight, and (unlike the old loose bounds) nothing more can dispatch
+    expect(calls.filter((c) => c.endpoint === 'markers')).toHaveLength(4);
+
+    const err = await planPromise;
     expectPlanningError(err);
     expect(err.code).toBe('not_determined');
     expect(err.cause).toBe('deadline');
     expect(err.message).toContain('time budget');
+    // the plan-first report carried the full 60-sample plan into evidence
+    expect(err.message).toContain('of 60 planned');
 
     const markers = calls.filter((c) => c.endpoint === 'markers');
     const details = calls.filter((c) => c.endpoint === 'details');
-    // mid-scan abort: some samples completed (>= 4: all 4 workers completed
-    // their in-flight calls within ~12ms, far before the 200ms deadline),
-    // the scan never completed (60 would need ~600ms of real delays), and
-    // the details phase never started
-    expect(markers.length).toBeGreaterThanOrEqual(4);
-    expect(markers.length).toBeLessThan(expectedMarkerCalls(700));
+    // EXACT (deterministic, not bounded): the 4 worker-dispatched samples
+    // were still pending when the abort fired; the details phase never
+    // started
+    expect(markers).toHaveLength(4);
     expect(details).toHaveLength(0);
   });
 
