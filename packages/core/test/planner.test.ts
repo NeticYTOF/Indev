@@ -279,6 +279,21 @@ describe('planTrip', () => {
     expect(plan.stops.map((s) => s.station.name)).toContain('Busy Statiq');
   });
 
+  it.each([1.5, 3])('includes leaving and rejoining every stop in trip time (%s km off route)', async (offRouteKm) => {
+    const stations: StationSpec[] = [
+      { id: 1, name: 'Statiq Offroad', chainageKm: 280, offRouteKm },
+      ...Array.from({ length: 8 }, (_, i) => ({ id: 10 + i, name: `Statiq Station ${i}`, chainageKm: 350 + 50 * i, offRouteKm })),
+    ];
+    const plan = await planTrip({ router: fakeRouter(700), statiq: fakeStatiq(stations) }, O, D(700));
+    expect(plan.stops.length).toBeGreaterThan(1);
+    const roundTripDetours = 2 * plan.stops.reduce((sum, stop) => sum + stop.detourKm, 0);
+    expect(roundTripDetours).toBeGreaterThan(5);
+    // Fixture routing has one driving minute per km. Off-route distances
+    // already enter individual leg ETAs and must also enter trip totals.
+    expect(plan.totals.driveTimeMin).toBe(Math.round(700 + roundTripDetours));
+    expect(plan.totals.totalTimeMin).toBe(plan.totals.driveTimeMin + plan.totals.chargeTimeMin);
+  });
+
   it('falls back to off-route stations only when the primary band is empty', async () => {
     const stations: StationSpec[] = [
       { id: 1, name: 'Statiq Offroad', chainageKm: 280, offRouteKm: 3 },
