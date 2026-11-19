@@ -132,6 +132,13 @@ describe('get_station handler (AI-safe)', () => {
     expect(result.station.ccs2Usable).toBe(0);
   });
 
+  it('blocks station lookups in mock mode before creating a live client', async () => {
+    let created = 0;
+    const deps = await makeDeps({ mock: true, createStatiq: () => { created++; return liveStatiqFake(); } });
+    await expect(getStationHandler(deps, 42)).rejects.toThrow(/mock mode/i);
+    expect(created).toBe(0);
+  });
+
   it('reports usable plugs WITHOUT occupancy and keeps honesty counters', async () => {
     const fetchedAt = new Date('2026-11-19T12:00:00Z');
     const statiq = {
