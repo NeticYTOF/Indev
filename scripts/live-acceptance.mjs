@@ -32,6 +32,7 @@
  *        without ever touching upstream)
  */
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -117,9 +118,14 @@ export function waitChildClose(child, timeoutMs) {
  *    STATIQ_API_TOKEN from the repo .env (or the parent env).
  *  - mock: INDEV_MOCK=1 + INDEV_SKIP_DOTENV=1 and NO token, so the child
  *    is tokenless-by-construction and cannot load live credentials.
+ *
+ *  The PER-LAUNCH INSTANCE ID (INDEV_LAUNCH_ID) is ALWAYS stripped from
+ *  the parent - it is a per-launch identity assigned fresh by the runner
+ *  AFTER this function, so a stale parent id can never label the child.
  */
 export function buildChildEnv(mode, parentEnv) {
   const env = { ...parentEnv };
+  delete env.INDEV_LAUNCH_ID; // per-launch identity: assigned fresh below
   if (mode === 'mock') {
     env.INDEV_MOCK = '1';
     env.INDEV_SKIP_DOTENV = '1'; // never even load the repo .env
@@ -161,6 +167,11 @@ class RunnerFail extends Error {
 async function main() {
   const MOCK = process.argv.includes('--mock');
   const PORT = Number(process.env.LIVE_PORT || (MOCK ? 8798 : 8799));
+  // INSTANCE PROVENANCE: a fresh per-run identity. The child echoes it in
+  // /api/health; anything else answering the port (a stale process or an
+  // unrelated same-mode server from a parallel suite - the PROVEN cause of
+  // the recurring empty-log success) fails the gate below.
+  const LAUNCH_ID = randomUUID();
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const runDir = join(ROOT, `.tmp-live-run-${stamp}`);
@@ -177,6 +188,9 @@ async function main() {
     ...buildChildEnv(MOCK ? 'mock' : 'live', process.env),
     PORT: String(PORT),
     DATA_DIR: join(runDir, 'data'), // isolated fresh store per run
+    // THIS launch's identity (buildChildEnv already stripped any inherited
+    // id): the child echoes it back in /api/health for the gate below
+    INDEV_LAUNCH_ID: LAUNCH_ID,
   };
   if (MOCK && serverEnv.STATIQ_API_TOKEN !== undefined) {
     // fail closed BEFORE spawning: a mock acceptance child must be
@@ -321,6 +335,19 @@ async function main() {
     // MODE GATE: fail closed unless the server reports the expected mode
     if (health.mock !== MOCK) {
       throw new RunnerFail('mode-mismatch', `server mock=${health.mock}, runner expected mock=${MOCK}`);
+    }
+
+    // INSTANCE GATE (the provenance race killer): the health answer must
+    // come from THIS launch's own child (the id it echoes must equal the
+    // id this run assigned). An unrelated SAME-MODE server that happens
+    // to hold the port - the proven cause of the recurring empty-log
+    // success - fails here, BEFORE any wall derivation and BEFORE any plan
+    // request. No fallback tolerance: a missing id is a foreign server.
+    if (health.launchId !== LAUNCH_ID) {
+      throw new RunnerFail(
+        'instance-mismatch',
+        `health.launchId=${JSON.stringify(health.launchId ?? null)} does not identify this launch's server`,
+      );
     }
 
     // DERIVED FROM THE SERVER'S EFFECTIVE BUDGET (config-review repair):

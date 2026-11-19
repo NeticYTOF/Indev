@@ -76,6 +76,23 @@ describe('buildChildEnv (mode-exclusive acceptance env)', () => {
     expect(env.INDEV_MOCK).toBe('0'); // pinned live, not merely absent
     expect(env.STATIQ_API_TOKEN).toBeUndefined();
   });
+
+  it('the PER-LAUNCH instance id is ALWAYS stripped (never inherited)', () => {
+    // INDEV_LAUNCH_ID is a per-launch identity assigned fresh by the runner
+    // after this strip: a stale parent id must never label the child -
+    // otherwise a foreign server could satisfy the runner's instance gate
+    // by parent-env contamination
+    for (const mode of ['live', 'mock'] as const) {
+      const child = buildChildEnv(mode as string, {
+        INDEV_LAUNCH_ID: 'stale-parent-id',
+        STATIQ_API_TOKEN: 'tok',
+        INDEV_PLAN_MAX_CALLS: '450',
+      });
+      expect('INDEV_LAUNCH_ID' in child).toBe(false);
+      // only the launch identity is stripped; the override channel survives
+      expect(child.INDEV_PLAN_MAX_CALLS).toBe('450');
+    }
+  });
 });
 
 describe('exitCodeFor (fail-closed exit status)', () => {
