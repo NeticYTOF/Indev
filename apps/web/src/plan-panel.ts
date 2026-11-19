@@ -12,6 +12,7 @@ import { api } from './api.js';
 import { downloadAnimatedExport } from './export.js';
 import { toast } from './toast.js';
 import { formatDuration, formatEta, formatInr } from './format.js';
+import { safeHttpUrl } from './safe-url.js';
 
 export function renderPlanPanel(
   panel: HTMLElement,
@@ -170,6 +171,11 @@ function renderStopCard(stop: PlanStop, index: number): HTMLElement {
   const s = stop.station;
   const brandLabel = s.brand.charAt(0).toUpperCase() + s.brand.slice(1);
   const directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${s.lat}%2C${s.lon}`;
+  // Station page link: the url arrives from upstream data and is untrusted.
+  // Only absolute http/https urls survive the allowlist; anything else
+  // renders NO link (honest absence) - html-escaping alone below does not
+  // stop scheme abuse (javascript: values carry no html-special chars).
+  const stationPageUrl = safeHttpUrl(s.stationUrl);
   const card = el(`
     <article class="stop-card timeline" data-stop-index="${index}">
       <div class="stop-rail" aria-hidden="true">
@@ -208,7 +214,7 @@ function renderStopCard(stop: PlanStop, index: number): HTMLElement {
       </div>
       <div class="stop-foot">
         <a class="btn btn-compact btn-ghost" href="${directionsUrl}" target="_blank" rel="noreferrer">Directions</a>
-        ${s.stationUrl ? `<a class="btn btn-compact btn-ghost" href="${escapeHtml(s.stationUrl)}" target="_blank" rel="noreferrer">Station page</a>` : ''}
+        ${stationPageUrl ? `<a class="btn btn-compact btn-ghost" href="${escapeHtml(stationPageUrl)}" target="_blank" rel="noreferrer">Station page</a>` : ''}
         <button type="button" class="btn btn-compact btn-ghost" data-refresh="${s.stationId}">Revalidate</button>
       </div>
     </article>
