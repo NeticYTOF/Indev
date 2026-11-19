@@ -369,6 +369,26 @@ describe('saved trips (shared with MCP)', () => {
     expect(body.code).toBe('bad_request');
   });
 
+  it.each([null, {}, { stationId: 0 }, { stationId: -1 }, { stationId: 1.5 }])(
+    'rejects malformed saved stop reference %j without writing a trip', async (station) => {
+      const deps = await makeDeps({ mock: true, createStatiq: () => { throw new Error('No live calls'); } });
+      const app = createApp(deps);
+      const response = await app.request('/api/plan', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ origin: ORIGIN, destination: DEST }),
+      });
+      const { plan } = await response.json();
+      plan.stops = [{ station }];
+      const save = await app.request('/api/trips', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan }),
+      });
+      expect(save.status).toBe(400);
+      expect(await save.json()).toMatchObject({ code: 'bad_request' });
+      expect(await deps.trips.list()).toHaveLength(0);
+    },
+  );
+
   it('never lets a synthetic plan enter the live store', async () => {
     const deps = await makeDeps();
     const app = createApp(deps);
