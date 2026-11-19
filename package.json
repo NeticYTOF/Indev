@@ -13,6 +13,7 @@
     "server": "npm run dev -w apps/server",
     "web": "npm run dev -w apps/web",
     "ui:verify": "node scripts/ui-verify.mjs",
+    "dev:stack": "node scripts/dev-stack.mjs",
     "mcp": "npm run dev -w apps/mcp",
     "test": "vitest run",
     "test:watch": "vitest",
