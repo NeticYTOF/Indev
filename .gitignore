@@ -15,4 +15,4 @@ scripts/probe-out.json
 scripts/probe-vocab-out.json
 
 # Temp UI-verification launchers and logs
-.tmp-ui*
+.tmp-*
