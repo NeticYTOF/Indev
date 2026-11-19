@@ -47,9 +47,29 @@ export interface CorridorOptions {
   concurrency?: number;
   /** Cancels the scan (run deadline / budget). */
   signal?: AbortSignal;
+  /**
+   * Incremental scan progress: invoked synchronously once with the PLAN
+   * (planned = N, attempted = 0) and after EVERY completed sample (success
+   * or failure). Callers carry honest counters even when the scan unwinds
+   * fatally mid-way (fatal stops are rethrown, not recorded as sample
+   * failures - but progress made before the stop is not lost).
+   */
+  onProgress?: (progress: CorridorScanProgress) => void;
 }
 
 export type SampleFailCause = 'throttled' | 'error';
+
+/** Incremental scan progress (carried even through a fatal mid-scan stop). */
+export interface CorridorScanProgress {
+  /** Sample points planned for this scan (known before dispatching). */
+  planned: number;
+  /** Samples COMPLETED so far (ok or failed). */
+  attempted: number;
+  /** Samples that returned markers successfully. */
+  ok: number;
+  /** Samples that failed (any cause). */
+  failed: number;
+}
 
 export interface SampleFailure {
   chainageKm: number;
@@ -75,6 +95,7 @@ interface ResolvedCorridorOptions {
   maxOffRouteKm: number;
   concurrency: number;
   signal?: AbortSignal;
+  onProgress?: (progress: CorridorScanProgress) => void;
 }
 
 const DEFAULTS: ResolvedCorridorOptions = {
@@ -92,7 +113,10 @@ export async function scanCorridor(
   routeGeometry: readonly Coords[],
   opts: CorridorOptions = {},
 ): Promise<CorridorResult> {
-  const { stepKm, maxOffRouteKm, concurrency, signal } = { ...DEFAULTS, ...opts } as ResolvedCorridorOptions;
+  const { stepKm, maxOffRouteKm, concurrency, signal, onProgress } = {
+    ...DEFAULTS,
+    ...opts,
+  } as ResolvedCorridorOptions;
   if (routeGeometry.length < 2) {
     return {
       candidates: [],
@@ -120,10 +144,23 @@ export async function scanCorridor(
   const warnings: string[] = [];
   let okSamples = 0;
 
+  const report = (): void => {
+    onProgress?.({
+      planned: samplePoints.length,
+      attempted: okSamples + failedSamples.length,
+      ok: okSamples,
+      failed: failedSamples.length,
+    });
+  };
+  // PLAN-FIRST: the caller knows the full sample plan (and can report
+  // 'of N planned' evidence) even if the very first sample unwinds fatally.
+  report();
+
   await pMap(samplePoints, concurrency, async (p, i) => {
     try {
       const res = await statiq.markers(p.lat, p.lon, signal);
       okSamples++;
+      report();
       for (const s of res.stations ?? []) {
         if (!seen.has(s.stationId)) seen.set(s.stationId, s);
       }
@@ -142,6 +179,7 @@ export async function scanCorridor(
           ? 'throttled'
           : 'error';
       failedSamples.push({ chainageKm: sampleChainages[i] ?? 0, cause });
+      report();
       // A failed sample leaves a partial blind spot (neighbouring samples
       // overlap ~half of it): carry on for now, but record the hole honestly.
       warnings.push(

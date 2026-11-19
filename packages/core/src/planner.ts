@@ -183,6 +183,7 @@ export async function planTripDetailed(
   );
   const runBudget = new UpstreamBudget(runBudgetSpec.maxUpstreamCalls);
   const stats: RunProgressStats = {
+    samplesPlanned: 0,
     samplesAttempted: 0,
     samplesOk: 0,
     samplesFailed: 0,
@@ -231,6 +232,9 @@ export async function planTripDetailed(
 
 /** Progress markers so a failed run can report honest coverage evidence. */
 export interface RunProgressStats {
+  /** Marker sample points the corridor planned (known plan-first). */
+  samplesPlanned: number;
+  /** Samples COMPLETED before the run stopped (ok or failed). */
   samplesAttempted: number;
   samplesOk: number;
   samplesFailed: number;
@@ -249,9 +253,14 @@ export interface RunProgressStats {
 /** Human-readable aggregate for not_determined evidence (run level). */
 function coverageEvidence(stats: RunProgressStats): string {
   const bits: string[] = [];
-  if (stats.samplesAttempted > 0) {
+  if (stats.samplesAttempted > 0 || stats.samplesPlanned > 0) {
+    // Mid-scan stops carry the partially-completed plan honestly: the
+    // completed-so-far count plus the full planned denominator.
+    const plannedSuffix =
+      stats.samplesPlanned > stats.samplesAttempted ? ` of ${stats.samplesPlanned} planned` : '';
     bits.push(
       `route samples covered ${stats.samplesOk}/${stats.samplesAttempted}` +
+        `${plannedSuffix}` +
         (stats.samplesFailed > 0 ? ` (${stats.samplesFailed} failed)` : ''),
     );
   }
@@ -368,12 +377,23 @@ async function planCore(
   const corridor = await scanCorridor(guardedStatiq, route.geometry, {
     maxOffRouteKm: opts.fallbackDetourKm,
     signal: hooks.signal,
+    // INCREMENTAL SCAN PROGRESS: counters flow in per completed sample,
+    // so a fatal stop MID-SCAN (first 429/auth, cap exhaustion, deadline)
+    // still reports the actual samples attempted/ok/failed in the
+    // not_determined evidence (the plan arrives before any dispatch).
+    onProgress: (p) => {
+      hooks.stats.samplesPlanned = p.planned;
+      hooks.stats.samplesAttempted = p.attempted;
+      hooks.stats.samplesOk = p.ok;
+      hooks.stats.samplesFailed = p.failed;
+    },
   });
   const warnings: string[] = [...corridor.warnings];
-  // Phase accounting: scan wall time + the aggregate candidate pool this run
-  // PLANS to check (unique stations, both detour bands) - recorded BEFORE
-  // the details phase so a mid-details failure can report processed/remaining.
+  // Phase accounting (a completed scan reconciles to the same values the
+  // incremental callbacks already carried; the plan-first report arrives
+  // before any dispatch).
   hooks.stats.scanMs = Date.now() - scanStartedAt;
+  hooks.stats.samplesPlanned = corridor.samplesAttempted;
   hooks.stats.samplesAttempted = corridor.samplesAttempted;
   hooks.stats.samplesOk = corridor.samples;
   hooks.stats.samplesFailed = corridor.failedSamples.length;

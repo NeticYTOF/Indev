@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { scanCorridor } from '../src/corridor.js';
+import {
+  scanCorridor,
+  type CorridorScanProgress,
+} from '../src/corridor.js';
+import { UpstreamRunStoppedError } from '../src/upstream-budget.js';
 import type { StatiqClient } from '../src/statiq.js';
 import type { Coords } from '../src/geo.js';
 import type { StatiqMarker, StatiqMarkersResponse } from '../src/types.js';
@@ -72,5 +76,84 @@ describe('scanCorridor', () => {
     expect(res.candidates).toEqual([]);
     expect(res.samples).toBe(0);
     expect(calls).toEqual([]);
+  });
+});
+
+describe('incremental scan progress (onProgress)', () => {
+  it('reports the plan first, then every completed sample, ending at the plan', async () => {
+    const { client } = fakeClient([]);
+    const events: CorridorScanProgress[] = [];
+    const res = await scanCorridor(client, route, {
+      stepKm: 12,
+      onProgress: (p) => events.push({ ...p }),
+    });
+    const planned = res.samplesAttempted;
+    expect(planned).toBeGreaterThanOrEqual(16); // ~197 km / 12 km step + dest
+    // PLAN-FIRST: the first report carries the full plan, zero completed
+    expect(events[0]).toEqual({ planned, attempted: 0, ok: 0, failed: 0 });
+    // one report per completion, plus the plan-first report
+    expect(events).toHaveLength(planned + 1);
+    const last = events[events.length - 1] as CorridorScanProgress;
+    expect(last).toEqual({ planned, attempted: planned, ok: planned, failed: 0 });
+    // counters are monotonic and always internally consistent
+    for (let i = 1; i < events.length; i++) {
+      const prev = events[i - 1] as CorridorScanProgress;
+      const cur = events[i] as CorridorScanProgress;
+      expect(cur.attempted).toBe(prev.attempted + 1);
+      expect(cur.ok + cur.failed).toBe(cur.attempted);
+      expect(cur.planned).toBe(planned);
+    }
+  });
+
+  it('counts failed samples in the incremental progress', async () => {
+    const failing = {
+      markers: async (_lat: number, lon: number): Promise<StatiqMarkersResponse> => {
+        // NOTE: this route runs along a constant latitude, so the sample
+        // points are distinguished by LON; fail exactly the d=0 vertex
+        // (lon 78.0) and let the rest succeed (empty responses).
+        if (Math.abs(lon - 78.0) < 1e-9) {
+          throw new Error('upstream unavailable at this sample');
+        }
+        return markersResponse([]);
+      },
+    } as unknown as StatiqClient;
+    const events: CorridorScanProgress[] = [];
+    await scanCorridor(failing, route, {
+      stepKm: 12,
+      onProgress: (p) => events.push({ ...p }),
+    });
+    const last = events[events.length - 1] as CorridorScanProgress;
+    expect(last.ok + last.failed).toBe(last.attempted);
+    expect(last.attempted).toBe(last.planned); // every sample completed
+    expect(last.failed).toBe(1); // exactly the first sample failed
+    expect(last.ok).toBe(last.planned - 1);
+  });
+
+  it('keeps progress made before a FATAL mid-scan unwind (concurrency 1)', async () => {
+    // three samples succeed, the fourth throws a run-fatal stop: the scan
+    // unwinds (fatal errors are rethrown, NEVER recorded as sample failures)
+    // but every report before the fatal is already delivered
+    let n = 0;
+    const client = {
+      markers: async (): Promise<StatiqMarkersResponse> => {
+        n++;
+        if (n > 3) throw new UpstreamRunStoppedError('throttled', 3, 100, 60_000);
+        return markersResponse([]);
+      },
+    } as unknown as StatiqClient;
+    const events: CorridorScanProgress[] = [];
+    await expect(
+      scanCorridor(client, route, {
+        stepKm: 12,
+        concurrency: 1,
+        onProgress: (p) => events.push({ ...p }),
+      }),
+    ).rejects.toBeInstanceOf(UpstreamRunStoppedError);
+    // plan-first + exactly the three successful completions survived
+    expect(events).toHaveLength(4);
+    expect(events[0]?.attempted).toBe(0);
+    const last = events[events.length - 1] as CorridorScanProgress;
+    expect(last).toEqual({ planned: last.planned, attempted: 3, ok: 3, failed: 0 });
+    expect(last.planned).toBeGreaterThanOrEqual(16);
   });
 });

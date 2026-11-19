@@ -498,6 +498,30 @@ describe('fail-closed scan integrity', () => {
     expect((err as PlanningError).message).toContain('3 upstream attempts');
   });
 
+  it('MID-SCAN cap exhaustion carries incremental scan progress in the evidence', async () => {
+    // regression (Linux review): scan stats used to be assigned only AFTER
+    // scanCorridor returned, so a fatal stop mid-scan lost the actual
+    // samples attempted/ok/failed. Progress must now flow even when the
+    // scan never completes: the evidence names the full planned sample
+    // count (plan-first report) and the completed-so-far aggregates.
+    const err = await planTrip(
+      { router: fakeRouter(700), statiq: fakeStatiq(stations) },
+      O,
+      D(700),
+      { runBudget: { deadlineMs: 60_000, maxUpstreamCalls: 10 } },
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(PlanningError);
+    expect((err as PlanningError).code).toBe('not_determined');
+    expect((err as PlanningError).cause).toBe('budget-exhausted');
+    // 700 km / 12 km step + destination = 60 planned samples: known even
+    // though the scan stopped part-way through
+    expect((err as PlanningError).message).toContain('of 60 planned');
+    // completed-so-far counters carried (the scan did do real work)
+    expect((err as PlanningError).message).toMatch(
+      /route samples covered \d+\/\d+ of 60 planned/,
+    );
+  });
+
   it('deadline expiry cancels the run and reports an honest not_determined', async () => {
     // slow fake: every upstream call takes 30ms real time; deadline 40ms
     const base = fakeStatiq(stations);
