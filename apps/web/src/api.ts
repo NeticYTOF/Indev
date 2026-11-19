@@ -67,8 +67,12 @@ async function handle<T>(res: Response): Promise<T> {
       body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
         ? body.error
         : `Request failed (${res.status})`;
-    const code = body && typeof body === 'object' && 'code' in body ? String(body.code) : 'unknown';
-    throw new ApiError(message, code, res.status);
+    const obj = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+    const code = typeof obj.code === 'string' ? obj.code : 'unknown';
+    // Fine-grained not_determined cause when the server sent one
+    // (e.g. 'budget-exhausted'): needed for cause-true UI guidance.
+    const cause = typeof obj.cause === 'string' ? obj.cause : undefined;
+    throw new ApiError(message, code, res.status, cause);
   }
   return body as T;
 }
@@ -78,6 +82,8 @@ export class ApiError extends Error {
     message: string,
     readonly code: string,
     readonly status: number,
+    /** Fine-grained failure cause (not_determined) when the server sent one. */
+    readonly cause?: string,
   ) {
     super(message);
     this.name = 'ApiError';

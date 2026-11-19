@@ -6,11 +6,12 @@
  */
 import * as maplibregl from 'maplibre-gl';
 import type { GeocodeHit, VehicleCatalogEntry } from '@indeev/core';
-import { api, type PlanRequest } from './api.js';
+import { api, ApiError, type PlanRequest } from './api.js';
 import type { TripPlan } from '@indeev/core';
 import { drawTrip } from './map.js';
 import { renderPlanPanel } from './plan-panel.js';
 import { toast } from './toast.js';
+import { formatElapsedMs, planFailureGuidance, type PlanFailureGuidance } from './plan-errors.js';
 
 interface PlaceInput {
   hit: GeocodeHit | null;
@@ -191,6 +192,38 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
     planSpinner.classList.toggle('hidden', !loading);
   };
 
+  // Honest live-mode progress: a REAL elapsed timer plus a truthful hint
+  // about why a plan can take minutes. No fake progress, no invented
+  // percentages. Hidden in mock mode - synthetic plans are instant and
+  // must not borrow live-mode claims.
+  const liveBusy = el(`
+    <div class="plan-busy hidden">
+      <p class="plan-busy-hint">Every candidate charger is fetched individually with safety pacing — a long corridor can take several minutes. The request stays open; nothing is cached between runs.</p>
+      <p class="plan-busy-time" role="status"><span class="plan-busy-spinner" aria-hidden="true"></span><span class="plan-busy-elapsed">0s elapsed</span></p>
+    </div>
+  `);
+  const busyElapsed = liveBusy.querySelector('.plan-busy-elapsed') as HTMLElement;
+  let busyTimer: number | null = null;
+  let busyStartedAt = 0;
+  const startBusy = (): void => {
+    if (serverIsMock) return; // synthetic plans are instant - no live claims
+    busyStartedAt = Date.now();
+    busyElapsed.textContent = '0s elapsed';
+    liveBusy.classList.remove('hidden');
+    // 5s cadence: real timing, calm for assistive tech (role=status).
+    busyTimer = window.setInterval(() => {
+      busyElapsed.textContent = `${formatElapsedMs(Date.now() - busyStartedAt)} elapsed`;
+    }, 5000);
+  };
+  const stopBusy = (): void => {
+    if (busyTimer !== null) {
+      window.clearInterval(busyTimer);
+      busyTimer = null;
+    }
+    liveBusy.classList.add('hidden');
+  };
+  form.appendChild(liveBusy);
+
   // AI planning (hidden unless the server has an AI provider configured).
   const aiBox = el(`
     <div class="ai-box hidden">
@@ -222,6 +255,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
     const aiButton = aiBox.querySelector('[data-ai-plan]') as HTMLButtonElement | null;
     if (aiButton) aiButton.disabled = true;
     hideError(errorBox);
+    startBusy();
     try {
       const { plan, ai } = await api.aiPlan({
         origin: { label: origin.hit.label, lat: origin.hit.lat, lon: origin.hit.lon },
@@ -237,9 +271,9 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
         toast(`Computed plan shown — ${ai.reason}`, 'warn', 6000);
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'AI planning failed.';
-      showError(errorBox, message);
+      showPlanningError(errorBox, err, 'AI planning failed.');
     } finally {
+      stopBusy();
       if (aiButton) aiButton.disabled = false;
     }
   });
@@ -260,6 +294,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
 
     setLoading(true, serverIsMock ? 'Planning synthetic route…' : 'Planning live route…');
     hideError(errorBox);
+    startBusy();
     try {
       const req: PlanRequest = {
         origin: { label: origin.hit.label, lat: origin.hit.lat, lon: origin.hit.lon },
@@ -270,14 +305,9 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
       const { plan } = await api.plan(req);
       onPlanAvailable(plan, map);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Planning failed.';
-      if (err instanceof Error && 'code' in err && (err as { code: string }).code === 'not_determined') {
-        showError(errorBox, `${message}`);
-        toast('Plan not determined — the charger API is throttling. Retry in a minute.', 'warn');
-      } else {
-        showError(errorBox, message);
-      }
+      showPlanningError(errorBox, err, 'Planning failed.');
     } finally {
+      stopBusy();
       setLoading(false, 'Plan route');
     }
   });
@@ -515,6 +545,49 @@ function makeSearchField(
 
 function showError(box: HTMLElement, message: string): void {
   box.textContent = message;
+  box.classList.remove('hidden');
+}
+
+/**
+ * Cause-true planning-failure presentation: guidance naming the ACTUAL
+ * server cause (throttle vs budget vs auth vs coverage) plus the server's
+ * full evidence message, with an honest per-cause toast. The old behavior
+ * told every failure "the API is throttling - retry in a minute" - a lie
+ * for budget-exhausted, auth and coverage failures.
+ */
+function showPlanningError(box: HTMLElement, err: unknown, fallback: string): void {
+  const message = err instanceof Error ? err.message : fallback;
+  const code =
+    err instanceof ApiError
+      ? err.code
+      : err instanceof Error && 'code' in err
+        ? String((err as { code: string }).code)
+        : undefined;
+  const cause = err instanceof ApiError ? err.cause : undefined;
+  if (code === 'not_determined') {
+    const guidance = planFailureGuidance(cause);
+    renderPlanFailure(box, guidance, message);
+    toast(guidance.toast, 'warn', 6000);
+  } else {
+    showError(box, message);
+  }
+}
+
+/** Structured error box: headline, honest guidance, full server evidence
+ *  (coverage counts, attempts, estimate). DOM-built with textContent -
+ *  never innerHTML - so server text cannot inject markup. */
+function renderPlanFailure(box: HTMLElement, guidance: PlanFailureGuidance, serverMessage: string): void {
+  box.replaceChildren();
+  const title = document.createElement('p');
+  title.className = 'error-title';
+  title.textContent = guidance.title;
+  const detail = document.createElement('p');
+  detail.className = 'error-detail';
+  detail.textContent = guidance.detail;
+  const raw = document.createElement('p');
+  raw.className = 'error-raw';
+  raw.textContent = serverMessage;
+  box.append(title, detail, raw);
   box.classList.remove('hidden');
 }
 
