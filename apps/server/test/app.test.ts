@@ -255,6 +255,26 @@ describe('POST /api/plan', () => {
 });
 
 describe('GET /api/stations/:id', () => {
+  it.each(['wrong-id', 'not-ok'] as const)('rejects %s revalidation data instead of displaying another station', async (kind) => {
+    let calls = 0;
+    const statiq = {
+      detailsWithMeta: async () => {
+        calls++;
+        return {
+          response: { ok: kind !== 'not-ok', station: { stationId: kind === 'wrong-id' ? 43 : 42, name: 'Unexpected station', chargers: [] } },
+          fetchedAt: new Date('2026-11-19T12:00:00Z'),
+        };
+      },
+    } as unknown as StatiqClient;
+    const app = createApp(await makeDeps({ createStatiq: () => statiq }));
+    const res = await app.request('/api/stations/42');
+    expect(res.status).toBe(502);
+    const body = await res.json() as { code: string; station?: unknown };
+    expect(body.code).toBe('upstream_invalid');
+    expect(body.station).toBeUndefined();
+    expect(calls).toBe(1);
+  });
+
   it('always fetches fresh details with fetchedAt (never a memo)', async () => {
     const fetchedAt = new Date('2026-11-19T12:00:00Z');
     let calls = 0;
