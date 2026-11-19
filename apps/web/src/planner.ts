@@ -307,7 +307,12 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
       stopBusy();
       setActionsBusy(false);
       gate.end();
-      focusOnSettle?.focus();
+      // Keyboard focus returns to the retry control WITHOUT scrolling:
+      // the failure is already revealed in place (renderPlanFailure
+      // aligned it to the top); a scrolling focus would push it back
+      // below the fold (the mobile long-error defect from rendered
+      // review).
+      focusOnSettle?.focus({ preventScroll: true });
     }
   });
 
@@ -351,7 +356,12 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
       setLoading(false, 'Plan route');
       setActionsBusy(false);
       gate.end();
-      focusOnSettle?.focus();
+      // Keyboard focus returns to the retry control WITHOUT scrolling:
+      // the failure is already revealed in place (renderPlanFailure
+      // aligned it to the top); a scrolling focus would push it back
+      // below the fold (the mobile long-error defect from rendered
+      // review).
+      focusOnSettle?.focus({ preventScroll: true });
     }
   });
 }
@@ -649,10 +659,12 @@ function renderPlanFailure(box: HTMLElement, guidance: PlanFailureGuidance, serv
   raw.textContent = serverMessage;
   box.append(title, detail, raw);
   box.classList.remove('hidden');
-  // Keyboard reveal: bring the details into view without stealing focus
-  // (role=alert already announced them; the submitting button gets focus
-  // back after it re-enables).
-  box.scrollIntoView({ block: 'nearest' });
+  // Keyboard reveal: align the failure to the TOP of the scrollport so
+  // a long error is readable from its title down ('start' - 'nearest'
+  // left the title pinned at the bottom edge with the details below
+  // the fold). The later focus restore uses preventScroll, so this
+  // reveal is what the user keeps.
+  box.scrollIntoView({ block: 'start' });
 }
 
 function hideError(box: HTMLElement): void {

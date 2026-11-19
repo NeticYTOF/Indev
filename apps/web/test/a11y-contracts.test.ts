@@ -31,19 +31,27 @@ describe('planning wait-state announcements (no live-region spam)', () => {
 });
 
 describe('planning failure reveal (keyboard reach + context restore)', () => {
-  it('scrolls the structured failure details into view when rendered', () => {
-    // Without this, a failure below the fold inside the scrollable panel
-    // never reveals for sighted keyboard users.
-    expect(plannerSrc).toContain("box.scrollIntoView({ block: 'nearest' })");
+  it('reveals the structured failure from its TOP so long errors are readable', () => {
+    // 'nearest' left the title pinned at the bottom edge with the
+    // details below the fold (rendered review); 'start' aligns the
+    // failure top so it reads title-down.
+    expect(plannerSrc).toContain("box.scrollIntoView({ block: 'start' })");
+    expect(plannerSrc).not.toContain("block: 'nearest'");
   });
 
   it('returns focus to the submitting button after BOTH failed run paths', () => {
     // The disabled Plan/AI buttons lose focus to <body> during the wait;
     // both catch paths must land the user back on the retry control.
-    const focusRestores = plannerSrc.match(/focusOnSettle\?\.focus\(\)/g) ?? [];
-    expect(focusRestores).toHaveLength(2);
     expect(plannerSrc).toContain('focusOnSettle = planButton');
     expect(plannerSrc).toContain('focusOnSettle = aiButton');
+    // WITHOUT scrolling: the rendering defect was the focus restore
+    // scrolling the revealed error back below the viewport. The bare
+    // (scrolling) focus call must be gone from both paths.
+    const nonScrollingRestores = plannerSrc.match(
+      /focusOnSettle\?\.focus\(\{ preventScroll: true \}\);/g,
+    ) ?? [];
+    expect(nonScrollingRestores).toHaveLength(2);
+    expect(plannerSrc).not.toContain('focusOnSettle?.focus();');
   });
 });
 
