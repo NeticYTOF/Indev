@@ -465,8 +465,10 @@ function coordRef(v: unknown): { label: string; lat: number; lon: number } | nul
   if (
     typeof o.lat === 'number' &&
     Number.isFinite(o.lat) &&
+    o.lat >= -90 && o.lat <= 90 &&
     typeof o.lon === 'number' &&
-    Number.isFinite(o.lon)
+    Number.isFinite(o.lon) &&
+    o.lon >= -180 && o.lon <= 180
   ) {
     return {
       label: typeof o.label === 'string' && o.label.trim() ? o.label.trim() : `${o.lat.toFixed(4)}, ${o.lon.toFixed(4)}`,
