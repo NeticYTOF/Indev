@@ -267,13 +267,26 @@ async function planCore(
     );
   }
 
-  // 3) Live details + CCS2 DC classification per candidate.
-  const resolved: Candidate[] = [];
-  await pMap(corridor.candidates, 3, async (c) => {
+  // 3) Live details + CCS2 DC classification.
+  //    LIVE-EFFICIENCY (found via the bounded live acceptance): details are
+  //    fetched EAGERLY only for candidates in the primary detour band
+  //    (<= primaryDetourKm, where stops are actually chosen). The wider
+  //    fallback band is fetched LAZILY - only when a selection window has
+  //    no primary-band option - so a dense corridor no longer costs one
+  //    details call per station along the whole route.
+  const primaryBand = corridor.candidates.filter(
+    (c) => c.offRouteKm <= opts.primaryDetourKm,
+  );
+  const fallbackBand = corridor.candidates.filter(
+    (c) => c.offRouteKm > opts.primaryDetourKm,
+  );
+  const detailCache = new Map<number, Candidate>();
+  const fetchCandidate = async (c: CorridorCandidate): Promise<void> => {
+    if (detailCache.has(c.stationId)) return;
     try {
       const { response, fetchedAt } = await guardedStatiq.detailsWithMeta(c.stationId);
       if (!response.station) return;
-      resolved.push({
+      detailCache.set(c.stationId, {
         candidate: c,
         summary: summarizeCcs2(response.station),
         view: toStationView(response.station, fetchedAt),
@@ -283,9 +296,14 @@ async function planCore(
       if (isAbortLike(err) || (err instanceof PlanningError && err.code === 'budget')) throw err;
       warnings.push(`Skipping "${c.name}" (${c.stationId}): live details unavailable.`);
     }
-  });
-  resolved.sort((a, b) => a.candidate.chainageKm - b.candidate.chainageKm);
-  const usable = resolved.filter((r) => r.summary.isUsable);
+  };
+
+  await pMap(primaryBand, 3, fetchCandidate);
+  const usableCandidates = (): Candidate[] =>
+    [...detailCache.values()]
+      .filter((r) => r.summary.isUsable)
+      .sort((a, b) => a.candidate.chainageKm - b.candidate.chainageKm);
+  let usable = usableCandidates();
 
   // 4) Greedy stop selection with minimal-charge lookahead.
   let cursor: Cursor = {
@@ -319,7 +337,22 @@ async function planCore(
         'infeasible',
       );
     }
-    const next = chooseNextStop(usable, cursor, opts, vehicle, warnings);
+    let next = chooseNextStop(usable, cursor, opts, vehicle, warnings);
+    if (!next) {
+      // No primary-band option in this window: fetch the fallback band for
+      // THIS window on demand (lazy), then retry the selection once.
+      const windowBand = fallbackBand.filter(
+        (c) =>
+          c.chainageKm > cursor.chainageKm + 1 &&
+          c.chainageKm <= cursor.chainageKm + opts.maxLegKm &&
+          !detailCache.has(c.stationId),
+      );
+      if (windowBand.length > 0) {
+        await pMap(windowBand, 3, fetchCandidate);
+        usable = usableCandidates();
+        next = chooseNextStop(usable, cursor, opts, vehicle, warnings);
+      }
+    }
     if (!next) {
       throw new PlanningError(
         `No usable charger within ${opts.maxLegKm} km past the ${cursor.chainageKm.toFixed(0)} km mark. ` +

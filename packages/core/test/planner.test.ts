@@ -373,6 +373,65 @@ describe('planTrip invariants (randomized worlds)', () => {
   });
 });
 
+describe('live details efficiency (lazy fallback band)', () => {
+  it('fetches details only for primary-band stations until a window needs the fallback band', async () => {
+    // primary-band stations at 0 km off-route every 50 km...
+    const specs: StationSpec[] = Array.from({ length: 14 }, (_, i) => ({
+      id: 600 + i,
+      name: `Statiq Lazy ${i}`,
+      chainageKm: 50 * (i + 1),
+      offRouteKm: 0,
+    }));
+    // ...plus stations 3.5 km off-route (fallback band) that are never needed
+    specs.push(
+      ...Array.from({ length: 6 }, (_, i) => ({
+        id: 700 + i,
+        name: `Offshore Stat ${i}`,
+        chainageKm: 60 + i * 100,
+        offRouteKm: 3.5,
+      })),
+    );
+    let detailsCalls = 0;
+    const base = fakeStatiq(specs);
+    const counting = {
+      ...base,
+      detailsWithMeta: async (id: number) => {
+        detailsCalls++;
+        return (base as unknown as { detailsWithMeta: (id: number) => Promise<unknown> }).detailsWithMeta(id);
+      },
+    } as unknown as StatiqClient;
+
+    const plan = await planTrip({ router: fakeRouter(700), statiq: counting }, O, D(700));
+    // primary band was sufficient everywhere: fallback stations never fetched
+    expect(detailsCalls).toBe(14);
+    expect(plan.stops.every((s) => s.detourKm <= 2)).toBe(true);
+  });
+
+  it('lazily fetches the fallback band only when a window has no primary option', async () => {
+    // gap in the primary band: only an off-route station can cover it
+    const specs: StationSpec[] = [
+      { id: 1, name: 'Statiq Near A', chainageKm: 100, offRouteKm: 0 },
+      { id: 2, name: 'Statiq Offroute B', chainageKm: 390, offRouteKm: 3.2 },
+      { id: 3, name: 'Statiq Near C', chainageKm: 600, offRouteKm: 0 },
+    ];
+    let detailsCalls = 0;
+    const base = fakeStatiq(specs);
+    const counting = {
+      ...base,
+      detailsWithMeta: async (id: number) => {
+        detailsCalls++;
+        return (base as unknown as { detailsWithMeta: (id: number) => Promise<unknown> }).detailsWithMeta(id);
+      },
+    } as unknown as StatiqClient;
+
+    const plan = await planTrip({ router: fakeRouter(700), statiq: counting }, O, D(700));
+    // all three stations fetched, the fallback one only when its window needed it
+    expect(detailsCalls).toBe(3);
+    expect(plan.stops.map((s) => s.station.name)).toContain('Statiq Offroute B');
+    expect(plan.warnings.some((w) => w.includes('off-route'))).toBe(true);
+  });
+});
+
 describe('fail-closed scan integrity', () => {
   const stations: StationSpec[] = Array.from({ length: 14 }, (_, i) => ({
     id: 500 + i,
