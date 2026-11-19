@@ -255,6 +255,34 @@ describe('POST /api/plan', () => {
 });
 
 describe('GET /api/stations/:id', () => {
+  it.each(['empty-chargers', 'empty-connectors'] as const)('accepts explicit %s refresh evidence', async (kind) => {
+    const station = { stationId: 42, name: 'Empty station', chargers: kind === 'empty-chargers' ? [] : [{ type: 'DC', connectors: [] }] };
+    const statiq = {
+      detailsWithMeta: async () => ({ response: { ok: true, station }, fetchedAt: new Date() }),
+    } as unknown as StatiqClient;
+    const app = createApp(await makeDeps({ createStatiq: () => statiq }));
+    const res = await app.request('/api/stations/42');
+    expect(res.status).toBe(200);
+    const body = await res.json() as { station: { stationId: number; ccs2: { total: number } } };
+    expect(body.station.stationId).toBe(42);
+    expect(body.station.ccs2.total).toBe(0);
+  });
+
+  it.each(['missing-chargers', 'null-chargers', 'missing-connectors', 'null-connectors'] as const)('does not turn %s refresh evidence into a successful empty station', async (kind) => {
+    const station = { stationId: 42, name: 'Incomplete station', chargers: [{ type: 'DC', connectors: [] }] };
+    if (kind.endsWith('chargers')) Object.assign(station, { chargers: kind === 'null-chargers' ? null : undefined });
+    else Object.assign(station.chargers[0]!, { connectors: kind === 'null-connectors' ? null : undefined });
+    const statiq = {
+      detailsWithMeta: async () => ({ response: { ok: true, station }, fetchedAt: new Date() }),
+    } as unknown as StatiqClient;
+    const app = createApp(await makeDeps({ createStatiq: () => statiq }));
+    const res = await app.request('/api/stations/42');
+    expect(res.status).toBe(502);
+    const body = await res.json() as { code: string; station?: unknown };
+    expect(body.code).toBe('upstream_invalid');
+    expect(body.station).toBeUndefined();
+  });
+
   it.each(['wrong-id', 'not-ok'] as const)('rejects %s revalidation data instead of displaying another station', async (kind) => {
     let calls = 0;
     const statiq = {
