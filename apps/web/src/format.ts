@@ -49,12 +49,7 @@ export function lastUsedLabel(chargers: Array<{ lastUsedOn: string | null }>): s
   const dates = chargers.map((c) => c.lastUsedOn).filter((d): d is string => Boolean(d));
   if (dates.length === 0) return 'unknown';
   // dd/mm/yyyy; pick the most recent
-  const parsed = dates
-    .map((d) => {
-      const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(d);
-      return m ? new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1])) : null;
-    })
-    .filter((d): d is Date => d != null);
+  const parsed = dates.map(parseChargerDate).filter((d): d is Date => d !== null);
   if (parsed.length === 0) return dates[0] as string;
   const latest = parsed.sort((a, b) => b.getTime() - a.getTime())[0] as Date;
   return `${latest.getDate()}/${latest.getMonth() + 1}/${latest.getFullYear()}`;
@@ -66,11 +61,26 @@ export function formatSoc(soc: number | null | undefined): string {
   return `${Math.round(soc)}%`;
 }
 
+/** Parse calendar values without Date's silent rollover of invalid days. */
+function parseChargerDate(raw: string): Date | null {
+  const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(raw);
+  if (!match) return null;
+  const day = Number(match[1]);
+  const month = Number(match[2]) - 1;
+  const year = Number(match[3]);
+  // setFullYear avoids the constructor's special 1900 offset for years 0..99.
+  const date = new Date(0);
+  date.setFullYear(year, month, day);
+  date.setHours(0, 0, 0, 0);
+  return date.getFullYear() === year && date.getMonth() === month && date.getDate() === day
+    ? date : null;
+}
+
 /** dd/mm/yyyy (Statiq) -> "18 Nov 2026"; unparseable input returned as-is. */
 export function formatLastUsed(raw: string | null | undefined): string {
   if (!raw || typeof raw !== 'string') return '—';
   const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(raw.trim());
-  if (!m) return raw;
+  if (!m || !parseChargerDate(raw.trim())) return raw;
   const [, dd, mm, yyyy] = m;
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const monthIndex = Number(mm) - 1;
