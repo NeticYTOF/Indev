@@ -96,13 +96,16 @@ export function validateAiChoice(
     const arrive =
       seq.length === 0
         ? socAfterDriving(legKm, soc, vehicle)
-        : opts.minArrivalSocPct + 2; // previous stop charged exactly for this
+        : socAfterDriving(legKm, opts.absoluteMaxSocPct, vehicle);
     if (arrive < opts.minArrivalSocPct - 1e-6) {
       return fail(
         `The battery cannot reach "${c.view.name}" with the required ${Math.round(opts.minArrivalSocPct)}% reserve.`,
       );
     }
-    seq.push({ cand: c, legKm, arriveSocPct: arrive });
+    // Full-charge reachability above is a feasibility check, not the
+    // planned arrival. Previous stops charge only for this hop + buffer.
+    const plannedArrival = seq.length === 0 ? arrive : opts.minArrivalSocPct + 2;
+    seq.push({ cand: c, legKm, arriveSocPct: plannedArrival });
     cursorChain = c.candidate.chainageKm;
     cursorDetour = c.candidate.offRouteKm;
     soc = opts.absoluteMaxSocPct; // subsequent stops may charge to the cap
@@ -110,7 +113,7 @@ export function validateAiChoice(
 
   // final leg to destination
   const finalLegKm = totalKm - cursorChain + cursorDetour;
-  if (finalLegKm > opts.maxLegKm + 1e-6 && seq.length === 0) {
+  if (finalLegKm > opts.maxLegKm + 1e-6) {
     return fail(`The ${Math.round(finalLegKm)} km final leg exceeds the safe running range.`);
   }
   const needed = socRequiredForArrival(finalLegKm, opts.minArrivalSocPct + 2, vehicle);
