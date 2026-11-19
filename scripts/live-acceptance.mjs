@@ -13,6 +13,11 @@
  * The runner NEVER retries: one request, then stop on any outcome.
  * Throttling surfaces as the server's fail-closed not_determined code.
  *
+ * EVIDENCE RETENTION (standing rule): run artifacts are evidence. The
+ * runner never deletes or overwrites run directories - every run gets
+ * its own timestamped dir and everything (server.log, server-stderr.log,
+ * plan.json, meta.json) stays on disk for later inspection.
+ *
  * Usage: node scripts/live-acceptance.mjs            (live server on :8799)
  *        node scripts/live-acceptance.mjs --mock    (same machinery against a
  *        local MOCK server - used to verify the tooling without upstream)
@@ -40,6 +45,7 @@ const planPath = join(runDir, 'plan.json');
 const metaPath = join(runDir, 'meta.json');
 
 console.log(`[live-run] dir=${runDir} mode=${MOCK ? 'MOCK-tooling-check' : 'LIVE'} port=${PORT}`);
+console.log('[live-run] run artifacts are evidence: this dir is retained, never auto-cleaned.');
 
 const serverEnv = { ...process.env, PORT: String(PORT), DATA_DIR: join(runDir, 'data') };
 if (MOCK) {
