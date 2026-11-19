@@ -102,7 +102,10 @@ export function chargePowerKw(socPct: SocPct, chargerKw: number, v: VehicleConfi
   const base = Math.min(chargerKw, v.maxDcKw);
   if (socPct <= v.taperStartSocPct) return base;
   const t = Math.min(1, Math.max(0, (socPct - v.taperStartSocPct) / (100 - v.taperStartSocPct)));
-  return base + (v.taperEndPowerKw - base) * t;
+  // The taper is a vehicle working estimate, never extra station power.
+  // A slow charger must not ramp UP toward a higher taper endpoint.
+  const endPower = Math.min(base, v.taperEndPowerKw);
+  return base + (endPower - base) * t;
 }
 
 /**
