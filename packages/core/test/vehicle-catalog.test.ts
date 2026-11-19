@@ -20,6 +20,15 @@ describe('vehicle catalog', () => {
 });
 
 describe('resolveVehicle', () => {
+  it('honors a range-only selection on the default vehicle without replacing claims', () => {
+    const result = resolveVehicle({ realWorldRangeKm: 450 });
+    expect(result.realWorldRangeKm).toBe(450);
+    expect(result.catalogId).toBe('tata-harrier-ev-75');
+    expect(result.claimedRangeKm).toBe(627);
+    expect(result.config.whPerKm).toBeCloseTo(71.25 / 450 * 1000, 6);
+    expect(() => resolveVehicle({ realWorldRangeKm: 5 })).toThrow(VehicleSelectionError);
+  });
+
   it('defaults to the unchanged Harrier EV 75 kWh profile', () => {
     const r = resolveVehicle();
     expect(r.config).toEqual(HARIER_EV_75); // exactly the existing working-estimates profile

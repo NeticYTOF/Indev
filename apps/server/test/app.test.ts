@@ -74,6 +74,15 @@ function liveStatiqFake() {
 }
 
 describe('GET /api/health', () => {
+  it.each([450, 5])('uses or rejects a supplied default-vehicle real-world range (%s km)', async (realWorldRangeKm) => {
+    const app = createApp(await makeDeps({ mock: true }));
+    const res = await app.request('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ origin: ORIGIN, destination: DEST, vehicle: { realWorldRangeKm } }) });
+    expect(res.status).toBe(realWorldRangeKm === 450 ? 200 : 400);
+    const body = await res.json();
+    if (res.ok) expect(body.plan.vehicle.realWorldRangeKm).toBe(450);
+    else expect(body.code).toBe('bad_vehicle');
+  });
+
   it('preserves actual corrupt counter bytes while health and computed plans remain usable', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'indeev-counter-http-'));
     tempDirs.push(dir);

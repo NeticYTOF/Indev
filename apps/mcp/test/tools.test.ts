@@ -72,6 +72,13 @@ function liveStatiqFake() {
 }
 
 describe('plan_trip handler', () => {
+  it('uses an explicit real-world range for the default vehicle even without a catalog id', async () => {
+    const deps = await makeDeps({ createStatiq: () => liveStatiqFake() });
+    const result = await planTripHandler(deps, { origin: 'Delhi', destination: 'Jaipur', vehicleRealWorldRangeKm: 450 });
+    expect(result.plan.vehicle.realWorldRangeKm).toBe(450);
+    expect(result.plan.vehicle.catalogId).toBe('tata-harrier-ev-75');
+  });
+
   it('retains custom vehicle claimed range in km separately from real-world range', async () => {
     const deps = await makeDeps({ createStatiq: () => liveStatiqFake() });
     const args = { origin: 'Delhi', destination: 'Jaipur', customVehicle: {
