@@ -111,6 +111,19 @@ const stations: StationSpec[] = Array.from({ length: 14 }, (_, i) => ({
 }));
 
 describe('validateAiChoice', () => {
+  it('never lowers an excess arrival charge when the next leg needs more than the usual cap', () => {
+    const bundle = handBuiltBundle([10], 300);
+    const validation = validateAiChoice(bundle, { stationIds: [idAt(10)] }, {}, HARIER_EV_75);
+    expect(validation.ok).toBe(true);
+    if (!validation.ok) return;
+    const warnings: string[] = [];
+    const stops = finalize(validation.seq, 300, bundle.route, DEFAULT_PLAN_OPTIONS, HARIER_EV_75, warnings);
+    expect(stops[0]!.arriveSocPct).toBeGreaterThan(95);
+    expect(stops[0]!.leaveSocPct).toBeGreaterThanOrEqual(stops[0]!.arriveSocPct);
+    expect(stops[0]!.chargeKwh).toBe(0);
+    expect(warnings).toEqual([]);
+  });
+
   it('preserves excess battery energy between closely spaced early stops', () => {
     const bundle = handBuiltBundle([50, 100], 200);
     const validation = validateAiChoice(bundle, { stationIds: [idAt(50), idAt(100)] }, {}, HARIER_EV_75);
