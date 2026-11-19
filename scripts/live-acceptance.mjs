@@ -45,11 +45,12 @@ const SERVER_RUN_BUDGET_MS = 4 * 60_000;
 const DEFAULT_FETCH_WALL_MS = SERVER_RUN_BUDGET_MS + 30_000;
 
 /**
- * The runner's fetch wall: the server's EFFECTIVE planning deadline plus a
- * slack, when an explicit per-launch override (INDEV_PLAN_DEADLINE_MS) is
- * present in the environment; else the default. INERT unless a coordinated
- * acceptance explicitly supplies the override - the default wall is exactly
- * what it was before.
+ * The runner's fetch wall: the server's EFFECTIVE planning deadline (from
+ * /api/health's sanitized runBudget - the authoritative effective config,
+ * parent env AND dotenv merged on the server side) plus a 30s slack, so
+ * the server's honest not_determined body lands before any local timeout.
+ * Absent/malformed there, the DEFAULT_FETCH_WALL_MS fallback applies -
+ * exactly the wall the runner used before the derivation existed.
  */
 export function fetchWallMs(planDeadlineMs, defaultMs = DEFAULT_FETCH_WALL_MS) {
   if (Number.isFinite(planDeadlineMs) && planDeadlineMs > 0) {
@@ -116,10 +117,6 @@ class RunnerFail extends Error {
 async function main() {
   const MOCK = process.argv.includes('--mock');
   const PORT = Number(process.env.LIVE_PORT || (MOCK ? 8798 : 8799));
-  // The fetch wall adapts ONLY when the explicit per-launch override is
-  // present (a coordinated acceptance with a larger wall); otherwise the
-  // default wall applies, exactly as before.
-  const WALL_MS = fetchWallMs(Number(process.env.INDEV_PLAN_DEADLINE_MS));
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const runDir = join(ROOT, `.tmp-live-run-${stamp}`);
@@ -219,8 +216,11 @@ async function main() {
     }
   }
 
-  /** ONE request; explicit http status + wall time; no retries ever. */
-  async function runOnce() {
+  /** ONE request; explicit http status + wall time; no retries ever. The
+   *  wall is DERIVED from the server's effective budget (see below) - the
+   *  runner's parent env can diverge from the server's dotenv-merged
+   *  config, so the server's OWN sanitized health budget is authoritative. */
+  async function runOnce(wallMs) {
     const started = Date.now();
     const body = JSON.stringify({
       origin: { label: 'Delhi', lat: 28.6139, lon: 77.209 },
@@ -231,7 +231,7 @@ async function main() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body,
-      signal: AbortSignal.timeout(WALL_MS),
+      signal: AbortSignal.timeout(wallMs),
     });
     const text = await res.text();
     return { httpStatus: res.status, ok: res.ok, text, ms: Date.now() - started };
@@ -259,6 +259,11 @@ async function main() {
 
   let outcome;
   let health = null;
+  // The wall actually used for the plan request - derived from the
+  // server's reported effective budget after the health gate (see below)
+  // and recorded into meta.json for auditability. Falls back to the
+  // default wall when the health budget is absent.
+  let wallMsUsed = fetchWallMs(undefined);
   try {
     // wait for health (bounded)
     const deadline = Date.now() + 30_000;
@@ -282,7 +287,18 @@ async function main() {
       throw new RunnerFail('mode-mismatch', `server mock=${health.mock}, runner expected mock=${MOCK}`);
     }
 
-    const result = await runOnce();
+    // DERIVED FROM THE SERVER'S EFFECTIVE BUDGET (config-review repair):
+    // /api/health reports the sanitized runBudget the server was actually
+    // launched with (parent env AND dotenv merged) - while the runner's
+    // own parent env can diverge from the server's dotenv config. The
+    // request wall therefore comes from the server's OWN report; absent
+    // or malformed there, fetchWallMs falls back to the previous default.
+    wallMsUsed = fetchWallMs(health?.runBudget?.deadlineMs);
+    console.log(
+      `[live-run] fetch wall: ${wallMsUsed}ms (derived from the server's effective budget)`,
+    );
+
+    const result = await runOnce(wallMsUsed);
     writeFileSync(planPath, result.text || '(empty response body)');
 
     // SOURCE GATE: the plan's provenance must match the mode
@@ -338,7 +354,7 @@ async function main() {
       {
         runDir: runDir,
         mode: MOCK ? 'mock' : 'live',
-        fetchWallMs: WALL_MS,
+        fetchWallMs: wallMsUsed,
         health,
         ...outcome,
         files: { plan: 'plan.json', serverLog: 'server.log', serverErr: 'server-stderr.log' },

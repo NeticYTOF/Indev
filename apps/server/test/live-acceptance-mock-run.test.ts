@@ -97,12 +97,21 @@ describe('live acceptance runner (mock integration, fail-closed by construction)
         mode: string;
         outcome: string;
         sourceMatch: boolean;
-        health?: { mock: boolean };
+        fetchWallMs?: number;
+        health?: { mock: boolean; runBudget?: { deadlineMs?: number } };
       };
       expect(meta.mode).toBe('mock');
       expect(meta.outcome).toBe('plan-ok');
       expect(meta.sourceMatch).toBe(true);
       expect(meta.health?.mock).toBe(true);
+      // WALL DERIVATION (config-review repair, spawned-process regression):
+      // the request wall comes from the server's OWN reported effective
+      // budget - NOT the runner's parent env, which can diverge from the
+      // server's dotenv-merged config. Env-independent contract:
+      // wall == server-reported deadline + 30s slack.
+      expect(meta.health?.runBudget).toBeDefined();
+      expect(meta.health?.runBudget?.deadlineMs).toBeGreaterThan(0);
+      expect(meta.fetchWallMs).toBe((meta.health?.runBudget?.deadlineMs ?? 0) + 30_000);
       const metaJson = JSON.stringify(meta);
       expect(metaJson).not.toContain('STATIQ_API_TOKEN');
       expect(metaJson).not.toContain('AI_API_KEY');
