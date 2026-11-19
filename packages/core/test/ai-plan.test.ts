@@ -110,6 +110,28 @@ const stations: StationSpec[] = Array.from({ length: 14 }, (_, i) => ({
 }));
 
 describe('validateAiChoice', () => {
+  it('rejects an energy-reachable final leg that exceeds the 300 km hard gap', () => {
+    const bundle = handBuiltBundle([300], 650);
+    const v = validateAiChoice(bundle, { stationIds: [idAt(300)] }, {}, HARIER_EV_75);
+    expect(v.ok).toBe(false);
+    if (v.ok) return;
+    expect(v.reason).toContain('safe running range');
+  });
+
+  it('rejects an intermediate hop a full battery cannot reach with reserve', () => {
+    const bundle = handBuiltBundle([50, 250], 300);
+    const vehicle = { ...HARIER_EV_75, whPerKm: 500 };
+    const v = validateAiChoice(bundle, { stationIds: [idAt(50), idAt(250)] }, {}, vehicle);
+    expect(v.ok).toBe(false);
+    if (v.ok) return;
+    expect(v.reason).toContain('reserve');
+  });
+
+  it('keeps a valid near-boundary final leg eligible', () => {
+    const bundle = handBuiltBundle([50], 350);
+    expect(validateAiChoice(bundle, { stationIds: [idAt(50)] }, {}, HARIER_EV_75).ok).toBe(true);
+  });
+
   it('accepts the AI choosing the same stops as the base plan', async () => {
     const bundle = await planTripDetailed(
       { router: fakeRouter(700), statiq: fakeStatiq(stations) },
