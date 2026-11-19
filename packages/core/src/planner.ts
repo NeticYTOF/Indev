@@ -808,6 +808,11 @@ export function computeTotals(
   const price = stops.length === 0 || stops.some((s) => s.estPriceInr == null)
     ? null
     : stops.reduce((s, x) => s + (x.estPriceInr ?? 0), 0);
+  // Each off-route stop requires leaving and rejoining the base route.
+  // Match the proportional travel-time model already used by stop ETAs;
+  // otherwise the trip total silently omits driving that its legs include.
+  const detourKm = 2 * stops.reduce((sum, stop) => sum + stop.detourKm, 0);
+  const driveMin = route.durationMin + legTimeMin(detourKm, route);
   const last = stops.at(-1);
   const finalLegKm = last ? totalKm - last.chainageKm + last.detourKm : totalKm;
   const finalSoc = socAfterDriving(
@@ -817,9 +822,9 @@ export function computeTotals(
   );
   return {
     distanceKm: totalKm,
-    driveTimeMin: Math.round(route.durationMin),
+    driveTimeMin: Math.round(driveMin),
     chargeTimeMin: Math.round(chargeMin),
-    totalTimeMin: Math.round(route.durationMin + chargeMin),
+    totalTimeMin: Math.round(driveMin + chargeMin),
     chargeKwh: round1(kwh),
     estPriceInr: price,
     finalSocPct: Math.round(finalSoc),
