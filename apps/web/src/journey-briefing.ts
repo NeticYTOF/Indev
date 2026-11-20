@@ -281,6 +281,12 @@ function kilometres(value: number | null): string {
   return value == null ? 'Unknown' : `${Math.round(value)} km`;
 }
 
+function arrivalOffset(value: number | null): string {
+  return value == null
+    ? 'Arrival time not stored for this trip'
+    : `Arrive +${formatDuration(value)} from departure`;
+}
+
 function soc(value: number | null): string {
   return value == null ? 'Unknown' : `${Math.round(value)}%`;
 }
@@ -328,7 +334,7 @@ export function renderJourneyBriefingMarkup(plan: JourneyBriefingSource): string
     return `<li class="journey-leg" data-leg-kind="${leg.kind}">` +
       `<span class="journey-leg-place">${html(leg.fromLabel)} <span aria-hidden="true">→</span> ${html(leg.toLabel)}</span>` +
       `<span class="journey-leg-distance">${kilometres(leg.distanceKm)}</span>` +
-      `<span class="journey-leg-eta">Arrive +${minutes(leg.etaAtArrivalMin)} from departure</span>` +
+      `<span class="journey-leg-eta">${arrivalOffset(leg.etaAtArrivalMin)}</span>` +
       `<span class="hint">${basis}</span></li>`;
   }).join('');
 

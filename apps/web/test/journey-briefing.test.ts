@@ -167,6 +167,8 @@ describe('journey briefing', () => {
     const markup = renderJourneyBriefingMarkup(journeySourceFromSavedTrip(saved));
     expect(markup).toContain('42.7 kWh');
     expect(markup).toContain('Station 42');
+    expect(markup).toContain('Arrival time not stored for this trip');
+    expect(markup).not.toContain('Arrive +Unknown');
     expect(markup).not.toContain('No charging stops are needed');
   });
 
