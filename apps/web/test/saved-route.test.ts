@@ -79,6 +79,7 @@ describe('return trip composer adapter', () => {
     expect(draft.destination).toEqual(source.origin);
     expect(draft.vehicle).toEqual(buildSavedRouteDraft(source).vehicle);
     expect(draft.reviewNotes[0]).toBe(RETURN_ROUTE_REVIEW_NOTE);
+    expect(draft.reviewTitle).toBe('New return-direction plan — review before planning');
     expect(draft.reviewNotes.join(' ')).toContain('Start charge, charging reserve');
     expect(savedRouteDraftReady(draft)).toBe(true);
     expect(JSON.stringify(source)).toBe(before);

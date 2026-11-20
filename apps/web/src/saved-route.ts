@@ -30,6 +30,8 @@ export interface SavedRouteDraft {
   vehicle: SavedRouteVehicleDraft;
   /** Facts missing or malformed in storage; the user must review these. */
   reviewNotes: string[];
+  /** Optional explicit heading for a distinct manual workflow. */
+  reviewTitle?: string;
 }
 
 export const RETURN_ROUTE_REVIEW_NOTE =
@@ -122,6 +124,7 @@ export function buildReturnRouteDraft(trip: SavedTrip): SavedRouteDraft {
     destination: { ...forward.origin },
     vehicle: { ...forward.vehicle },
     reviewNotes: [RETURN_ROUTE_REVIEW_NOTE, ...forward.reviewNotes],
+    reviewTitle: 'New return-direction plan — review before planning',
   };
 }
 

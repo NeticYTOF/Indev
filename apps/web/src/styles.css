@@ -1930,12 +1930,20 @@ body {
   gap: 8px;
 }
 
+/* Drawer controls stack by row: a narrow auto column otherwise clips the
+   selected sort label and its native arrow. */
 .trip-list-controls {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 6px 8px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--line);
+}
+.trip-list-controls > * {
+  min-width: 0;
+}
+.trip-list-controls [data-trip-search-clear] {
+  justify-self: end;
 }
 
 .trip-search-label,

@@ -53,6 +53,16 @@ test('saved trips search, sort and clear preserve original record identity', asy
   expect(geometry.actions).toBeLessThanOrEqual(geometry.row);
   const pageOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(pageOverflow).toBeLessThanOrEqual(1);
+  const sortBox = await page.locator('[data-trip-sort]').evaluate((select) => {
+    const box = select.getBoundingClientRect();
+    return { width: box.width, parent: select.parentElement?.getBoundingClientRect().width ?? 0, scroll: select.scrollWidth, client: select.clientWidth };
+  });
+  expect(sortBox.width).toBeGreaterThan(sortBox.parent * 0.7);
+  expect(sortBox.scroll).toBeLessThanOrEqual(sortBox.client + 1);
+  await page.screenshot({ path: info.outputPath('saved-trip-controls-desktop.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: info.outputPath('saved-trip-controls-mobile.png') });
+  await page.setViewportSize({ width: 1280, height: 800 });
 
   await page.locator('[data-trip-search]').fill('goa');
   await expect(names).toHaveText(['Beta']);

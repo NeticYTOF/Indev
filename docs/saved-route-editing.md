@@ -37,3 +37,17 @@ Planning is always a new manual action using the existing **Plan route** or
 **Plan with AI** button. Saving a resulting plan is likewise the existing
 explicit **save** action and creates/stores a plan through the normal save
 path; nothing is written merely by editing a saved trip.
+
+The drawer's **Return trip** action and the saved summary's **Plan return trip**
+action build a separate draft with only the saved origin and destination
+swapped, plus the same known vehicle facts. Saved stops, geometry, totals and
+previous results are not reversed or reused, and the stored trip is unchanged.
+The review heading and first note explicitly identify a new return-direction
+plan that requires a manual **Plan route**; the ordinary not-stored settings
+notes remain visible. Invalid endpoint coordinates are refused by the same
+readiness guard as Edit.
+
+After either guard passes, Edit and Return clear the previous map route, stop
+markers and results before loading the new composer draft; a busy or invalid
+draft leaves the current map and results untouched. No plan, geocode, station,
+AI or save request starts from either action.

@@ -15,7 +15,7 @@ import {
   renderJourneyBriefingMarkup,
 } from './journey-briefing.js';
 import { toast } from './toast.js';
-import { buildSavedRouteDraft } from './saved-route.js';
+import { buildReturnRouteDraft, buildSavedRouteDraft } from './saved-route.js';
 import type { SavedRouteDraft } from './saved-route.js';
 import { renderStationEvidencePanel, wireStationEvidence } from './station-evidence-panel.js';
 import { safeStationId } from './station-evidence.js';
@@ -383,6 +383,7 @@ function renderTripRow(
       <div class="trip-actions">
         <button type="button" class="btn btn-compact btn-ghost" data-compare-toggle data-compare-index="${index}" aria-pressed="${selected}">${selected ? 'Remove from comparison' : 'Select to compare'}</button>
         <button type="button" class="btn btn-compact btn-ghost" data-open>Open</button>
+        <button type="button" class="btn btn-compact btn-ghost" data-return title="Load swapped endpoints as a new return-direction plan">Return trip</button>
         <button type="button" class="btn btn-compact btn-ghost" data-edit>Edit route</button>
         <button type="button" class="btn btn-compact btn-danger-ghost" data-delete>Delete</button>
       </div>
@@ -396,6 +397,15 @@ function renderTripRow(
     drawer.classList.add('hidden'); // hide directly: focus lands on the
     // trip summary below, not on the drawer's owner control
     openSavedTrip(trip, map, loadSavedRoute);
+  });
+
+  row.querySelector('[data-return]')?.addEventListener('click', () => {
+    clearTripComparisonView();
+    // Only the swapped endpoints and known vehicle facts enter the composer.
+    // No reverse geometry, stops, totals, saved results or network call.
+    if (!loadSavedRoute(buildReturnRouteDraft(trip))) return;
+    hideTripsDrawer(drawer);
+    toast('New return-direction plan loaded — review, then plan manually.');
   });
 
   row.querySelector('[data-edit]')?.addEventListener('click', () => {
@@ -532,6 +542,7 @@ function renderSavedSummary(
       <div class="strip-cell"><span class="strip-num">${escapeHtml(formatDuration(safeNumber(totals.chargeTimeMin)))}</span><span class="strip-label">Charging time</span></div>
     </div>
     <div class="plan-actions saved-briefing-actions">
+      <button type="button" class="btn btn-ghost" data-return-saved>Plan return trip</button>
       <button type="button" class="btn btn-ghost" data-edit-saved>Edit route</button>
       <button type="button" class="btn btn-ghost" data-itinerary-export>Journey itinerary (HTML)</button>
       <button type="button" class="btn btn-ghost" data-print>Print itinerary</button>
@@ -570,6 +581,12 @@ function renderSavedSummary(
         .join('')}
     </div>
   `;
+
+  results.querySelector('[data-return-saved]')?.addEventListener('click', () => {
+    if (loadSavedRoute(buildReturnRouteDraft(trip))) {
+      toast('New return-direction plan loaded — review, then plan manually.');
+    }
+  });
 
   results.querySelector('[data-edit-saved]')?.addEventListener('click', () => {
     // The summary is replaced by the composer draft; storage is untouched.

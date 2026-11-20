@@ -341,14 +341,17 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
       return false;
     }
 
-    // Clear the old saved summary; it must never appear to describe a new plan.
+    // Clear the old drawing and summary only after both refusal guards pass.
+    // A busy or invalid draft must leave the current map and results intact.
+    clearTrip(map);
     root.querySelector('.plan-results')?.remove();
     originField.setSavedPlace(draft.origin);
     destField.setSavedPlace(draft.destination);
     hideError(errorBox);
 
     savedReview.replaceChildren();
-    const title = el('<p class="review-title">Editing saved route — review before planning</p>');
+    const title = el('<p class="review-title"></p>');
+    title.textContent = draft.reviewTitle ?? 'Editing saved route — review before planning';
     const intro = el('<p>Origin, destination and known vehicle facts were copied from the saved trip. No saved record changes until you explicitly save a new plan.</p>');
     const list = el('<ul></ul>');
     for (const note of draft.reviewNotes) {
