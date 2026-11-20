@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 
 // The API proxy target is configurable so isolated verification stacks can
 // point Vite at their own server port (see scripts/ui-verify.mjs).
-const apiTarget = process.env.API_PROXY_TARGET ?? 'http://localhost:8787';
+const apiTarget = process.env.API_PROXY_TARGET ?? 'http://127.0.0.1:8787';
 
 export default defineConfig({
   server: {
