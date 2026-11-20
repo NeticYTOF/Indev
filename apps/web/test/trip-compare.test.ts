@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import {
   buildTripComparison,
@@ -142,6 +143,20 @@ describe('saved trip comparison model', () => {
     expect(html).toContain('No automatic best route.');
     expect(html).toContain('Vehicle as stored');
     expect(html).not.toContain('gradient');
+  });
+
+  it('prints two route cards with a full-width differences block in both app and export', async () => {
+    const appCss = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+    const exportHtml = buildTripComparisonHtml(buildTripComparison([trip(), trip({ name: 'Alternative' })]));
+    for (const css of [appCss, exportHtml]) {
+      expect(css).toMatch(/repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+      expect(css).toMatch(/compare-difference\{grid-area:2\/1\/3\/3|\.compare-difference \{ grid-area: 2 \/ 1 \/ 3 \/ 3; \}/);
+      expect(css).toMatch(/compare-toolbar h2\{display:block!important|body\.comparing-trips \.compare-toolbar h2 \{\s*display: block !important/);
+      expect(css).toMatch(/table-layout:fixed|table-layout: fixed/);
+      expect(css).toMatch(/overflow-wrap:anywhere|overflow-wrap: anywhere/);
+      expect(css).not.toMatch(/\.compare-card,\s*\.compare-difference[^}]*break-inside:\s*avoid/);
+      expect(css).not.toMatch(/body\.comparing-trips \.compare-card,\s*body\.comparing-trips \.compare-difference[^}]*break-inside:\s*avoid/);
+    }
   });
 
   it('refuses a comparison without exactly two trips', () => {
