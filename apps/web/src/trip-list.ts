@@ -5,6 +5,13 @@
 import type { SavedTrip } from '@indeev/core';
 
 export type TripListSort = 'newest' | 'oldest' | 'name';
+export type TripSourceFilter = 'all' | 'live' | 'synthetic' | 'unknown';
+export type TripStatusFilter = 'all' | 'ok' | 'degraded' | 'unknown';
+
+export interface TripListFilters {
+  readonly source?: TripSourceFilter;
+  readonly status?: TripStatusFilter;
+}
 
 export interface TripListEntry {
   readonly trip: SavedTrip;
@@ -12,11 +19,20 @@ export interface TripListEntry {
   readonly sourceIndex: number;
 }
 
+type KnownSource = Exclude<TripSourceFilter, 'all' | 'unknown'>;
+type KnownStatus = Exclude<TripStatusFilter, 'all' | 'unknown'>;
+
 interface RankedTrip extends TripListEntry {
   readonly name: string;
   readonly origin: string;
   readonly destination: string;
   readonly createdAtMs: number | null;
+  readonly source: KnownSource | 'unknown';
+  readonly status: KnownStatus | 'unknown';
+}
+
+function exactClass<T extends string>(value: unknown, known: readonly T[]): T | 'unknown' {
+  return typeof value === 'string' && known.includes(value as T) ? value as T : 'unknown';
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -45,6 +61,8 @@ function ranked(trips: readonly SavedTrip[]): RankedTrip[] {
       origin: text(record(raw.origin)?.label),
       destination: text(record(raw.destination)?.label),
       createdAtMs: createdAtMs(raw.createdAt),
+      source: exactClass(raw.source, ['live', 'synthetic'] as const),
+      status: exactClass(raw.status, ['ok', 'degraded'] as const),
     };
   });
 }
@@ -63,13 +81,19 @@ export function filterAndSortTrips(
   trips: readonly SavedTrip[],
   query: string,
   sort: TripListSort,
+  filters: TripListFilters = {},
 ): TripListEntry[] {
   const needle = query.trim().toLocaleLowerCase();
+  const source = filters.source ?? 'all';
+  const status = filters.status ?? 'all';
   const entries = ranked(trips);
-  const matching = needle.length === 0
-    ? entries
-    : entries.filter((entry) =>
-      `${entry.name}\n${entry.origin}\n${entry.destination}`.toLocaleLowerCase().includes(needle));
+  const matching = entries.filter((entry) => {
+    const textMatch = needle.length === 0 ||
+      `${entry.name}\n${entry.origin}\n${entry.destination}`.toLocaleLowerCase().includes(needle);
+    return textMatch &&
+      (source === 'all' || entry.source === source) &&
+      (status === 'all' || entry.status === status);
+  });
   const sorted = [...matching];
   sorted.sort((a, b) => {
     if (sort === 'name') {

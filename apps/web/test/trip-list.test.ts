@@ -42,6 +42,32 @@ describe('saved trip local list', () => {
     expect(filterAndSortTrips(trips, '', 'name').map((entry) => entry.sourceIndex)).toEqual([1, 2, 0]);
   });
 
+  it('cross-filters exact source and status while preserving original indices', () => {
+    const liveOk = fixture('Live OK', '2026-01-04T00:00:00Z', 'Delhi', 'Goa');
+    const liveDegraded = { ...fixture('Live degraded', '2026-01-03T00:00:00Z', 'Pune', 'Goa'), status: 'degraded' } as SavedTrip;
+    const syntheticOk = { ...fixture('Synthetic OK', '2026-01-02T00:00:00Z', 'Chennai', 'Mumbai'), source: 'synthetic' } as SavedTrip;
+    const syntheticDegraded = { ...fixture('Synthetic degraded', '2026-01-01T00:00:00Z', 'Agra', 'Mumbai'), source: 'synthetic', status: 'degraded' } as SavedTrip;
+    const trips = [liveOk, liveDegraded, syntheticOk, syntheticDegraded];
+    const before = JSON.stringify(trips);
+    expect(filterAndSortTrips(trips, '', 'newest', { source: 'live', status: 'ok' }).map((e) => e.sourceIndex)).toEqual([0]);
+    expect(filterAndSortTrips(trips, '', 'name', { source: 'synthetic', status: 'degraded' }).map((e) => e.sourceIndex)).toEqual([3]);
+    expect(filterAndSortTrips(trips, 'goa', 'name', { source: 'live', status: 'degraded' }).map((e) => e.sourceIndex)).toEqual([1]);
+    expect(filterAndSortTrips(trips, '', 'newest').map((e) => e.sourceIndex)).toEqual([0, 1, 2, 3]);
+    expect(JSON.stringify(trips)).toBe(before);
+  });
+
+  it('classifies null, missing and malformed source/status as Unknown only', () => {
+    const noSource = { ...fixture('No source', '2026-01-04T00:00:00Z', 'A', 'B'), source: null } as unknown as SavedTrip;
+    const badStatus = { ...fixture('Bad status', '2026-01-03T00:00:00Z', 'C', 'D'), status: 'fresh' } as unknown as SavedTrip;
+    const missing = { ...fixture('Missing', '2026-01-02T00:00:00Z', 'E', 'F'), source: undefined, status: undefined } as unknown as SavedTrip;
+    const trips = [noSource, badStatus, missing];
+    expect(filterAndSortTrips(trips, '', 'newest', { source: 'unknown' }).map((e) => e.sourceIndex)).toEqual([0, 2]);
+    expect(filterAndSortTrips(trips, '', 'newest', { status: 'unknown' }).map((e) => e.sourceIndex)).toEqual([1, 2]);
+    expect(filterAndSortTrips(trips, '', 'newest', { source: 'unknown', status: 'unknown' }).map((e) => e.sourceIndex)).toEqual([2]);
+    expect(filterAndSortTrips(trips, '', 'newest', { source: 'live' }).map((e) => e.sourceIndex)).toEqual([]);
+    expect(filterAndSortTrips(trips, '', 'newest', { status: 'ok' }).map((e) => e.sourceIndex)).toEqual([]);
+  });
+
   it('places malformed dates last in either date direction and keeps ties in load order', () => {
     const trips = [
       fixture('No date', 'not-a-date', 'A', 'B'),
