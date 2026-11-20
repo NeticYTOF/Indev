@@ -53,3 +53,7 @@ describe('safeHttpUrl: scheme allowlist for upstream station links', () => {
     expect(safeHttpUrl('n')).toBeNull();
   });
 });
+
+it('refuses nonstring station URLs without coercion or throwing', () => {
+  for (const value of [42, true, {}, [], ['https://example.com/']]) expect(safeHttpUrl(value)).toBeNull();
+});
