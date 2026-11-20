@@ -787,3 +787,30 @@ it('returns explicit locked HTTP failure without modifying a busy store', async 
   expect(await readFile(path, 'utf8')).toBe('[]');
   expect(await fs.readdir(path + '.lock')).toEqual([]);
 }, 10_000);
+
+it.each([
+  ['vehicle', 'realWorldRangeKm', '<span data-range-proof>local marker</span>'],
+  ['vehicle', 'claimedRangeKm', '627'],
+  ['vehicle', 'batteryKwh', 0],
+  ['vehicle', 'label', 42],
+  ['vehicle', 'catalogId', {}],
+  ['totals', 'totalTimeMin', '464'],
+  ['totals', 'chargeTimeMin', -1],
+  ['totals', 'finalSocPct', 101],
+  ['totals', 'estPriceInr', 'unknown'],
+  ['plan', 'createdAt', 'not-a-date'],
+  ['plan', 'status', 'unknown'],
+  ['plan', 'routeDistanceKm', -1],
+  ['stop', 'chargeKwh', '12'],
+  ['stop', 'pricePerKwh', {}],
+  ['stop', 'arriveSocPct', -1],
+] as const)('rejects malformed new saved metadata %s.%s without persisting', async (section, field, value) => {
+  const deps = await makeDeps({ mock: true }); const app = createApp(deps);
+  const planned = await app.request('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ origin: ORIGIN, destination: DEST }) });
+  const { plan } = await planned.json();
+  const target = section === 'plan' ? plan : section === 'stop' ? plan.stops[0] : plan[section];
+  target[field] = value;
+  const response = await app.request('/api/trips', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan }) });
+  expect(response.status).toBe(400); expect((await response.json()).code).toBe('bad_request');
+  expect(await deps.trips.list()).toEqual([]);
+});
