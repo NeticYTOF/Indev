@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { safeHttpUrl } from '../src/safe-url.js';
+import { safeHttpUrl, savedRouteGeometry } from '../src/safe-url.js';
 
 /**
  * Malicious-LOOKING fixture regressions for the station-url scheme guard
@@ -56,4 +56,26 @@ describe('safeHttpUrl: scheme allowlist for upstream station links', () => {
 
 it('refuses nonstring station URLs without coercion or throwing', () => {
   for (const value of [42, true, {}, [], ['https://example.com/']]) expect(safeHttpUrl(value)).toBeNull();
+});
+
+describe('savedRouteGeometry: exact [lat, lon][] contract', () => {
+  it('reverses every valid tuple to MapLibre [lon, lat] without changing vertices', () => {
+    expect(savedRouteGeometry([[28.6139, 77.209], [27, 76], [26.9124, 75.7873]])).toEqual([
+      [77.209, 28.6139], [76, 27], [75.7873, 26.9124],
+    ]);
+    expect(savedRouteGeometry([[0, 0]])).toEqual([[0, 0]]);
+  });
+
+  it('rejects the whole route for one invalid vertex and never fabricates a partial one', () => {
+    for (const value of [
+      [[28, 77], [91, 78], [26, 75]],
+      [[28, 77], [27, 181], [26, 75]],
+      [[28, 77], [Number.NaN, 76], [26, 75]],
+      [[28, 77], ['27', 76], [26, 75]],
+      [[28, 77], [27, 76, 1]],
+      [[28, 77], { lat: 27, lon: 76 }, [26, 75]],
+      [],
+      null,
+    ]) expect(savedRouteGeometry(value)).toBeNull();
+  });
 });

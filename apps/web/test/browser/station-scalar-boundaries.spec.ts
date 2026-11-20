@@ -99,6 +99,34 @@ test('invalid saved geometry is omitted whole and never trimmed into a route', a
   await expect(page.locator('[data-journey-briefing]')).toBeVisible();
 });
 
+test('valid saved [lat, lon] tuple geometry draws the route while a missing stop list stays Unknown', async ({ page }) => {
+  await blockOutside(page);
+  await page.route('https://tiles.openfreemap.org/styles/dark', (route) => route.fulfill({
+    json: { version: 8, sources: {}, layers: [{ id: 'background', type: 'background' }] },
+  }));
+  const trip = {
+    id: 'tuple-geometry', name: 'Tuple geometry', createdAt: '2026-01-01T00:00:00.000Z',
+    source: 'live', status: 'ok',
+    origin: { label: 'Origin A', lat: 28, lon: 77 },
+    destination: { label: 'Destination B', lat: 26, lon: 75 },
+    geometry: [[28, 77], [27, 76], [26, 75]],
+    totals: {
+      distanceKm: 600, driveTimeMin: 400, chargeTimeMin: 0, totalTimeMin: 400,
+      chargeKwh: 0, estPriceInr: null, finalSocPct: 20,
+    },
+  };
+  await page.route('**/api/trips', (route) => route.fulfill({ json: { trips: [trip] } }));
+  await page.goto('/');
+  await page.locator('#trips-button').click();
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+  await expect(page.locator('.pin-origin')).toHaveCount(1);
+  await expect(page.locator('.pin-destination')).toHaveCount(1);
+  await expect(page.locator('.stop-marker')).toHaveCount(0);
+  await expect(page.locator('.plan-results')).toContainText('Stored stop list is Unknown');
+  await expect(page.locator('.plan-results')).not.toContainText('Charging stops 0');
+  await expect(page.locator('.plan-results')).not.toContainText('no map route was drawn');
+});
+
 test('stop-card component omits Directions for malformed coordinates and preserves valid links', async ({ page }, info) => {
   await blockOutside(page);
   const response = await page.request.post('/api/plan', { data: places }); const { plan } = await response.json();
