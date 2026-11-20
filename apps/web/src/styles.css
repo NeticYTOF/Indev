@@ -1187,6 +1187,13 @@ body {
   gap: 8px;
 }
 
+.maps-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
 /* --- journey briefing: whole-trip legs, battery profile, itinerary --- */
 
 .journey-briefing {
