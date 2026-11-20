@@ -174,9 +174,21 @@ export async function scanCorridor(
       if (!res || res.ok !== true || !Array.isArray(res.stations)) {
         throw new Error('Invalid marker response');
       }
+      let malformedMarker = false;
       for (const s of res.stations) {
+        if (!s || typeof s !== 'object' || !Number.isSafeInteger(s.stationId) || s.stationId <= 0 ||
+            typeof s.name !== 'string' ||
+            typeof s.lat !== 'number' || !Number.isFinite(s.lat) || Math.abs(s.lat) > 90 ||
+            typeof s.lon !== 'number' || !Number.isFinite(s.lon) || Math.abs(s.lon) > 180) {
+          // Keep consuming valid records on BOTH sides of a malformed one.
+          // Never allow bad coordinates to disappear as off-route evidence,
+          // or a malformed duplicate to poison the deduplication map.
+          malformedMarker = true;
+          continue;
+        }
         if (!seen.has(s.stationId)) seen.set(s.stationId, s);
       }
+      if (malformedMarker) throw new Error('Invalid station marker evidence');
       // Consuming a malformed marker can fail too. Count success only
       // after consumption, so each completed sample has one outcome.
       okSamples++;
