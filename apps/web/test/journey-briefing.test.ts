@@ -6,6 +6,7 @@ import {
   buildJourneyBriefingHtml,
   journeySourceFromSavedTrip,
   renderJourneyBriefingMarkup,
+  renderJourneyHandoffMarkup,
 } from '../src/journey-briefing.js';
 
 function station(id: number, name: string): TripPlan['stops'][number]['station'] {
@@ -276,6 +277,90 @@ describe('journey briefing', () => {
     expect(markup).toContain('Charging itinerary unavailable — the plan stop list is missing or malformed.');
     expect(markup).not.toContain('No charging stops are needed for this trip.');
     expect(markup).not.toContain('undefined');
+  });
+
+  it('puts visible route identity and exact ordered Maps links in a long-trip export', () => {
+    const hostile = '<img src=x onerror=proof>';
+    const stops = Array.from({ length: 14 }, (_, index) => ({
+      stationId: 100 + index,
+      name: `Charger ${index + 1}`,
+      lat: 27 - index * 0.01,
+      lon: 76 + index * 0.01,
+      chainageKm: (index + 1) * 40,
+      legKm: 40,
+      detourKm: 0,
+      arriveSocPct: 20,
+      leaveSocPct: 80,
+      chargeKwh: 40,
+      pricePerKwh: 20,
+      estPriceInr: 800,
+      chargeTimeMin: 40,
+    }));
+    const source = journeySourceFromSavedTrip({
+      id: 'long', name: 'Long trip', createdAt: '2026-01-01T00:00:00Z',
+      origin: { label: hostile, lat: 28.6, lon: 77.2 },
+      destination: { label: 'Safe destination', lat: 26.9, lon: 75.8 },
+      status: 'ok', source: 'live', routeDistanceKm: 600, routeDurationMin: 600,
+      geometry: [], vehicle: { label: 'EV', catalogId: null, batteryKwh: 75, claimedRangeKm: null, realWorldRangeKm: 300 },
+      totals: { distanceKm: 600, driveTimeMin: 560, totalTimeMin: 1120, chargeTimeMin: 560, chargeKwh: 560, estPriceInr: 11200, finalSocPct: 12 },
+      stations: stops,
+    } as unknown as SavedTrip);
+    const html = buildJourneyBriefingHtml(source);
+    expect(html).toContain('data-trip-route-identity');
+    expect(html).toContain('&lt;img src=x onerror=proof&gt; → Safe destination');
+    expect(html).not.toContain(hostile);
+    expect(html).toContain('Google Maps links require internet access');
+    expect(html).toContain('not live charger estimates');
+    expect((html.match(/data-maps-segment/g) ?? []).length).toBeGreaterThan(1);
+    expect((html.match(/data-stop-maps=/g) ?? []).length).toBe(14);
+
+    const flattened: string[] = [];
+    for (const match of html.matchAll(/data-maps-segment href="([^"]+)"/g)) {
+      const params = new URL(match[1]!.replace(/&amp;/g, '&')).searchParams;
+      const waypoints = (params.get('waypoints') ?? '').split('|').filter(Boolean);
+      expect(waypoints.length).toBeLessThanOrEqual(3);
+      const points = [params.get('origin')!, ...waypoints, params.get('destination')!];
+      if (flattened.length > 0 && flattened.at(-1) === points[0]) flattened.push(...points.slice(1));
+      else flattened.push(...points);
+    }
+    expect(flattened).toEqual(['28.6,77.2', ...stops.map((stop) => `${stop.lat},${stop.lon}`), '26.9,75.8']);
+  });
+
+  it('fails whole-route Maps closed while keeping valid charger directions', () => {
+    const good = plan({
+      origin: { label: 'A', lat: 20, lon: 70 },
+      destination: { label: 'B', lat: 21, lon: 71 },
+      stops: [
+        { station: station(1, 'Good stop'), legKm: 10, detourKm: 0, chainageKm: 10, arriveSocPct: 30, leaveSocPct: 80, chargeKwh: 40, pricePerKwh: 20, estPriceInr: 800, chargeTimeMin: 40 },
+        { station: { ...station(2, 'Bad stop'), lat: Number.NaN }, legKm: 10, detourKm: 0, chainageKm: 20, arriveSocPct: 30, leaveSocPct: 80, chargeKwh: 40, pricePerKwh: 20, estPriceInr: 800, chargeTimeMin: 40 },
+        { station: station(3, 'Another good stop'), legKm: 10, detourKm: 0, chainageKm: 30, arriveSocPct: 30, leaveSocPct: 80, chargeKwh: 40, pricePerKwh: 20, estPriceInr: 800, chargeTimeMin: 40 },
+      ],
+    });
+    const html = buildJourneyBriefingHtml(good);
+    expect(html).toContain('data-trip-maps-unavailable');
+    expect(html).not.toContain('data-maps-segment');
+    expect((html.match(/data-stop-maps=/g) ?? []).length).toBe(2);
+
+    for (const stops of [undefined, null, { bad: true }]) {
+      const malformed = renderJourneyHandoffMarkup({ ...good, stops: stops as never });
+      expect(malformed).toContain('stop list is missing or unreadable');
+    }
+    const empty = renderJourneyHandoffMarkup({ ...good, stops: [] });
+    expect(empty).toContain('data-trip-maps');
+    expect(empty).not.toContain('data-trip-maps-unavailable');
+    expect((empty.match(/data-maps-segment/g) ?? []).length).toBe(1);
+
+    const nullEntry = renderJourneyHandoffMarkup({ ...good, stops: [null, undefined] as never });
+    expect(nullEntry).toContain('data-trip-maps-unavailable');
+    expect(nullEntry).toContain('Per-charger Directions unavailable');
+  });
+
+  it('escapes hostile ampersands and quotes once in export route text', () => {
+    const hostile = { ...plan(), origin: { label: 'A & <b>\"B\"', lat: 1, lon: 2 }, destination: { label: 'C & D', lat: 3, lon: 4 }, stops: [] };
+    const html = buildJourneyBriefingHtml(hostile);
+    expect(html).toContain('A &amp; &lt;b&gt; &quot;B&quot; → C &amp; D');
+    expect(html).not.toContain('&amp;amp;');
+    expect(html).not.toContain('<b>');
   });
 
   it('shows unknown costs as unknown and handles no-stop routes', () => {
