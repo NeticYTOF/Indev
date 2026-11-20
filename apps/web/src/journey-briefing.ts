@@ -461,7 +461,7 @@ export function downloadJourneyBriefing(plan: JourneyBriefingSource): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
-  const name = `${plan.origin.label}-${plan.destination.label}`
+  const name = `${labelText(plan.origin?.label)}-${labelText(plan.destination?.label)}`
     .replace(/[^\w-]+/g, '-').replace(/-+/g, '-');
   anchor.download = `indeev-journey-${name.slice(0, 60).toLowerCase()}.html`;
   document.body.appendChild(anchor);
