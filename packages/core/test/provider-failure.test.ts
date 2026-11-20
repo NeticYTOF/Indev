@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   createProviderFailureCollector,
+  parseGatewayContractData,
+  parseGatewayContractReason,
   parseGatewayFailureCode,
   parseGatewayUpstreamStatus,
   transportCodeForCause,
@@ -286,5 +288,62 @@ describe('provider failure diagnostics', () => {
     expect(successSpoof.snapshot().failures[0]).toMatchObject({
       gatewayFailureCode: null, gatewayUpstreamStatus: null,
     });
+  });
+
+  it('parses contract diagnostic labels with exact allowlists only', () => {
+    const reasons = [
+      'envelope_invalid', 'meta_missing', 'meta_invalid',
+      'success_missing', 'success_false', 'success_invalid',
+    ];
+    const dataLabels = [
+      'data_missing', 'data_invalid', 'stations_missing',
+      'stations_invalid', 'stations_empty', 'stations_nonempty',
+    ];
+    for (const label of reasons) expect(parseGatewayContractReason(label)).toBe(label);
+    for (const label of dataLabels) expect(parseGatewayContractData(label)).toBe(label);
+    for (const bad of [' station_missing', 'STATIONS_MISSING', 'stations_missing\n', '', null, 7, 'x'.repeat(1000)]) {
+      expect(parseGatewayContractReason(bad)).toBeNull();
+      expect(parseGatewayContractData(bad)).toBeNull();
+    }
+  });
+
+  it('gates contract fields inside the collector to failed upstream_contract markers', () => {
+    const collector = createProviderFailureCollector({ now: () => ({ wallMs: 0, monotonicMs: 0 }) });
+    collector.record({
+      endpointClass: 'stations/markers', phase: 'scan', code: 'http_422', httpStatus: 422,
+      gatewayFailureCode: 'upstream_contract', gatewayUpstreamStatus: 200,
+      gatewayContractReason: 'success_false', gatewayContractData: 'stations_empty',
+    });
+    collector.record({
+      endpointClass: 'stations/markers', phase: 'scan', code: 'http_500', httpStatus: 500,
+      gatewayFailureCode: 'upstream_http',
+      gatewayContractReason: 'success_false', gatewayContractData: 'stations_empty',
+    });
+    collector.record({
+      endpointClass: 'stations/details', phase: 'details', code: 'http_422', httpStatus: 422,
+      gatewayFailureCode: 'upstream_contract',
+      gatewayContractReason: 'success_false', gatewayContractData: 'stations_empty',
+    });
+    const inherited = Object.create({
+      gatewayContractReason: 'success_false', gatewayContractData: 'stations_empty',
+    });
+    inherited.endpointClass = 'stations/markers';
+    inherited.phase = 'scan';
+    inherited.code = 'http_422';
+    inherited.httpStatus = 422;
+    inherited.gatewayFailureCode = 'upstream_contract';
+    collector.record(inherited);
+    Object.defineProperty(inherited, 'gatewayContractData', {
+      get() { throw new Error('must not affect diagnostics'); }, enumerable: true,
+    });
+    collector.record(inherited);
+
+    const records = collector.snapshot().failures;
+    expect(records[0]).toMatchObject({
+      gatewayFailureCode: 'upstream_contract', gatewayUpstreamStatus: 200,
+      gatewayContractReason: 'success_false', gatewayContractData: 'stations_empty',
+    });
+    expect(records.slice(1).every((record) =>
+      record.gatewayContractReason === null && record.gatewayContractData === null)).toBe(true);
   });
 });

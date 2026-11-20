@@ -488,4 +488,144 @@ describe('Statiq provider failure evidence', () => {
       code: 'http_400', gatewayFailureCode: null, gatewayUpstreamStatus: null,
     });
   });
+
+  it('reads contract labels only on failed upstream_contract marker responses', async () => {
+    const collector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    const contractHeaders = {
+      'x-evroute-failure-code': 'upstream_contract',
+      'x-evroute-upstream-status': '200',
+      'x-evroute-contract-reason': 'success_false',
+      'x-evroute-contract-data': 'stations_empty',
+    };
+    const contractClient = clientWith(
+      async () => response('bad', 422, contractHeaders),
+      collector,
+      { retries: 0, budget: new UpstreamBudget(2) },
+    );
+    await expect(contractClient.markers(0, 0)).rejects.toThrow();
+    expect(collector.snapshot().failures[0]).toMatchObject({
+      endpointClass: 'stations/markers', code: 'http_4xx_other', httpStatus: 422,
+      gatewayFailureCode: 'upstream_contract', gatewayUpstreamStatus: 200,
+      gatewayContractReason: 'success_false', gatewayContractData: 'stations_empty',
+    });
+
+    const otherCollector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    const otherClient = clientWith(
+      async () => response('bad', 500, {
+        'x-evroute-failure-code': 'upstream_http',
+        'x-evroute-upstream-status': '429',
+        'x-evroute-contract-reason': 'success_false',
+        'x-evroute-contract-data': 'stations_empty',
+      }),
+      otherCollector,
+      { retries: 0, budget: new UpstreamBudget(2) },
+    );
+    await expect(otherClient.markers(0, 0)).rejects.toThrow();
+    expect(otherCollector.snapshot().failures[0]).toMatchObject({
+      gatewayFailureCode: 'upstream_http', gatewayUpstreamStatus: 429,
+      gatewayContractReason: null, gatewayContractData: null,
+    });
+
+    const detailCollector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    const detailClient = clientWith(
+      async () => response('bad', 422, contractHeaders),
+      detailCollector,
+      { retries: 0, budget: new UpstreamBudget(2) },
+    );
+    await expect(detailClient.detailsWithMeta(1)).rejects.toThrow();
+    expect(detailCollector.snapshot().failures[0]).toMatchObject({
+      endpointClass: 'stations/details', gatewayFailureCode: null,
+      gatewayContractReason: null, gatewayContractData: null,
+    });
+  });
+
+  it('keeps concurrent contract headers isolated and neutralizes header faults', async () => {
+    const collector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    const client = clientWith(
+      async (_url, init) => {
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        if (body.latitude === 1) {
+          return response('bad', 422, {
+            'x-evroute-failure-code': 'upstream_contract',
+            'x-evroute-upstream-status': '200',
+            'x-evroute-contract-reason': 'success_false',
+            'x-evroute-contract-data': 'stations_empty',
+          });
+        }
+        if (body.latitude === 2) {
+          return response('bad', 422, {
+            'x-evroute-failure-code': 'upstream_contract',
+            'x-evroute-upstream-status': '200',
+            'x-evroute-contract-reason': ' STATIONS_EMPTY',
+            'x-evroute-contract-data': 'stations_nonempty',
+          });
+        }
+        return response('{"ok":true,"live":true,"retained":false,"source":"x","count":0,"stations":[]}', 200, contractHeaders);
+      },
+      collector,
+      { retries: 0, budget: new UpstreamBudget(6) },
+    );
+    // Success uses a distinct client with no collector so it cannot spoof a record.
+    const successCollector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    const successClient = clientWith(
+      async () => response('{"ok":true,"live":true,"retained":false,"source":"x","count":0,"stations":[]}', 200, {
+        'x-evroute-failure-code': 'upstream_contract',
+        'x-evroute-contract-reason': 'success_false',
+        'x-evroute-contract-data': 'stations_empty',
+      }),
+      successCollector,
+      { budget: new UpstreamBudget(2) },
+    );
+
+    await Promise.allSettled([
+      client.markers(1, 1, undefined, { endpointClass: 'stations/markers', phase: 'scan', sampleOrdinal: 1 }),
+      client.markers(2, 2, undefined, { endpointClass: 'stations/markers', phase: 'scan', sampleOrdinal: 2 }),
+      successClient.markers(3, 3),
+    ]);
+    const records = collector.snapshot().failures;
+    expect(records.find((r) => r.sampleOrdinal === 1)).toMatchObject({
+      gatewayContractReason: 'success_false', gatewayContractData: 'stations_empty',
+    });
+    expect(records.find((r) => r.sampleOrdinal === 2)).toMatchObject({
+      gatewayContractReason: null, gatewayContractData: 'stations_nonempty',
+    });
+    expect(successCollector.snapshot().failures).toHaveLength(0);
+
+    const hostileCollector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    const hostile = clientWith(
+      async () => ({
+        ok: false,
+        status: 422,
+        headers: {
+          get(name: string) {
+            if (name === 'x-evroute-contract-reason') throw new Error('reason trap');
+            if (name === 'x-evroute-contract-data') return 'stations_empty';
+            if (name === 'x-evroute-failure-code') return 'upstream_contract';
+            if (name === 'x-evroute-upstream-status') return '200';
+            return null;
+          },
+        },
+        text: async () => 'bad',
+      } as unknown as Response),
+      hostileCollector,
+      { retries: 0, budget: new UpstreamBudget(2) },
+    );
+    await expect(hostile.markers(0, 0)).rejects.toThrow();
+    expect(hostileCollector.snapshot().failures[0]).toMatchObject({
+      gatewayFailureCode: 'upstream_contract', gatewayUpstreamStatus: 200,
+      gatewayContractReason: null, gatewayContractData: 'stations_empty',
+    });
+  });
 });
