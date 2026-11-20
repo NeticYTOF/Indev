@@ -159,17 +159,23 @@ describe('saved trip comparison model', () => {
       expect(css).toMatch(/compare-difference\{grid-area:2\/1\/3\/3|\.compare-difference \{ grid-area: 2 \/ 1 \/ 3 \/ 3; \}/);
       expect(css).toMatch(/compare-toolbar h2\{display:block!important|body\.comparing-trips \.compare-toolbar h2 \{\s*display: block !important/);
       expect(css).toMatch(/table-layout:fixed;\s*width:100%;\s*font-size:12px|table-layout: fixed;\s*width: 100%;\s*font-size: 12px/);
-      const rules = cssRulesFor(css);
-      const tableCells = rules.find((rule) =>
-        rule.selector.includes('.compare-table thead th') && rule.selector.includes('.compare-delta'));
-      expect(tableCells?.selector).toContain('.compare-table th');
-      expect(tableCells?.selector).toContain('.compare-table td');
+      const printCss = css.slice(css.indexOf('@media print'));
+      const rules = cssRulesFor(printCss);
+      const headerCells = rules.find((rule) =>
+        rule.selector.includes('.compare-table th') &&
+        rule.selector.includes('.compare-table td') &&
+        rule.selector.includes('.compare-table thead th'));
+      expect(headerCells?.body).toMatch(/color:\s*#111/);
+      expect(headerCells?.body).toMatch(/white-space:\s*normal/);
+      const deltaRule = rules.find((rule) =>
+        rule.selector.includes('.compare-delta') && rule.body.includes('color'));
+      expect(deltaRule?.body).toMatch(/color:\s*#111/);
       const tableRule = rules.find((rule) =>
         (rule.selector === '.compare-table' || rule.selector.endsWith(' .compare-table')) &&
         rule.body.includes('table-layout'));
       expect(tableRule?.body).toMatch(/font-size:\s*12px/);
-      expect(tableCells?.body).toMatch(/color:\s*#111/);
-      expect(tableCells?.body).toMatch(/white-space:\s*normal/);
+      expect(printCss).toMatch(/caption[^}]*break-after:\s*avoid|thead[^}]*break-after:\s*avoid/);
+      expect(printCss).toMatch(/tbody tr:first-child[^}]*break-before:\s*avoid/);
       expect(css).not.toMatch(/\.compare-card,\s*\.compare-difference[^}]*break-inside:\s*avoid/);
       expect(css).not.toMatch(/body\.comparing-trips \.compare-card,\s*body\.comparing-trips \.compare-difference[^}]*break-inside:\s*avoid/);
     }
