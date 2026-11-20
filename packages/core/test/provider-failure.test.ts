@@ -260,8 +260,12 @@ describe('provider failure diagnostics', () => {
 
     const records = collector.snapshot().failures;
     expect(records[0]).toMatchObject({ gatewayFailureCode: 'upstream_http', gatewayUpstreamStatus: 429 });
-    expect(records.slice(1).every((record) =>
+    // Invalid numeric/string statuses keep the valid code with null status.
+    expect(records.slice(1, 8).every((record) =>
       record.gatewayFailureCode === 'upstream_http' && record.gatewayUpstreamStatus === null)).toBe(true);
+    // Inherited and accessor-only gateway fields are not own data.
+    expect(records.slice(8).every((record) =>
+      record.gatewayFailureCode === null && record.gatewayUpstreamStatus === null)).toBe(true);
 
     const detailsSpoof = createProviderFailureCollector({ now: () => ({ wallMs: 0, monotonicMs: 0 }) });
     detailsSpoof.record({

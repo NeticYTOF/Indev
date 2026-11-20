@@ -266,7 +266,7 @@ describe('Statiq provider failure evidence', () => {
     });
   });
 
-  it('rejects invalid gateway headers without changing retry, fatal, or private classification', async () => {
+  it('invalid gateway headers do not alter private 400-wait classification or its one-call stop', async () => {
     const collector = createProviderFailureCollector({
       now: () => ({ wallMs: 0, monotonicMs: 0 }),
     });
@@ -274,7 +274,31 @@ describe('Statiq provider failure evidence', () => {
     const client = clientWith(
       async () => {
         calls += 1;
-        return response('{"error":"wait"}', calls === 1 ? 400 : 500, {
+        return response('{"error":"wait"}', 400, {
+          'x-evroute-failure-code': ' UPSTREAM_HTTP',
+          'x-evroute-upstream-status': '+429',
+        });
+      },
+      collector,
+      { retries: 2, budget: new UpstreamBudget(8) },
+    );
+    await expect(client.markers(0, 0)).rejects.toThrow();
+    expect(calls).toBe(1);
+    expect(collector.snapshot().failures).toMatchObject([{
+      endpointClass: 'stations/markers', code: 'http_400', httpStatus: 400,
+      dispatchSeq: 1, gatewayFailureCode: null, gatewayUpstreamStatus: null,
+    }]);
+  });
+
+  it('invalid gateway headers do not alter normal 5xx retries', async () => {
+    const collector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    let calls = 0;
+    const client = clientWith(
+      async () => {
+        calls += 1;
+        return response('bad', 500, {
           'x-evroute-failure-code': ' UPSTREAM_HTTP',
           'x-evroute-upstream-status': '+429',
         });
