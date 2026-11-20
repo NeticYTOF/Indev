@@ -110,8 +110,15 @@ function auditOutcomeFor(err: unknown): string {
 }
 
 function safeUpstreamCalls(statiq: StatiqClient): number {
-  // Injected doubles legitimately omit this optional observability method.
-  return typeof statiq.upstreamCallsMade === 'function' ? statiq.upstreamCallsMade() : 0;
+  // Optional observability must never turn a valid request into a 500.
+  try {
+    const observer = (statiq as unknown as { upstreamCallsMade?: unknown }).upstreamCallsMade;
+    if (typeof observer !== 'function') return 0;
+    const value = (observer as () => unknown).call(statiq);
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function completeRun(

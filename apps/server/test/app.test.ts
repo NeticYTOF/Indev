@@ -145,6 +145,62 @@ describe('GET /api/vehicles', () => {
   });
 });
 
+describe('optional upstream counter neutrality', () => {
+  const planBody = JSON.stringify({ origin: ORIGIN, destination: DEST });
+
+  async function requestWith(statiq: unknown): Promise<{
+    status: number;
+    completions: Array<{ outcome: string; calls: number }>;
+  }> {
+    const completions: Array<{ outcome: string; calls: number }> = [];
+    const app = createApp(await makeDeps({
+      mock: false,
+      createStatiq: () => statiq as StatiqClient,
+      onRunComplete: (outcome, calls) => { completions.push({ outcome, calls }); },
+    }));
+    const res = await app.request('/api/plan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: planBody,
+    });
+    return { status: res.status, completions };
+  }
+
+  function fakeStatiq(): Record<string, unknown> {
+    return {
+      ...liveStatiqFake(),
+      attachRunBudget: () => {},
+    } as unknown as Record<string, unknown>;
+  }
+
+  it('accepts an injected double with no counter method and reports one completion', async () => {
+    const result = await requestWith(fakeStatiq());
+    expect(result.status).toBe(200);
+    expect(result.completions).toEqual([{ outcome: 'ok', calls: 0 }]);
+  });
+
+  it('neutralizes throwing, invalid, and throwing-getter counters', async () => {
+    const throwing = fakeStatiq();
+    throwing.upstreamCallsMade = () => { throw new Error('counter method'); };
+    expect(await requestWith(throwing)).toMatchObject({
+      status: 200, completions: [{ outcome: 'ok', calls: 0 }],
+    });
+
+    const invalid = fakeStatiq();
+    invalid.upstreamCallsMade = () => Number.NaN;
+    expect(await requestWith(invalid)).toMatchObject({
+      status: 200, completions: [{ outcome: 'ok', calls: 0 }],
+    });
+
+    const getter = fakeStatiq() as Record<string, unknown>;
+    Object.defineProperty(getter, 'upstreamCallsMade', {
+      get() { throw new Error('counter getter'); },
+      enumerable: true,
+    });
+    expect(await requestWith(getter)).toMatchObject({
+      status: 200, completions: [{ outcome: 'ok', calls: 0 }],
+    });
+  });
+});
+
 describe('completion failure evidence', () => {
   it('delivers completion evidence even if the observer throws', async () => {
     const observed: Array<{ outcome: string; calls: number; report?: unknown }> = [];
