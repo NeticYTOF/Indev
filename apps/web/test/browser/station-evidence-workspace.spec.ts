@@ -51,6 +51,35 @@ async function stationResponse(page: import('@playwright/test').Page, handler: (
   await page.route('**/api/stations/*', handler);
 }
 
+function savedEvidenceTrip(stationId: number, name: string) {
+  return {
+    id: `evidence-${stationId}`, name, createdAt: '2026-11-20T10:00:00Z',
+    source: 'live', status: 'ok', origin: ORIGIN, destination: DESTINATION,
+    routeDistanceKm: 285, routeDurationMin: 270,
+    geometry: [[ORIGIN.lat, ORIGIN.lon], [DESTINATION.lat, DESTINATION.lon]],
+    vehicle: {
+      label: 'Harrier', catalogId: null, batteryKwh: 75,
+      claimedRangeKm: 627, realWorldRangeKm: 300,
+    },
+    totals: {
+      distanceKm: 285, driveTimeMin: 270, chargeTimeMin: 42, totalTimeMin: 312,
+      chargeKwh: 42.7, estPriceInr: 854, finalSocPct: 12,
+    },
+    stations: [{
+      stationId, name, lat: 27.5, lon: 76.5,
+      chainageKm: 160, legKm: 162, detourKm: 2,
+      arriveSocPct: 20, leaveSocPct: 80, chargeKwh: 42.7,
+      pricePerKwh: 22.75, estPriceInr: 854, chargeTimeMin: 42,
+    }],
+  };
+}
+
+async function openSavedTripByIndex(page: import('@playwright/test').Page, index: number): Promise<void> {
+  await page.goto('/');
+  await page.locator('#trips-button').click();
+  await page.getByRole('button', { name: 'Open', exact: true }).nth(index).click();
+}
+
 test('fresh plan opens one detailed evidence workspace only after explicit fetch', async ({ page }, info) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await outsideAborted(page);
@@ -144,6 +173,82 @@ test('malformed and sparse station facts stay Unknown beside unchanged planned f
   await expect(page.locator('img[onerror=malformed]')).toHaveCount(0);
   await details.scrollIntoViewIfNeeded();
   await page.screenshot({ path: info.outputPath('station-evidence-malformed-mobile.png') });
+});
+
+test('reopening saved trips with same and different IDs uses each own evidence controller', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await outsideAborted(page);
+  let fetches = 0;
+  let completedFetches = 0;
+  const savedTrips = [
+    { ...savedEvidenceTrip(STATION_ID, 'Saved stop A') },
+    { ...savedEvidenceTrip(STATION_ID + 55, 'Saved stop B') },
+  ];
+  await page.route('**/api/trips', async (route) => {
+    if (route.request().method() !== 'GET') throw new Error('Unexpected trip write');
+    await route.fulfill({ json: { trips: savedTrips } });
+  });
+  await stationResponse(page, async (route) => {
+    fetches++;
+    const id = Number(new URL(route.request().url()).pathname.split('/').at(-1));
+    await route.fulfill({ json: { station: normalStation(id) } });
+    completedFetches++;
+  });
+
+  await openSavedTripByIndex(page, 0);
+  const first = page.locator('.saved-stop').first();
+  await expect(first.locator('[data-station-evidence]')).toHaveAttribute('data-station-id', String(STATION_ID));
+  await page.getByRole('button', { name: 'Fetch current details', exact: true }).first().click();
+  await expect.poll(() => completedFetches).toBe(1);
+  await expect(first.locator('[data-station-evidence-status]')).toContainText('Response received');
+  await expect(first.locator('[data-station-evidence-fetched] [data-station-evidence-result]'))
+    .toHaveAttribute('data-evidence-station-id', String(STATION_ID));
+
+  await page.locator('#trips-button').click();
+  await page.getByRole('button', { name: 'Open', exact: true }).nth(1).click();
+  const second = page.locator('.saved-stop').first();
+  await expect(second.locator('[data-station-evidence]')).toHaveAttribute('data-station-id', String(STATION_ID + 55));
+  await expect(second.locator('[data-station-evidence-status]')).toContainText('No current status requested');
+  await page.getByRole('button', { name: 'Fetch current details', exact: true }).first().click();
+  await expect.poll(() => completedFetches).toBe(2);
+  await expect(second.locator('[data-station-evidence-fetched] [data-station-evidence-result]'))
+    .toHaveAttribute('data-evidence-station-id', String(STATION_ID + 55));
+  await expect(first).toHaveCount(0);
+  expect(fetches).toBe(2);
+});
+
+test('switching from fresh plan to saved trip keeps separate evidence state', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await outsideAborted(page);
+  let fetches = 0;
+  let completedFetches = 0;
+  await stationResponse(page, async (route) => {
+    fetches++;
+    const id = Number(new URL(route.request().url()).pathname.split('/').at(-1));
+    await route.fulfill({ json: { station: normalStation(id) } });
+    completedFetches++;
+  });
+  await page.route('**/api/trips', async (route) => {
+    if (route.request().method() !== 'GET') throw new Error('Unexpected trip write');
+    await route.fulfill({ json: { trips: [savedEvidenceTrip(STATION_ID + 55, 'Saved after fresh')] } });
+  });
+  await planFresh(page);
+  const freshDetails = page.locator('.stop-card').first().locator('[data-station-evidence]');
+  await page.getByRole('button', { name: 'Revalidate', exact: true }).first().click();
+  await expect.poll(() => completedFetches).toBe(1);
+  await expect(freshDetails.locator('[data-station-evidence-status]')).toContainText('Response received');
+
+  await page.locator('#trips-button').click();
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+  await expect(page.locator('.stop-card')).toHaveCount(1);
+  const savedDetails = page.locator('.saved-stop').first().locator('[data-station-evidence]');
+  await expect(savedDetails.locator('[data-station-evidence-status]')).toContainText('No current status requested');
+  await expect(savedDetails.locator('[data-station-id]')).toHaveAttribute('data-station-id', String(STATION_ID + 55));
+  await page.getByRole('button', { name: 'Fetch current details', exact: true }).click();
+  await expect.poll(() => completedFetches).toBe(2);
+  await expect(savedDetails.locator('[data-station-evidence-fetched] [data-station-evidence-result]'))
+    .toHaveAttribute('data-evidence-station-id', String(STATION_ID + 55));
+  expect(fetches).toBe(2);
 });
 
 test('manual fetch leaves fresh plan facts unchanged and writes no trip', async ({ page }) => {
@@ -448,6 +553,33 @@ for (const replacement of ['same', 'different'] as const) {
     await expect.poll(() => completedFetches).toBe(1);
     await expect(newDetails.locator('[data-station-evidence-status]')).toContainText('No current status requested');
     await expect(newDetails.locator('[data-station-evidence-fetched] [data-station-evidence-result]')).toHaveCount(0);
+    expect(fetches).toBe(1);
+  });
+}
+
+for (const failure of ['network', 'http', 'non-json', 'malformed'] as const) {
+  test(`${failure} manual fetch is announced, retryable, and installs no result`, async ({ page }) => {
+    await outsideAborted(page);
+    let fetches = 0;
+    let settled = 0;
+    await stationResponse(page, async (route) => {
+      fetches++;
+      if (failure === 'network') await route.abort('failed');
+      else if (failure === 'http') await route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"temporarily unavailable"}' });
+      else if (failure === 'non-json') await route.fulfill({ status: 200, contentType: 'text/html', body: '<html>not json</html>' });
+      else await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ error: 'wrong shape' }) });
+      settled++;
+    });
+    await planFresh(page);
+    const details = page.locator('.stop-card').first().locator('[data-station-evidence]');
+    const button = page.getByRole('button', { name: 'Revalidate', exact: true }).first();
+    await button.click();
+    await expect.poll(() => settled).toBe(1);
+    await expect(details.locator('[data-station-evidence-status]')).toHaveAttribute('role', 'status');
+    await expect(details.locator('[data-station-evidence-status]')).toHaveAttribute('aria-live', 'polite');
+    await expect.poll(() => details.locator('[data-station-evidence-status]').innerText()).toContain('unavailable right now');
+    await expect(details.locator('[data-station-evidence-fetched] [data-station-evidence-result]')).toHaveCount(0);
+    await expect(button).toBeEnabled();
     expect(fetches).toBe(1);
   });
 }
