@@ -1,0 +1,98 @@
+import { describe, expect, it } from 'vitest';
+import type { TripPlan } from '@indeev/core';
+import {
+  buildJourneyBriefingData,
+  buildJourneyBriefingHtml,
+  renderJourneyBriefingMarkup,
+} from '../src/journey-briefing.js';
+
+function station(id: number, name: string): TripPlan['stops'][number]['station'] {
+  return {
+    stationId: id, name, brand: 'statiq', lat: 0, lon: 0,
+    address: null, city: null, hours: null, openText: null,
+    rating: null, reviewCount: null, reliability: null, fetchedAt: '2026-01-01T00:00:00.000Z',
+    amenities: [], stationUrl: null, navUrl: null, chargers: [],
+  };
+}
+
+function plan(overrides: Partial<TripPlan> = {}): TripPlan {
+  const base: TripPlan = {
+    id: 'fixture', createdAt: '2026-01-01T00:00:00.000Z',
+    origin: { label: 'Origin &<start>', lat: 0, lon: 0 },
+    destination: { label: 'Destination "end"', lat: 2, lon: 0 },
+    vehicle: { label: 'Harrier', catalogId: null, batteryKwh: 75, claimedRangeKm: 627, realWorldRangeKm: null },
+    status: 'degraded', source: 'synthetic', routeDistanceKm: 999,
+    routeDurationMin: 240, geometry: [], stationsSeen: 1,
+    warnings: ['Known evidence warning'],
+    totals: {
+      distanceKm: 600, driveTimeMin: 400, chargeTimeMin: 60, totalTimeMin: 460,
+      chargeKwh: 50, estPriceInr: 1000, finalSocPct: 12,
+    },
+    stops: [{
+      station: station(42, 'Stop & Co'), chainageKm: 280, legKm: 282, detourKm: 2,
+      arriveSocPct: 20, leaveSocPct: 80, chargeKwh: 42.7, pricePerKwh: 20,
+      estPriceInr: 854, chargeTimeMin: 42, arrivalEtaMin: 190,
+      departureEtaMin: 232,
+    }],
+  };
+  return { ...base, ...overrides };
+}
+
+describe('journey briefing', () => {
+  it('derives final leg from authoritative totals and chainage, not route metadata', () => {
+    const data = buildJourneyBriefingData(plan());
+    // totals.distanceKm 600 - stop chainage 280 + detour 2 = 322 km.
+    expect(data.legs).toHaveLength(2);
+    expect(data.legs[0]).toMatchObject({ distanceKm: 282, distanceBasis: 'stop-leg' });
+    expect(data.legs[1]).toMatchObject({ distanceKm: 322, distanceBasis: 'totals-chainage' });
+    expect(data.legs[1]?.etaAtArrivalMin).toBe(460);
+  });
+
+  it('never invents a starting charge or per-stop evidence', () => {
+    const data = buildJourneyBriefingData(plan());
+    expect(data.battery[0]).toMatchObject({
+      kind: 'start', arriveSocPct: null, departSocPct: null,
+    });
+    expect(data.battery[0]?.note).toContain('not stored');
+    expect(data.itinerary[0]).toMatchObject({
+      stationId: 42, chargeKwh: 42.7, chargeTimeMin: 42, estPriceInr: 854,
+    });
+  });
+
+  it('includes every stop and prominent evidence labels in screen and export markup', () => {
+    const markup = renderJourneyBriefingMarkup(plan());
+    expect(markup).toContain('Journey briefing');
+    expect(markup).toContain('Synthetic data');
+    expect(markup).toContain('Degraded coverage');
+    expect(markup).toContain('Known evidence warning');
+    expect(markup).toContain('Stop &amp; Co');
+    expect(markup).toContain('42.7 kWh');
+    expect(markup).toContain('42 min');
+    expect(markup).toContain('role="meter"');
+    expect(markup).toContain('role="region"');
+    expect(markup).toContain('tabindex="0"');
+    expect(markup).not.toContain('gradient');
+
+    const html = buildJourneyBriefingHtml(plan());
+    expect(html).toContain('<style>');
+    expect(html).toContain('@media print');
+    expect(html).toContain('Region "end"');
+    expect(html).toContain('42.7 kWh');
+    expect(html).not.toContain('gradient');
+  });
+
+  it('shows unknown costs as unknown and handles no-stop routes', () => {
+    const noStops = plan({
+      stops: [],
+      totals: {
+        distanceKm: 120, driveTimeMin: 120, chargeTimeMin: 0, totalTimeMin: 120,
+        chargeKwh: 0, estPriceInr: null, finalSocPct: 30,
+      },
+    });
+    const data = buildJourneyBriefingData(noStops);
+    expect(data.legs).toMatchObject([{ distanceKm: 120, distanceBasis: 'route-total' }]);
+    expect(data.knownCostInr).toBeNull();
+    expect(renderJourneyBriefingMarkup(noStops)).toContain('No charging stops are needed');
+    expect(renderJourneyBriefingMarkup(noStops)).toContain('Unknown');
+  });
+});
