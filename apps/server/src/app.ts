@@ -37,6 +37,7 @@ import {
   type VehicleSelection,
 } from '@indeev/core';
 import { planTripDetailed, validateAiChoice, assembleAiPlan, type PlanBundle } from '@indeev/core';
+import { validSavedPlanMetadata } from './saved-plan-validation.js';
 import { chatCompletion, parseChoiceJson, AiProviderError } from './ai-provider.js';
 
 export interface AppDeps {
@@ -437,6 +438,9 @@ export function createApp(deps: AppDeps): Hono {
         },
         400,
       );
+    }
+    if (!validSavedPlanMetadata(plan)) {
+      return c.json({ error: 'Saved plan metadata is malformed', code: 'bad_request' }, 400);
     }
     // Saved routes must be redrawable. Reject the whole malformed path;
     // never discard points or fabricate replacement geometry.

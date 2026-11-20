@@ -183,7 +183,7 @@ function renderSavedSummary(panel: HTMLElement, trip: SavedTrip): void {
         <span class="destination">${escapeHtml(trip.destination.label)}</span>
       </div>
       <div class="plan-vehicle">
-        ${escapeHtml(trip.vehicle.label)}${trip.vehicle.realWorldRangeKm != null ? ` · your real-world range ${trip.vehicle.realWorldRangeKm} km` : ''}${trip.vehicle.claimedRangeKm != null ? ` · claim ${trip.vehicle.claimedRangeKm} km (mfr)` : ''}
+        ${escapeHtml(trip.vehicle.label)}${trip.vehicle.realWorldRangeKm != null ? ` · your real-world range ${escapeHtml(String(trip.vehicle.realWorldRangeKm))} km` : ''}${trip.vehicle.claimedRangeKm != null ? ` · claim ${escapeHtml(String(trip.vehicle.claimedRangeKm))} km (mfr)` : ''}
       </div>
     </div>
     <div class="trip-strip">
@@ -198,7 +198,7 @@ function renderSavedSummary(panel: HTMLElement, trip: SavedTrip): void {
       ${trip.stations
         .map(
           (s, i) => `
-        <article class="stop-card timeline saved-stop" data-station-id="${s.stationId}">
+        <article class="stop-card timeline saved-stop" data-station-id="${escapeHtml(String(s.stationId))}">
           <div class="stop-rail" aria-hidden="true">
             <span class="stop-node">${i + 1}</span>
             <span class="node-line"></span>
