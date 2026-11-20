@@ -1001,3 +1001,34 @@ it('does not create candidate holes from definitely faulted/offline malformed av
   expect(plan.status).toBe('ok'); expect(plan.warnings.join(' ')).not.toContain('invalid connector availability');
   expect(plan.stops.every(stop => stop.pricePerKwh === 20)).toBe(true);
 });
+
+it.each([{ live: false }, { retained: true }, { live: 'true' }, { retained: null }])('details consumer treats nonfresh %j as unknown candidate evidence', async evidence => {
+  const source = fakeStatiq(numericSpecs); const calls: number[] = [];
+  const statiq = { ...source, detailsWithMeta: async (id: number) => {
+    calls.push(id); const result = await source.detailsWithMeta(id); Object.assign(result.response, evidence); return result;
+  } } as unknown as StatiqClient;
+  await expect(planTrip({ router: fakeRouter(700), statiq }, O, D(700))).rejects.toMatchObject({ code: 'not_determined', cause: 'candidate-holes' });
+  expect(calls.sort()).toEqual([1, 2]);
+});
+
+it('independently supported alternate excludes nonfresh candidate and discloses degraded coverage', async () => {
+  const specs = [...numericSpecs, { id: 3, name: 'Retained fixture', chainageKm: 250 }];
+  const source = fakeStatiq(specs);
+  const statiq = { ...source, detailsWithMeta: async (id: number) => {
+    const result = await source.detailsWithMeta(id); if (id === 3) Object.assign(result.response, { retained: true }); return result;
+  } } as unknown as StatiqClient;
+  const plan = await planTrip({ router: fakeRouter(700), statiq }, O, D(700));
+  expect(plan.status).toBe('degraded'); expect(plan.stops.some(stop => stop.station.stationId === 3)).toBe(false);
+});
+
+it('one nonfresh marker sample is a hole without consuming its records or failing unrelated samples', async () => {
+  const source = fakeStatiq(numericSpecs); let samples = 0;
+  const statiq = { ...source, markers: async (lat: number, lon: number) => {
+    const result = await source.markers(lat, lon);
+    if (++samples === 1) Object.assign(result, { live: false, stations: [{ stationId: 999, name: 'Retained only', lat: 0.1, lon: 0 }] });
+    return result;
+  } } as unknown as StatiqClient;
+  const plan = await planTrip({ router: fakeRouter(700), statiq }, O, D(700));
+  expect(plan.status).toBe('degraded'); expect(plan.stops.some(stop => stop.station.stationId === 999)).toBe(false);
+  expect(plan.warnings.filter(warning => warning.includes('could not read the sample'))).toHaveLength(1);
+});

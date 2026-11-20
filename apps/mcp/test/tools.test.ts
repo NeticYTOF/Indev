@@ -336,3 +336,17 @@ it('returns the actual saved trip ID and warnings after successful MCP save with
     expect((await deps.counters.load()).chargersSeen).toBe(result.plan.stationsSeen);
   } finally { spy.mockRestore(); }
 });
+
+it.each([{ live: false }, { retained: true }, { live: 'true' }, { retained: null }])('MCP refresh refuses nonfresh envelope %j before not-found or live view', async evidence => {
+  const statiq = { detailsWithMeta: async () => ({ response: { ok: true, station: null, ...evidence }, fetchedAt: new Date() }) } as unknown as StatiqClient;
+  const deps = await makeDeps({ createStatiq: () => statiq });
+  await expect(getStationHandler(deps, 42)).rejects.toMatchObject({ code: 'not_determined' });
+});
+
+it('MCP refresh maps real-client nonfresh evidence to no-verdict, not absent station', async () => {
+  let calls = 0;
+  const deps = await makeDeps({ createStatiq: () => new StatiqClient({ token: 'offline-only', retries: 2, fetchImpl: (async () => {
+    calls++; return new Response(JSON.stringify({ ok: true, live: false, retained: true, station: null }));
+  }) as typeof fetch }) });
+  await expect(getStationHandler(deps, 42)).rejects.toMatchObject({ code: 'not_determined' }); expect(calls).toBe(1);
+});

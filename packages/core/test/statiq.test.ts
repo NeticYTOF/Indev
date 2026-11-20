@@ -120,8 +120,8 @@ describe('StatiqClient', () => {
       body: JSON.stringify({ ok: false, live: false, retained: true, source: 'test', station: null }),
     }));
     const client = new StatiqClient({ token: TOKEN, baseUrl: 'https://example.test/api', fetchImpl: impl, ...FAST });
-    await client.details(1790);
-    await client.details(1790);
+    await expect(client.details(1790)).rejects.toBeInstanceOf(StatiqApiError);
+    await expect(client.details(1790)).rejects.toBeInstanceOf(StatiqApiError);
     expect(calls).toHaveLength(2);
   });
 

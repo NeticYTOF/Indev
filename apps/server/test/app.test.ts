@@ -814,3 +814,19 @@ it.each([
   expect(response.status).toBe(400); expect((await response.json()).code).toBe('bad_request');
   expect(await deps.trips.list()).toEqual([]);
 });
+
+it.each([{ live: false }, { retained: true }, { live: 'true' }, { retained: null }])('HTTP refresh refuses nonfresh envelope %j before not-found or live view', async evidence => {
+  const statiq = { detailsWithMeta: async () => ({ response: { ok: true, station: null, ...evidence }, fetchedAt: new Date() }) } as unknown as StatiqClient;
+  const app = createApp(await makeDeps({ createStatiq: () => statiq }));
+  const res = await app.request('/api/stations/42');
+  expect(res.status).toBe(502); expect(await res.json()).toMatchObject({ code: 'upstream_invalid' });
+});
+
+it('HTTP refresh maps real-client nonfresh evidence to502 without treating it as absent station', async () => {
+  let calls = 0;
+  const app = createApp(await makeDeps({ createStatiq: () => new StatiqClient({ token: 'offline-only', retries: 2, fetchImpl: (async () => {
+    calls++; return new Response(JSON.stringify({ ok: true, live: false, retained: true, station: null }));
+  }) as typeof fetch }) }));
+  const result = await app.request('/api/stations/42');
+  expect(result.status).toBe(502); expect(await result.json()).toMatchObject({ code: 'upstream_invalid' }); expect(calls).toBe(1);
+});
