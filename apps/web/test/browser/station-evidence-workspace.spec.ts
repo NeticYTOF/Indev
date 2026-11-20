@@ -86,10 +86,23 @@ test('fresh plan opens one detailed evidence workspace only after explicit fetch
   await expect(fetched.locator('[data-station-evidence-result]')).toContainText('1 usable');
   await expect(fetched.locator('[data-station-evidence-result]')).toContainText('1 free');
   await expect(fetched.locator('[data-station-evidence-result]')).toContainText('18/11/2026');
+  await expect(fetched).toContainText('Snapshot fetched at');
+  await expect(fetched.locator('dd.fetched')).toContainText('Nov 2026');
+  await expect(fetched.locator('dd.fetched')).not.toContainText('just now');
+  await expect(fetched).toContainText('Response received');
+  await expect(fetched).toContainText('(this browser)');
   await expect(details.locator('.evidence-station')).toContainText('Planned charger snapshot');
   expect(fetches).toBe(1);
   await details.scrollIntoViewIfNeeded();
   await page.screenshot({ path: info.outputPath('station-evidence-fresh-normal.png') });
+
+  await page.emulateMedia({ media: 'print' });
+  await expect(details).toBeHidden();
+  await expect(page.locator('[data-journey-briefing]')).toBeVisible();
+  await expect(page.locator('#map')).toBeHidden();
+  expect(await page.evaluate(() => document.body.scrollWidth <= window.innerWidth + 1)).toBe(true);
+  await page.screenshot({ path: info.outputPath('station-evidence-print-details-open.png'), fullPage: true });
+  await page.emulateMedia({ media: 'screen' });
 });
 
 test('malformed and sparse station facts stay Unknown beside unchanged planned facts', async ({ page }, info) => {
@@ -133,6 +146,31 @@ test('malformed and sparse station facts stay Unknown beside unchanged planned f
   await page.screenshot({ path: info.outputPath('station-evidence-malformed-mobile.png') });
 });
 
+test('manual fetch leaves fresh plan facts unchanged and writes no trip', async ({ page }) => {
+  await outsideAborted(page);
+  let storageWrites = 0;
+  await page.route('**/api/plan', async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response });
+  });
+  await page.route('**/api/trips', async (route) => {
+    storageWrites++;
+    await route.fulfill({ json: { trips: [] }, status: 200 });
+  });
+  await stationResponse(page, async (route) => {
+    const id = Number(new URL(route.request().url()).pathname.split('/').at(-1));
+    await route.fulfill({ json: { station: normalStation(id) } });
+  });
+  await planFresh(page);
+  const details = page.locator('.stop-card').first().locator('[data-station-evidence]');
+  await details.locator('summary').click();
+  const plannedBefore = await details.locator('.evidence-station').innerText();
+  await page.getByRole('button', { name: 'Revalidate', exact: true }).first().click();
+  await expect(details.locator('[data-station-evidence-status]')).toContainText('Response received');
+  expect(await details.locator('.evidence-station').innerText()).toBe(plannedBefore);
+  expect(storageWrites).toBe(0);
+});
+
 test('synthetic manual evidence stays visibly labelled as a fixture', async ({ page }, info) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await outsideAborted(page);
@@ -154,7 +192,8 @@ test('saved trip shows stored facts separately from its one manual evidence fetc
   await page.setViewportSize({ width: 390, height: 844 });
   await outsideAborted(page);
   let fetches = 0;
-  await page.route('**/api/trips', (route) => route.fulfill({ json: { trips: [{
+  let storageWrites = 0;
+  const savedTrip = {
     id: 'evidence-fixture', name: 'Evidence fixture', createdAt: '2026-11-20T10:00:00Z',
     source: 'synthetic', status: 'ok', origin: ORIGIN, destination: DESTINATION,
     routeDistanceKm: 285, routeDurationMin: 270,
@@ -173,7 +212,15 @@ test('saved trip shows stored facts separately from its one manual evidence fetc
       arriveSocPct: 20, leaveSocPct: 80, chargeKwh: 42.7,
       pricePerKwh: 22.75, estPriceInr: 854, chargeTimeMin: 42,
     }],
-  }] } }));
+  };
+  const originalSavedTrip = JSON.stringify(savedTrip);
+  await page.route('**/api/trips', async (route) => {
+    if (route.request().method() === 'GET') await route.fulfill({ json: { trips: [savedTrip] } });
+    else {
+      storageWrites++;
+      await route.fulfill({ status: 200, json: { ok: true } });
+    }
+  });
   await stationResponse(page, async (route) => {
     fetches++;
     const id = Number(new URL(route.request().url()).pathname.split('/').at(-1));
@@ -185,6 +232,7 @@ test('saved trip shows stored facts separately from its one manual evidence fetc
   await page.getByRole('button', { name: 'Open', exact: true }).click();
   const details = page.locator('.saved-stop').first().locator('[data-station-evidence]');
   await details.locator('summary').click();
+  const plannedBefore = await details.locator('.evidence-station').innerText();
   await expect(details).toContainText('Planned snapshot from the trip');
   await expect(details).toContainText('Rs. 22.75/kWh');
   await expect(details).toContainText('42.7 kWh');
@@ -197,10 +245,60 @@ test('saved trip shows stored facts separately from its one manual evidence fetc
   await expect(details.locator('[data-station-evidence-status]')).toContainText('Response received');
   await expect(details.locator('[data-station-evidence-fetched] [data-station-evidence-result]')).toContainText('Working · free');
   await expect(details.locator('.evidence-station')).toContainText('This saved trip stores planned charging facts, not a charger snapshot');
+  expect(await details.locator('.evidence-station').innerText()).toBe(plannedBefore);
+  expect(JSON.stringify(savedTrip)).toBe(originalSavedTrip);
+  expect(storageWrites).toBe(0);
   expect(fetches).toBe(1);
   await details.scrollIntoViewIfNeeded();
   await page.screenshot({ path: info.outputPath('station-evidence-saved-mobile.png') });
 });
+
+for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+  for (const listShape of ['zero', 'unknown'] as const) {
+    test(`hostile long strings and ${listShape} charger list render safely at ${viewport.width}px`, async ({ page }, info) => {
+      await page.setViewportSize(viewport);
+      await outsideAborted(page);
+      const longText = '<img src=x onerror=stationProof>' + ' hostile-value '.repeat(24);
+      await page.route('**/api/plan', async (route) => {
+        const response = await route.fetch();
+        const body = await response.json() as {
+          plan: { stops: Array<{ station: Record<string, unknown> }> };
+        };
+        const stop = body.plan.stops[0];
+        if (stop) {
+          stop.station.name = longText;
+          stop.station.stationUrl = 'javascript:stationProof';
+          delete stop.station.chargers;
+        }
+        await route.fulfill({ response, json: body });
+      });
+      await stationResponse(page, async (route) => {
+        const id = Number(new URL(route.request().url()).pathname.split('/').at(-1));
+        const station: Record<string, unknown> = {
+          stationId: id, name: longText, address: longText, city: longText,
+          hours: longText, openText: longText, rating: 4, reviewCount: 9,
+          fetchedAt: '2026-11-20T10:15:00.000Z',
+        };
+        if (listShape === 'zero') station.chargers = [];
+        await route.fulfill({ json: { station } });
+      });
+      await planFresh(page);
+      const details = page.locator('.stop-card').first().locator('[data-station-evidence]');
+      await details.locator('summary').click();
+      await expect(details).toContainText('Charger snapshot unavailable — the planned charger list is Unknown.');
+      await page.getByRole('button', { name: 'Revalidate', exact: true }).first().click();
+      const result = details.locator('[data-station-evidence-fetched] [data-station-evidence-result]');
+      await expect(result).toContainText(listShape === 'zero' ? 'No chargers returned.' : 'Charger list is Unknown.');
+      await expect(result).toContainText('Snapshot fetched at');
+      await expect(result).toContainText('Response received');
+      await expect(result.locator('dd.fetched')).toContainText('Nov 2026');
+      await expect(page.locator('img[onerror=stationProof]')).toHaveCount(0);
+      expect(await page.evaluate(() => document.body.scrollWidth <= window.innerWidth + 1)).toBe(true);
+      await details.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: info.outputPath(`station-evidence-hostile-${listShape}-${viewport.width}.png`) });
+    });
+  }
+}
 
 test('a wrong station ID in the response is refused and never rendered', async ({ page }) => {
   await outsideAborted(page);
@@ -240,6 +338,102 @@ test('a late response cannot write into a disconnected evidence view', async ({ 
   expect(fetches).toBe(1);
 });
 
+test('one manual request survives repeated clicks while a response is pending', async ({ page }) => {
+  await outsideAborted(page);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let fetches = 0;
+  await stationResponse(page, async (route) => {
+    fetches++;
+    await held;
+    const id = Number(new URL(route.request().url()).pathname.split('/').at(-1));
+    await route.fulfill({ json: { station: normalStation(id) } });
+  });
+  await planFresh(page);
+  const button = page.getByRole('button', { name: 'Revalidate', exact: true }).first();
+  await button.click();
+  await expect.poll(() => fetches).toBe(1);
+  await button.evaluate((element) => {
+    for (let n = 0; n < 5; n++) element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await expect(button).toBeDisabled();
+  expect(fetches).toBe(1);
+  release();
+  await expect(page.locator('[data-station-evidence-status]').first()).toContainText('Response received');
+  await expect(button).toBeEnabled();
+  expect(fetches).toBe(1);
+});
+
+test('keyboard opens details without fetching and a focused input keeps focus when fetch settles', async ({ page }) => {
+  await outsideAborted(page);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let fetches = 0;
+  await stationResponse(page, async (route) => {
+    fetches++;
+    await held;
+    const id = Number(new URL(route.request().url()).pathname.split('/').at(-1));
+    await route.fulfill({ json: { station: normalStation(id) } });
+  });
+  await planFresh(page);
+  const details = page.locator('.stop-card').first().locator('[data-station-evidence]');
+  await details.locator('summary').focus();
+  await page.keyboard.press('Enter');
+  await expect(details).toHaveAttribute('open', '');
+  expect(fetches).toBe(0);
+
+  await page.getByRole('button', { name: 'Revalidate', exact: true }).first().click();
+  await expect.poll(() => fetches).toBe(1);
+  const origin = page.getByRole('searchbox', { name: 'From', exact: true });
+  await origin.focus();
+  release();
+  await expect(details.locator('[data-station-evidence-status]')).toContainText('Response received');
+  await expect(origin).toBeFocused();
+  expect(fetches).toBe(1);
+});
+
+for (const replacement of ['same', 'different'] as const) {
+  test(`a stale response cannot write into a ${replacement}-ID replacement view`, async ({ page }) => {
+    await outsideAborted(page);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let plans = 0;
+    let fetches = 0;
+    await page.route('**/api/plan', async (route) => {
+      plans++;
+      const response = await route.fetch();
+      const body = await response.json() as {
+        plan: { stops: Array<{ station: { stationId: number; name: string } }> };
+      };
+      if (plans === 2 && replacement === 'different' && body.plan.stops[0]) {
+        body.plan.stops[0].station.stationId = STATION_ID + 777;
+      }
+      await route.fulfill({ response, json: body });
+    });
+    await stationResponse(page, async (route) => {
+      fetches++;
+      await held;
+      const id = Number(new URL(route.request().url()).pathname.split('/').at(-1));
+      await route.fulfill({ json: { station: normalStation(id) } });
+    });
+    await planFresh(page);
+    await page.getByRole('button', { name: 'Revalidate', exact: true }).first().click();
+    await expect.poll(() => fetches).toBe(1);
+
+    await page.getByRole('button', { name: 'Plan route', exact: true }).click();
+    await expect(page.locator('[data-journey-briefing]')).toBeVisible();
+    const replacementId = replacement === 'same' ? STATION_ID : STATION_ID + 777;
+    const newCard = page.locator('.stop-card').first();
+    const newDetails = newCard.locator('[data-station-evidence]');
+    await expect(newCard.locator('[data-refresh]')).toHaveAttribute('data-refresh', String(replacementId));
+    await expect(newDetails.locator('[data-station-evidence-status]')).toContainText('No current status requested');
+    release();
+    await expect(newDetails.locator('[data-station-evidence-status]')).toContainText('No current status requested');
+    await expect(newDetails.locator('[data-station-evidence-fetched] [data-station-evidence-result]')).toHaveCount(0);
+    expect(fetches).toBe(1);
+  });
+}
+
 test('failed manual fetch leaves retry available and never installs a wrong station result', async ({ page }) => {
   await outsideAborted(page);
   let fetches = 0;
@@ -257,6 +451,9 @@ test('failed manual fetch leaves retry available and never installs a wrong stat
   await expect(details.locator('[data-station-evidence-status]')).toContainText('unavailable right now');
   expect(fetches).toBe(1);
   await expect(button).toBeEnabled();
+  // No automatic retry after the failed response settles.
+  await page.waitForTimeout(150);
+  expect(fetches).toBe(1);
   await button.click();
   await expect.poll(() => fetches).toBe(2);
   await expect(details.locator('[data-station-evidence-fetched] [data-station-evidence-result]')).toHaveAttribute('data-evidence-station-id', String(STATION_ID));
