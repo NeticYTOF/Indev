@@ -6,9 +6,16 @@
 import type { SavedTrip, TripPlan } from '@indeev/core';
 import { formatDuration, formatInr, formatKwh, formatTariff } from './format.js';
 import { safeStationId } from './station-evidence.js';
+import { routeDirectionsLinks, stationDirectionsUrl } from './safe-url.js';
+
+export interface JourneyBriefingPlaceSource {
+  readonly label: string;
+  readonly lat?: unknown;
+  readonly lon?: unknown;
+}
 
 export interface JourneyBriefingStopSource {
-  station: { stationId: number; name: string };
+  station: { stationId: number; name: string; lat?: unknown; lon?: unknown };
   chainageKm: number;
   legKm: number;
   detourKm: number;
@@ -34,8 +41,8 @@ export interface JourneyBriefingTotals {
 }
 
 export interface JourneyBriefingSource {
-  origin: { label: string };
-  destination: { label: string };
+  origin: JourneyBriefingPlaceSource;
+  destination: JourneyBriefingPlaceSource;
   status: TripPlan['status'];
   source: TripPlan['source'];
   totals: JourneyBriefingTotals;
@@ -52,9 +59,11 @@ export function journeySourceFromSavedTrip(trip: SavedTrip): JourneyBriefingSour
   const raw = record(trip) ?? {};
   const stations = Array.isArray(raw.stations) ? raw.stations : null;
   const totals = record(raw.totals);
+  const origin = record(raw.origin) ?? {};
+  const destination = record(raw.destination) ?? {};
   return {
-    origin: { label: labelText(record(raw.origin)?.label) },
-    destination: { label: labelText(record(raw.destination)?.label) },
+    origin: { label: labelText(origin.label), lat: origin.lat, lon: origin.lon },
+    destination: { label: labelText(destination.label), lat: destination.lat, lon: destination.lon },
     status: raw.status as TripPlan['status'],
     source: raw.source as TripPlan['source'],
     totals: {
@@ -72,6 +81,8 @@ export function journeySourceFromSavedTrip(trip: SavedTrip): JourneyBriefingSour
         station: {
           stationId: typeof s.stationId === 'number' ? s.stationId : Number.NaN,
           name: labelText(s.name, 'Unknown station'),
+          lat: s.lat,
+          lon: s.lon,
         },
         chainageKm: s.chainageKm as number,
         legKm: s.legKm as number,
@@ -429,6 +440,48 @@ export function renderJourneyBriefingMarkup(plan: JourneyBriefingSource): string
     `</section>`;
 }
 
+/**
+ * Offline travel handoff: visible route identity plus Maps links built only
+ * from coordinates already stored in the plan. A bad route coordinate removes
+ * only the whole-route links; individually valid chargers keep Directions.
+ */
+export function renderJourneyHandoffMarkup(plan: JourneyBriefingSource): string {
+  const origin = plan.origin ?? { label: 'Unknown' };
+  const destination = plan.destination ?? { label: 'Unknown' };
+  const stopsKnown = Array.isArray(plan.stops);
+  const stopSources = stopsKnown ? (plan.stops as readonly unknown[]).map((stop) =>
+    record(record(stop)?.station) ?? {}) : [];
+  const stopPoints = stopSources.map((station) => ({ lat: station.lat, lon: station.lon }));
+  const segments = stopsKnown
+    ? routeDirectionsLinks(origin, destination, stopPoints)
+    : null;
+  const routeLinks = segments?.map((segment) => {
+    const from = segment.startsAtOrigin ? labelText(origin.label) : `charger ${segment.firstStop}`;
+    const to = segment.endsAtDestination ? labelText(destination.label) : `charger ${segment.lastStop}`;
+    const prefix = segment.total > 1 ? `Part ${segment.part} of ${segment.total}: ` : '';
+    return `<a class="trip-map-link" data-maps-segment href="${html(segment.url)}" target="_blank" rel="noopener noreferrer">${html(prefix + `${from} → ${to}`)}</a>`;
+  }).join('') ?? '';
+  const routeSection = segments
+    ? `<div class="trip-maps" data-trip-maps><h3>Google Maps route</h3>${routeLinks}</div>`
+    : `<p class="hint" data-trip-maps-unavailable>${stopsKnown
+      ? 'Whole-trip Google Maps route unavailable — a stored route coordinate is missing or invalid.'
+      : 'Whole-trip Google Maps route unavailable — the stored charging stop list is missing or unreadable.'}</p>`;
+  const stopLinks = stopSources.map((station, index) => {
+    const url = stationDirectionsUrl(station?.lat, station?.lon);
+    if (url == null) return '';
+    const name = labelText(station?.name, `Stop ${index + 1}`);
+    return `<a class="trip-map-link" data-stop-maps="${index + 1}" href="${html(url)}" target="_blank" rel="noopener noreferrer">Directions to charger ${index + 1} — ${html(name)}</a>`;
+  }).filter(Boolean).join('');
+  const stopSection = stopLinks
+    ? `<div class="trip-stop-maps"><h3>Per-charger directions</h3>${stopLinks}</div>`
+    : '<p class="hint">Per-charger Directions unavailable — no validated coordinates were stored.</p>';
+  return `<header class="trip-export-head" data-trip-route-identity><p class="eyebrow">IndEV trip handoff</p>` +
+    `<h1>${html(labelText(origin.label))} → ${html(labelText(destination.label))}</h1>` +
+    `<p class="hint">Google Maps links require internet access and may recalculate the route. ` +
+    `Planned cost, charge time and energy below are saved plan facts — not live charger estimates or Maps calculations.</p></header>` +
+    routeSection + stopSection;
+}
+
 /** Standalone printable/saveable itinerary; CSS is flat, local, and gradient-free. */
 export function buildJourneyBriefingHtml(plan: JourneyBriefingSource): string {
   const title = `${labelText(plan.origin?.label)} to ${labelText(plan.destination?.label)}`;
@@ -439,7 +492,11 @@ export function buildJourneyBriefingHtml(plan: JourneyBriefingSource): string {
     `.journey-briefing{max-width:960px;margin:auto;background:#0E0E10;border:1px solid #34322E;padding:24px}` +
     `.banner{padding:10px 12px;border:1px solid #F4B951;color:#F4B951;margin-bottom:10px}` +
     `.banner-synthetic{border-color:#E99455;color:#E99455}` +
-    `h3,h4{color:#F4F2EE}.hint{color:#B8B4AD;font-size:12px}` +
+    `h1,h2{color:#F4F2EE}h3,h4{color:#F4F2EE}.hint{color:#B8B4AD;font-size:12px}` +
+    `.trip-export-head{max-width:960px;margin:0 auto 14px;padding:18px;background:#0E0E10;border:1px solid #34322E}` +
+    `.trip-export-head h1{margin:4px 0 8px;font-size:24px;overflow-wrap:anywhere}.eyebrow{color:#D87932;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}` +
+    `.trip-maps,.trip-stop-maps{max-width:960px;margin:0 auto 14px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}` +
+    `.trip-maps h3,.trip-stop-maps h3{margin:0 12px 0 0;font-size:14px}.trip-map-link{display:inline-block;padding:8px 10px;border:1px solid #6A3C1D;background:#25170E;color:#F4B951;text-decoration:none;font-weight:600;overflow-wrap:anywhere}` +
     `.briefing-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}` +
     `.briefing-summary div{border:1px solid #34322E;padding:10px}.briefing-summary dt{color:#B8B4AD;font-size:12px}` +
     `.briefing-summary dd{margin:4px 0 0;font-weight:700}` +
@@ -457,7 +514,8 @@ export function buildJourneyBriefingHtml(plan: JourneyBriefingSource): string {
     `.briefing-itinerary tbody th{min-width:170px;overflow-wrap:anywhere}` +
     `.briefing-itinerary tbody th .hint{display:block;margin-top:3px;color:#B8B4AD;font-size:11px;font-weight:400}` +
     `.briefing-itinerary thead th{color:#F4B951;white-space:nowrap}button{display:none}` +
-    `@media print{body{background:#fff;color:#111;padding:0;overflow:visible}.journey-briefing{border:0;background:#fff;color:#111;padding:0}` +
+    `@media print{body{background:#fff;color:#111;padding:0;overflow:visible}.journey-briefing,.trip-export-head{border:0;background:#fff;color:#111;padding:0}` +
+    `h1,h2{color:#111}.trip-map-link{background:#fff;color:#111;border-color:#888}` +
     `h3,h4,.briefing-summary dd{color:#111}.hint,.briefing-summary dt,.briefing-itinerary caption{color:#444}` +
     `.banner{color:#111;border-color:#111}.briefing-meter{background:#eee;border-color:#888}` +
     `.journey-battery-profile{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}` +
@@ -471,7 +529,7 @@ export function buildJourneyBriefingHtml(plan: JourneyBriefingSource): string {
     `.briefing-itinerary tbody tr:first-child{break-before:avoid;page-break-before:avoid}` +
     `.briefing-summary>div,.journey-leg,.journey-battery-point,.briefing-itinerary tr{break-inside:avoid;page-break-inside:avoid}` +
     `.journey-briefing h3,.journey-briefing h4{break-after:avoid;page-break-after:avoid}}` +
-    `</style></head><body><main>${renderJourneyBriefingMarkup(plan)}</main></body></html>`;
+    `</style></head><body><main>${renderJourneyHandoffMarkup(plan)}${renderJourneyBriefingMarkup(plan)}</main></body></html>`;
 }
 
 export function downloadJourneyBriefing(plan: JourneyBriefingSource): void {
