@@ -175,6 +175,98 @@ test('malformed and sparse station facts stay Unknown beside unchanged planned f
   await page.screenshot({ path: info.outputPath('station-evidence-malformed-mobile.png') });
 });
 
+for (const idMode of ['same', 'different'] as const) {
+  test(`reopening a saved trip with a ${idMode} station ID during a held fetch discards the old response`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await outsideAborted(page);
+    let fetches = 0;
+    let completedFetches = 0;
+    let storageWrites = 0;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const replacementId = idMode === 'same' ? STATION_ID : STATION_ID + 55;
+    const savedTrips = [savedEvidenceTrip(STATION_ID, 'Held stop'), savedEvidenceTrip(replacementId, 'Reopened stop')];
+    await page.route('**/api/trips', async (route) => {
+      if (route.request().method() === 'GET') await route.fulfill({ json: { trips: savedTrips } });
+      else {
+        storageWrites++;
+        await route.fulfill({ status: 200, json: { ok: true } });
+      }
+    });
+    await stationResponse(page, async (route) => {
+      fetches++;
+      await held;
+      const id = Number(new URL(route.request().url()).pathname.split('/').at(-1));
+      await route.fulfill({ json: { station: normalStation(id) } });
+      completedFetches++;
+    });
+
+    await openSavedTripByIndex(page, 0);
+    const first = page.locator('.saved-stop').first();
+    await expect(first.locator('[data-station-evidence-status]')).toContainText('No current status requested');
+    expect(fetches).toBe(0);
+    await page.getByRole('button', { name: 'Fetch current details', exact: true }).click();
+    await expect.poll(() => fetches).toBe(1);
+    await expect(first.locator('[data-station-evidence-status]')).toContainText('Fetching');
+
+    await page.locator('#trips-button').click();
+    await page.getByRole('button', { name: 'Open', exact: true }).nth(1).click();
+    const reopened = page.locator('.saved-stop').first();
+    await expect(reopened.locator('[data-station-evidence]')).toHaveAttribute('data-station-id', String(replacementId));
+    await expect(reopened.locator('[data-station-evidence-status]')).toContainText('No current status requested');
+    await expect(reopened.locator('[data-station-evidence-fetched] [data-station-evidence-result]')).toHaveCount(0);
+
+    release();
+    await expect.poll(() => completedFetches).toBe(1);
+    await expect(reopened.locator('[data-station-evidence-status]')).toContainText('No current status requested');
+    await expect(reopened.locator('[data-station-evidence-fetched] [data-station-evidence-result]')).toHaveCount(0);
+    expect(fetches).toBe(1);
+    expect(storageWrites).toBe(0);
+  });
+}
+
+test('switching from a held fresh fetch to a saved trip discards the old response', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await outsideAborted(page);
+  let fetches = 0;
+  let completedFetches = 0;
+  let storageWrites = 0;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await stationResponse(page, async (route) => {
+    fetches++;
+    await held;
+    const id = Number(new URL(route.request().url()).pathname.split('/').at(-1));
+    await route.fulfill({ json: { station: normalStation(id) } });
+    completedFetches++;
+  });
+  await page.route('**/api/trips', async (route) => {
+    if (route.request().method() === 'GET') await route.fulfill({ json: { trips: [savedEvidenceTrip(STATION_ID + 55, 'Saved switch target')] } });
+    else {
+      storageWrites++;
+      await route.fulfill({ status: 200, json: { ok: true } });
+    }
+  });
+  await planFresh(page);
+  await page.getByRole('button', { name: 'Revalidate', exact: true }).first().click();
+  await expect.poll(() => fetches).toBe(1);
+  await expect(page.locator('.stop-card').first().locator('[data-station-evidence-status]')).toContainText('Fetching');
+
+  await page.locator('#trips-button').click();
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+  const savedDetails = page.locator('.saved-stop').first().locator('[data-station-evidence]');
+  await expect(page.locator('.stop-card')).toHaveCount(1);
+  await expect(savedDetails).toHaveAttribute('data-station-id', String(STATION_ID + 55));
+  await expect(savedDetails.locator('[data-station-evidence-status]')).toContainText('No current status requested');
+
+  release();
+  await expect.poll(() => completedFetches).toBe(1);
+  await expect(savedDetails.locator('[data-station-evidence-status]')).toContainText('No current status requested');
+  await expect(savedDetails.locator('[data-station-evidence-fetched] [data-station-evidence-result]')).toHaveCount(0);
+  expect(fetches).toBe(1);
+  expect(storageWrites).toBe(0);
+});
+
 test('reopening saved trips with same and different IDs uses each own evidence controller', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await outsideAborted(page);
@@ -557,8 +649,10 @@ for (const replacement of ['same', 'different'] as const) {
   });
 }
 
-for (const failure of ['network', 'http', 'non-json', 'malformed'] as const) {
-  test(`${failure} manual fetch is announced, retryable, and installs no result`, async ({ page }) => {
+for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+  for (const failure of ['network', 'http', 'non-json', 'malformed'] as const) {
+  test(`${failure} manual fetch is announced, retryable, and installs no result at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize(viewport);
     await outsideAborted(page);
     let fetches = 0;
     let settled = 0;
@@ -582,6 +676,7 @@ for (const failure of ['network', 'http', 'non-json', 'malformed'] as const) {
     await expect(button).toBeEnabled();
     expect(fetches).toBe(1);
   });
+  }
 }
 
 test('failed manual fetch leaves retry available and never installs a wrong station result', async ({ page }) => {
