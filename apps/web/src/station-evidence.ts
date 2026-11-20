@@ -98,6 +98,11 @@ function count(value: unknown): EvidenceNumber {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
+/** Shared station-identity contract: only positive safe integers are usable. */
+export function safeStationId(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
 function boolean(value: unknown): boolean | null {
   return typeof value === 'boolean' ? value : null;
 }
@@ -282,7 +287,7 @@ function normalizeStation(value: unknown, sourceKind: 'planned' | 'fetched'): St
     }
   }
   return {
-    stationId: number(raw.stationId, 1),
+    stationId: safeStationId(raw.stationId),
     name: text(raw.name),
     address: text(raw.address),
     city: text(raw.city),
@@ -343,7 +348,8 @@ export function normalizeFetchedStationResponse(
 }
 
 export function stationMatchesId(evidence: StationEvidence, stationId: number): boolean {
-  return Number.isSafeInteger(stationId) && stationId > 0 && evidence.stationId === stationId;
+  const id = safeStationId(stationId);
+  return id != null && evidence.stationId === id;
 }
 
 /** Display helper: Unknown is a distinct state, never zero or "available". */

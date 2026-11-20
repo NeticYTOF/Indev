@@ -5,6 +5,7 @@
  */
 import type { SavedTrip, TripPlan } from '@indeev/core';
 import { formatDuration, formatInr, formatKwh, formatTariff } from './format.js';
+import { safeStationId } from './station-evidence.js';
 
 export interface JourneyBriefingStopSource {
   station: { stationId: number; name: string };
@@ -28,7 +29,8 @@ export interface JourneyBriefingSource {
   status: TripPlan['status'];
   source: TripPlan['source'];
   totals: TripPlan['totals'];
-  stops: readonly JourneyBriefingStopSource[];
+  /** null/undefined preserves an unreadable stop list; [] is a real no-stop route. */
+  stops: readonly JourneyBriefingStopSource[] | null | undefined;
   warnings?: readonly string[];
 }
 
@@ -37,24 +39,33 @@ export interface JourneyBriefingSource {
  * only that schema boundary; unknown times stay unknown in the briefing.
  */
 export function journeySourceFromSavedTrip(trip: SavedTrip): JourneyBriefingSource {
+  const raw = record(trip) ?? {};
+  const stations = Array.isArray(raw.stations) ? raw.stations : null;
   return {
-    origin: trip.origin,
-    destination: trip.destination,
-    status: trip.status,
-    source: trip.source,
-    totals: trip.totals,
-    stops: trip.stations.map((station) => ({
-      station: { stationId: station.stationId, name: station.name },
-      chainageKm: station.chainageKm,
-      legKm: station.legKm,
-      detourKm: station.detourKm,
-      arriveSocPct: station.arriveSocPct,
-      leaveSocPct: station.leaveSocPct,
-      chargeKwh: station.chargeKwh,
-      pricePerKwh: station.pricePerKwh,
-      estPriceInr: station.estPriceInr,
-      chargeTimeMin: station.chargeTimeMin,
-    })),
+    origin: { label: labelText(record(raw.origin)?.label) },
+    destination: { label: labelText(record(raw.destination)?.label) },
+    status: raw.status as TripPlan['status'],
+    source: raw.source as TripPlan['source'],
+    totals: (record(raw.totals) ?? {}) as TripPlan['totals'],
+    // A missing or malformed list stays missing; [] alone means no stops.
+    stops: stations?.map((station) => {
+      const s = record(station) ?? {};
+      return {
+        station: {
+          stationId: typeof s.stationId === 'number' ? s.stationId : Number.NaN,
+          name: labelText(s.name, 'Unknown station'),
+        },
+        chainageKm: s.chainageKm as number,
+        legKm: s.legKm as number,
+        detourKm: s.detourKm as number,
+        arriveSocPct: s.arriveSocPct as number,
+        leaveSocPct: s.leaveSocPct as number,
+        chargeKwh: s.chargeKwh as number,
+        pricePerKwh: s.pricePerKwh as number | null,
+        estPriceInr: s.estPriceInr as number | null,
+        chargeTimeMin: s.chargeTimeMin as number,
+      } as JourneyBriefingStopSource;
+    }) ?? null,
   };
 }
 
@@ -111,6 +122,20 @@ export interface JourneyBriefingData {
   warnings: readonly string[];
 }
 
+function record(value: unknown): Record<string, unknown> | null {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function labelText(value: unknown, fallback = 'Unknown'): string {
+  return typeof value === 'string' && value.trim().length > 0 ? value : fallback;
+}
+
+function stopLabel(stop: JourneyBriefingStopSource): string {
+  return labelText(record((stop as { station?: unknown }).station)?.name, 'Unknown station');
+}
+
 function finiteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
@@ -125,9 +150,6 @@ function socValue(value: unknown): number | null {
   return number != null && number >= 0 && number <= 100 ? number : null;
 }
 
-function stationIdValue(value: unknown): number | null {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
-}
 
 function legDistance(totalKm: number | null, stop: JourneyBriefingStopSource | undefined): {
   km: number | null;
@@ -164,25 +186,25 @@ export function buildJourneyBriefingData(plan: JourneyBriefingSource): JourneyBr
   const finalSocPct = socValue(plan.totals?.finalSocPct);
 
   const legs: JourneyLeg[] = [];
-  let fromLabel = plan.origin.label;
+  let fromLabel = labelText(plan.origin?.label);
   stops.forEach((stop, index) => {
     const legKm = nonnegative(stop.legKm);
     legs.push({
       kind: index === 0 ? 'origin' : 'between',
       fromLabel,
-      toLabel: stop.station.name,
+      toLabel: stopLabel(stop),
       distanceKm: legKm,
       distanceBasis: legKm != null ? 'stop-leg' : 'unavailable',
       etaAtArrivalMin: nonnegative(stop.arrivalEtaMin),
     });
-    fromLabel = stop.station.name;
+    fromLabel = stopLabel(stop);
   });
 
   const final = legDistance(routeDistanceKm, stops.at(-1));
   legs.push({
     kind: 'final',
     fromLabel,
-    toLabel: plan.destination.label,
+    toLabel: labelText(plan.destination?.label),
     distanceKm: final.km,
     distanceBasis: final.basis,
     etaAtArrivalMin: totalTimeMin,
@@ -190,7 +212,7 @@ export function buildJourneyBriefingData(plan: JourneyBriefingSource): JourneyBr
 
   const battery: JourneyBatteryPoint[] = [{
     kind: 'start',
-    label: plan.origin.label,
+    label: labelText(plan.origin?.label),
     arriveSocPct: null,
     departSocPct: null,
     note: 'Starting charge is not stored in the plan.',
@@ -198,7 +220,7 @@ export function buildJourneyBriefingData(plan: JourneyBriefingSource): JourneyBr
   stops.forEach((stop) => {
     battery.push({
       kind: 'stop',
-      label: stop.station.name,
+      label: stopLabel(stop),
       arriveSocPct: socValue(stop.arriveSocPct),
       departSocPct: socValue(stop.leaveSocPct),
       note: 'Planned arrival and departure charge at this charging stop.',
@@ -206,7 +228,7 @@ export function buildJourneyBriefingData(plan: JourneyBriefingSource): JourneyBr
   });
   battery.push({
     kind: 'destination',
-    label: plan.destination.label,
+    label: labelText(plan.destination?.label),
     arriveSocPct: finalSocPct,
     departSocPct: null,
     note: 'Planned destination arrival charge from plan totals.',
@@ -235,8 +257,8 @@ export function buildJourneyBriefingData(plan: JourneyBriefingSource): JourneyBr
     // never a zero, an invented value, or a silently removed row.
     itinerary.push({
       index: index + 1,
-      stationName: stop.station.name,
-      stationId: stationIdValue(stop.station.stationId),
+      stationName: stopLabel(stop),
+      stationId: safeStationId(record((stop as { station?: unknown }).station)?.stationId),
       legKm,
       detourKm,
       arriveSocPct,
@@ -387,7 +409,7 @@ export function renderJourneyBriefingMarkup(plan: JourneyBriefingSource): string
 
 /** Standalone printable/saveable itinerary; CSS is flat, local, and gradient-free. */
 export function buildJourneyBriefingHtml(plan: JourneyBriefingSource): string {
-  const title = `${plan.origin.label} to ${plan.destination.label}`;
+  const title = `${labelText(plan.origin?.label)} to ${labelText(plan.destination?.label)}`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width,initial-scale=1">` +
     `<title>IndEV journey briefing — ${html(title)}</title><style>` +

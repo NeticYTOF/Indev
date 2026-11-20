@@ -64,6 +64,14 @@ function place(
  * a replacement; the planner controller refuses to load such a draft.
  */
 export function buildSavedRouteDraft(trip: SavedTrip): SavedRouteDraft {
+  if (!trip || typeof trip !== 'object') {
+    return {
+      origin: { label: '', lat: Number.NaN, lon: Number.NaN },
+      destination: { label: '', lat: Number.NaN, lon: Number.NaN },
+      vehicle: { catalogId: null, label: '', batteryKwh: null, claimedRangeKm: null, realWorldRangeKm: null },
+      reviewNotes: ['Saved trip data was missing or malformed; review every copied fact.'],
+    };
+  }
   const reviewNotes: string[] = [
     'Start charge, charging reserve and other plan options were not stored with this trip — review them before planning.',
   ];

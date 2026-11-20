@@ -2,8 +2,8 @@
  * Display formatters. Pure functions, unit-tested.
  */
 
-/** "3 h 42 min" or "42 min". */
-export function formatDuration(totalMin: number): string {
+/** "3 h 42 min" or "42 min"; unavailable input renders an em dash. */
+export function formatDuration(totalMin: number | null | undefined): string {
   if (!Number.isFinite(totalMin) || totalMin < 0) return '—';
   const m = Math.round(totalMin);
   const h = Math.floor(m / 60);
