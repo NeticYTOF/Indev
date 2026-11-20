@@ -109,6 +109,11 @@ function auditOutcomeFor(err: unknown): string {
   return 'error';
 }
 
+function safeUpstreamCalls(statiq: StatiqClient): number {
+  // Injected doubles legitimately omit this optional observability method.
+  return typeof statiq.upstreamCallsMade === 'function' ? statiq.upstreamCallsMade() : 0;
+}
+
 function completeRun(
   deps: AppDeps,
   outcome: string,
@@ -293,10 +298,10 @@ export function createApp(deps: AppDeps): Hono {
       );
       // Persist only the running count of chargers seen; never station data.
       await recordPlanCounter(deps.counters, plan);
-      completeRun(deps, 'ok', statiq.upstreamCallsMade(), providerFailures.snapshot());
+      completeRun(deps, 'ok', safeUpstreamCalls(statiq), providerFailures.snapshot());
       return c.json({ plan });
     } catch (err) {
-      completeRun(deps, auditOutcomeFor(err), statiq.upstreamCallsMade(), providerFailures.snapshot());
+      completeRun(deps, auditOutcomeFor(err), safeUpstreamCalls(statiq), providerFailures.snapshot());
       throw err;
     }
   });
@@ -392,7 +397,7 @@ export function createApp(deps: AppDeps): Hono {
         },
       );
     } catch (err) {
-      completeRun(deps, auditOutcomeFor(err), statiq.upstreamCallsMade(), providerFailures.snapshot());
+      completeRun(deps, auditOutcomeFor(err), safeUpstreamCalls(statiq), providerFailures.snapshot());
       throw err;
     }
     await recordPlanCounter(deps.counters, bundle.plan);
@@ -435,7 +440,7 @@ export function createApp(deps: AppDeps): Hono {
       const { stationIds, notes } = parseChoiceJson(content);
 
       if (!stationIds || stationIds.length === 0) {
-        completeRun(deps, 'ai-invalid', statiq.upstreamCallsMade(), providerFailures.snapshot());
+        completeRun(deps, 'ai-invalid', safeUpstreamCalls(statiq), providerFailures.snapshot());
         return c.json({
           plan: bundle.plan,
           ai: { applied: false, reason: 'The AI returned no stop sequence; showing the computed plan.' },
@@ -444,7 +449,7 @@ export function createApp(deps: AppDeps): Hono {
 
       const validation = validateAiChoice(bundle, { stationIds, notes }, planOptions, resolved.config);
       if (!validation.ok) {
-        completeRun(deps, 'ai-invalid', statiq.upstreamCallsMade(), providerFailures.snapshot());
+        completeRun(deps, 'ai-invalid', safeUpstreamCalls(statiq), providerFailures.snapshot());
         return c.json({
           plan: bundle.plan,
           ai: { applied: false, reason: `The AI choice was rejected (${validation.reason}). Showing the computed plan.` },
@@ -452,14 +457,14 @@ export function createApp(deps: AppDeps): Hono {
       }
 
       const rebuilt = assembleAiPlan(bundle, validation.seq, { applied: true, notes }, planOptions, resolved.config);
-      completeRun(deps, 'ok', statiq.upstreamCallsMade(), providerFailures.snapshot());
+      completeRun(deps, 'ok', safeUpstreamCalls(statiq), providerFailures.snapshot());
       return c.json({ plan: rebuilt, ai: { applied: true, notes } });
     } catch (err) {
       const reason =
         err instanceof AiProviderError || err instanceof PlanningError || err instanceof SyntaxError
           ? err.message
           : 'The AI provider failed; showing the computed plan.';
-      completeRun(deps, 'ai-error', statiq.upstreamCallsMade(), providerFailures.snapshot());
+      completeRun(deps, 'ai-error', safeUpstreamCalls(statiq), providerFailures.snapshot());
       return c.json({
         plan: bundle.plan,
         ai: { applied: false, reason },
