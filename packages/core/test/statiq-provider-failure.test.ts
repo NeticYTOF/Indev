@@ -193,4 +193,25 @@ describe('Statiq provider failure evidence', () => {
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({ httpStatus: 200, code: 'deadline', dispatchSeq: 1 });
   });
+
+  it('keeps predispatch null-sequence refusals distinct and never uses a global dedupe set', async () => {
+    const collector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    const budget = new UpstreamBudget(1);
+    budget.reserveAttempt();
+    const client = clientWith(
+      async () => { throw new Error('must not dispatch'); },
+      collector,
+      { budget },
+    );
+    await expect(client.markers(0, 0)).rejects.toThrow();
+    await expect(client.markers(1, 1)).rejects.toThrow();
+
+    const records = collector.snapshot().failures;
+    expect(records).toHaveLength(2);
+    expect(records.every((record) =>
+      record.code === 'budget_exhausted' && record.dispatchSeq === null)).toBe(true);
+    expect(client.dispatchedAttemptsMade()).toBe(0);
+  });
 });
