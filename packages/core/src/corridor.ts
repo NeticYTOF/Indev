@@ -21,10 +21,16 @@ import { pMap } from './utils.js';
 import { isAbortLike, StatiqApiError, StatiqRunFatalError } from './statiq.js';
 import { UpstreamRunStoppedError } from './upstream-budget.js';
 import type { StatiqMarker, StatiqMarkersResponse } from './types.js';
+import type { ProviderCallContext } from './provider-failure.js';
 
 /** The marker-fetching surface the corridor needs (for guards in tests). */
 export interface MarkerSource {
-  markers(lat: number, lon: number, signal?: AbortSignal): Promise<StatiqMarkersResponse>;
+  markers(
+    lat: number,
+    lon: number,
+    signal?: AbortSignal,
+    context?: ProviderCallContext,
+  ): Promise<StatiqMarkersResponse>;
 }
 
 export interface CorridorCandidate {
@@ -168,7 +174,9 @@ export async function scanCorridor(
 
   await pMap(samplePoints, concurrency, async (p, i) => {
     try {
-      const res = await statiq.markers(p.lat, p.lon, signal);
+      const res = await statiq.markers(p.lat, p.lon, signal, {
+        endpointClass: 'stations/markers', phase: 'scan', sampleOrdinal: i + 1,
+      });
       // Missing/non-array marker lists are coverage holes, not proof that
       // a sample has no chargers. Check before success counting so a bad
       // list cannot be counted as both completed successfully and failed.
@@ -204,10 +212,9 @@ export async function scanCorridor(
       ) {
         throw err;
       }
+      // Status-only classification: raw body text is never inspected.
       const cause: SampleFailCause =
-        err instanceof StatiqApiError && (err.status === 429 || err.status === 400 && err.body.includes('wait'))
-          ? 'throttled'
-          : 'error';
+        err instanceof StatiqApiError && err.status === 429 ? 'throttled' : 'error';
       failedSamples.push({ chainageKm: sampleChainages[i] ?? 0, cause });
       report();
       // A failed sample leaves a partial blind spot (neighbouring samples

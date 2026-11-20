@@ -29,6 +29,11 @@ import { isAbortLike, StatiqRunFatalError, type StatiqClient } from './statiq.js
 import { UpstreamBudget, UpstreamRunStoppedError } from './upstream-budget.js';
 import { estimateRunWork } from './work-estimate.js';
 import type { StatiqStationDetail } from './types.js';
+import {
+  createProviderFailureCollector,
+  type ProviderCallContext,
+  type ProviderFailureCollector,
+} from './provider-failure.js';
 import { resolveVehicle, type ResolvedVehicle } from './vehicle-catalog.js';
 import {
   DEFAULT_PLAN_OPTIONS,
@@ -49,6 +54,8 @@ export interface PlannerDeps {
   vehicle?: VehicleConfig;
   /** Resolved vehicle to stamp on the plan; defaults to the default Harrier profile. */
   resolvedVehicle?: ResolvedVehicle;
+  /** Caller-owned, per-run completion-only provider failure collector. */
+  failureCollector?: ProviderFailureCollector;
 }
 
 interface Candidate {
@@ -161,6 +168,7 @@ export async function planTripDetailed(
   options: PlanOptions = {},
 ): Promise<PlanBundle> {
   const baseOpts = mergePlanOptions(options);
+  const failureCollector = deps.failureCollector ?? createProviderFailureCollector();
   const vehicle = deps.vehicle ?? HARIER_EV_75;
   const resolvedVehicle: ResolvedVehicle = deps.resolvedVehicle ?? resolveVehicle();
   // A user-supplied real-world range only TIGHTENS the configured maximum
@@ -209,13 +217,28 @@ export async function planTripDetailed(
 
   let clientBudgeted = false;
   if (typeof deps.statiq.attachRunBudget === 'function') {
-    deps.statiq.attachRunBudget(runBudget);
+    deps.statiq.attachRunBudget(runBudget, failureCollector);
     clientBudgeted = true;
   }
   const hooks: GuardHooks = {
     // Logical fallback only for statiq doubles without budget enforcement.
-    reserveCall: clientBudgeted ? undefined : () => runBudget.reserveAttempt(),
+    reserveCall: clientBudgeted ? undefined : () => {
+      try { runBudget.reserveAttempt(); } catch (err) {
+        try {
+          failureCollector.record({
+            endpointClass: 'none', phase: 'run',
+            code: err instanceof UpstreamRunStoppedError && err.cause === 'budget-exhausted'
+              ? 'budget_exhausted'
+              : err instanceof UpstreamRunStoppedError && err.cause === 'auth'
+                ? 'fatal_auth'
+                : 'fatal_throttled',
+          });
+        } catch { /* diagnostics never alter policy */ }
+        throw err;
+      }
+    },
     budget: runBudget,
+    failureCollector,
     stats,
     signal: deadlineController.signal,
   };
@@ -379,6 +402,7 @@ interface GuardHooks {
   /** Progress stats updated by planCore for honest failure evidence. */
   stats: RunProgressStats;
   signal: AbortSignal;
+  failureCollector: ProviderFailureCollector;
 }
 
 async function planCore(
@@ -394,13 +418,20 @@ async function planCore(
    *  for real statiq deps (per transport attempt) or in reserveCall for
    *  duck-typed doubles (per logical dispatch). */
   const guardedStatiq = {
-    markers: (lat: number, lon: number) => {
+    markers: (
+      lat: number,
+      lon: number,
+      _signal?: AbortSignal,
+      context?: ProviderCallContext,
+    ) => {
       hooks.reserveCall?.();
-      return deps.statiq.markers(lat, lon, hooks.signal);
+      return deps.statiq.markers(lat, lon, hooks.signal, context);
     },
     detailsWithMeta: (stationId: number) => {
       hooks.reserveCall?.();
-      return deps.statiq.detailsWithMeta(stationId, hooks.signal);
+      return deps.statiq.detailsWithMeta(stationId, hooks.signal, {
+        endpointClass: 'stations/details', phase: 'details', sampleOrdinal: null,
+      });
     },
   };
 
@@ -495,12 +526,20 @@ async function planCore(
       // chainage and reachability. Treat that lookup as unknown, not usable.
       if (!hasFreshProvenance(response) || !response || response.ok !== true ||
           (response.station && response.station.stationId !== c.stationId)) {
+        try { hooks.failureCollector.record({
+          endpointClass: 'stations/details', phase: 'details',
+          code: 'station_id_mismatch',
+        }); } catch { /* diagnostics never alter planning */ }
         throw new Error('Station details response does not match the request');
       }
       // Absent charger/connector lists are missing evidence, not proof
       // there are no usable plugs. Explicit empty lists remain valid.
       if (response.station && (!Array.isArray(response.station.chargers) ||
           response.station.chargers.some((charger) => !charger || !Array.isArray(charger.connectors)))) {
+        try { hooks.failureCollector.record({
+          endpointClass: 'stations/details', phase: 'details',
+          code: 'invalid_details_shape',
+        }); } catch { /* diagnostics never alter planning */ }
         throw new Error('Station details are missing charger or connector lists');
       }
       if (response.station) {

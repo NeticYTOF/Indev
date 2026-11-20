@@ -422,7 +422,6 @@ export class StatiqClient {
   ): Promise<T> {
     let lastError: unknown;
     let lastRetryAfterMs: number | undefined;
-    let fatalEvidenceRecorded = false;
     let attemptEvidenceRecorded = false;
     // 1 initial attempt + `retries` retries; aborts are never retried
     for (let attempt = 0; attempt <= this.retries; attempt++) {
