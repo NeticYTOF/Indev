@@ -512,7 +512,7 @@ function planRecord(value: unknown): Record<string, unknown> | null {
 
 function drawablePlan(value: unknown): DrawablePlan | null {
   const raw = planRecord(value);
-  if (!raw || !Array.isArray(raw.geometry)) return null;
+  if (!raw || !Array.isArray(raw.geometry) || raw.geometry.length < 2) return null;
   const geometry: Array<[number, number]> = [];
   for (const point of raw.geometry) {
     const p = planRecord(point);
@@ -522,14 +522,19 @@ function drawablePlan(value: unknown): DrawablePlan | null {
   }
   const origin = planRecord(raw.origin);
   const destination = planRecord(raw.destination);
-  if (stationDirectionsUrl(origin?.lat, origin?.lon) == null ||
-      stationDirectionsUrl(destination?.lat, destination?.lon) == null) return null;
-  const stopsKnown = Array.isArray(raw.stops);
+  if (!origin || !destination) return null;
+  const originLat = origin.lat, originLon = origin.lon;
+  const destinationLat = destination.lat, destinationLon = destination.lon;
+  if (stationDirectionsUrl(originLat, originLon) == null ||
+      stationDirectionsUrl(destinationLat, destinationLon) == null) return null;
+  if (!Array.isArray(raw.stops)) return null;
+  const stopsKnown = true;
   const stops: DrawablePlan['stops'] = [];
-  if (stopsKnown) {
+  {
     for (const entry of raw.stops as unknown[]) {
       const station = planRecord(planRecord(entry)?.station);
-      const lat = station?.lat, lon = station?.lon;
+      if (!station) return null;
+      const lat = station.lat, lon = station.lon;
       if (stationDirectionsUrl(lat, lon) == null) return null;
       stops.push({
         lat: lat as number, lon: lon as number,
@@ -540,8 +545,8 @@ function drawablePlan(value: unknown): DrawablePlan | null {
   }
   return {
     geometry,
-    origin: { lat: origin.lat as number, lon: origin.lon as number, label: typeof origin.label === 'string' ? origin.label : 'Origin' },
-    destination: { lat: destination.lat as number, lon: destination.lon as number, label: typeof destination.label === 'string' ? destination.label : 'Destination' },
+    origin: { lat: originLat as number, lon: originLon as number, label: typeof origin.label === 'string' ? origin.label : 'Origin' },
+    destination: { lat: destinationLat as number, lon: destinationLon as number, label: typeof destination.label === 'string' ? destination.label : 'Destination' },
     stops, stopsKnown,
   };
 }
