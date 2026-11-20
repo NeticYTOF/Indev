@@ -92,4 +92,35 @@ describe('resolveVehicle', () => {
       resolveVehicle({ entryId: 'tata-nexon-ev-lr-45', realWorldRangeKm: 5000 }),
     ).toThrow(VehicleSelectionError);
   });
+
+  it.each([
+    ['string', 'harrier'],
+    ['array', []],
+    ['number', 42],
+    ['boolean', true],
+    ['null', null],
+  ])('rejects malformed vehicle selection containers (%s)', (_name, value) => {
+    expect(() => resolveVehicle(value as never)).toThrow(VehicleSelectionError);
+  });
+
+  it.each([
+    ['catalog id type', { entryId: 123 }],
+    ['range type', { realWorldRangeKm: '450' }],
+    ['custom container', { custom: 'car' }],
+    ['custom label type', { custom: { label: 123, batteryKwh: 20, realWorldRangeKm: 80 } }],
+    ['custom battery type', { custom: { batteryKwh: '60', realWorldRangeKm: 300 } }],
+    ['custom range type', { custom: { batteryKwh: 60, realWorldRangeKm: '300' } }],
+    ['custom claim negative', { custom: { batteryKwh: 60, claimedRangeKm: -1, realWorldRangeKm: 300 } }],
+    ['custom claim type', { custom: { batteryKwh: 60, claimedRangeKm: '500', realWorldRangeKm: 300 } }],
+  ])('rejects malformed supplied field types (%s)', (_name, selection) => {
+    expect(() => resolveVehicle(selection as never)).toThrow(VehicleSelectionError);
+  });
+
+  it('preserves omitted and explicit null optional fields as the documented default', () => {
+    expect(resolveVehicle({}).realWorldRangeKm).toBeNull();
+    expect(resolveVehicle({ realWorldRangeKm: null as never }).realWorldRangeKm).toBeNull();
+    expect(resolveVehicle({
+      custom: { batteryKwh: 60, claimedRangeKm: null as never, realWorldRangeKm: 300 },
+    }).claimedRangeKm).toBeNull();
+  });
 });

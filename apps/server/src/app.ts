@@ -203,6 +203,11 @@ export function createApp(deps: AppDeps): Hono {
       );
     }
 
+    const startSoc = readStartSocPct(b.startSocPct);
+    if (!startSoc.ok) {
+      return c.json({ error: 'startSocPct must be a finite number', code: 'bad_request' }, 400);
+    }
+
     // Vehicle selection (real-world range separation, never invented) -
     // resolved BEFORE the mock branch so synthetic plans echo the request
     // vehicle truthfully and validation errors behave identically in both
@@ -225,7 +230,7 @@ export function createApp(deps: AppDeps): Hono {
 
     const statiq = deps.createStatiq({ retries: statiqRetries });
     const options: PlanOptions = {
-      startSocPct: clampSoc(b.startSocPct),
+      startSocPct: startSoc.value,
       runBudget,
     };
     try {
@@ -261,6 +266,11 @@ export function createApp(deps: AppDeps): Hono {
         { error: 'origin and destination each need label, lat and lon', code: 'bad_request' },
         400,
       );
+    }
+
+    const startSoc = readStartSocPct(b?.startSocPct);
+    if (!startSoc.ok) {
+      return c.json({ error: 'startSocPct must be a finite number', code: 'bad_request' }, 400);
     }
 
     // Vehicle selection resolves first in ALL modes (mock echoes it).
@@ -301,7 +311,7 @@ export function createApp(deps: AppDeps): Hono {
     // Keep the request's starting charge through validation and rebuilding.
     // Omit undefined so the core's default100% remains the default only
     // when no valid starting charge was supplied.
-    const startSocPct = clampSoc(b?.startSocPct);
+    const startSocPct = startSoc.value;
     const planOptions: PlanOptions = {
       runBudget,
       ...(startSocPct === undefined ? {} : { startSocPct }),
@@ -550,6 +560,14 @@ function coordRef(v: unknown): { label: string; lat: number; lon: number } | nul
     };
   }
   return null;
+}
+
+type StartSocRead = { ok: true; value: number | undefined } | { ok: false };
+
+function readStartSocPct(v: unknown): StartSocRead {
+  if (v === undefined) return { ok: true, value: undefined };
+  if (typeof v !== 'number' || !Number.isFinite(v)) return { ok: false };
+  return { ok: true, value: clampSoc(v) };
 }
 
 function clampSoc(v: unknown): number | undefined {

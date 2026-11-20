@@ -145,6 +145,42 @@ describe('GET /api/vehicles', () => {
   });
 });
 
+describe('malformed planning inputs', () => {
+  const endpoints = ['/api/plan', '/api/ai/plan'];
+
+  const vehicleCases: Array<[string, unknown]> = [
+    ['string', 'harrier'],
+    ['array', []],
+    ['number', 123],
+    ['boolean', true],
+    ['custom label number', { custom: { label: 123, batteryKwh: 20, realWorldRangeKm: 80 } }],
+    ['custom negative claim', { custom: { batteryKwh: 60, claimedRangeKm: -1, realWorldRangeKm: 300 } }],
+    ['custom string claim', { custom: { batteryKwh: 60, claimedRangeKm: '500', realWorldRangeKm: 300 } }],
+  ];
+
+  for (const endpoint of endpoints) {
+    it.each(vehicleCases)(`${endpoint} rejects malformed vehicle %s`, async (_name, vehicle) => {
+      const app = createApp(await makeDeps({ mock: true, createStatiq: () => { throw new Error('live call in mock mode!'); } }));
+      const res = await app.request(endpoint, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ origin: ORIGIN, destination: DEST, vehicle }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json() as { code: string }).code).toBe('bad_vehicle');
+    });
+
+    it.each([null, '90', true, Number.NaN])(`${endpoint} rejects malformed startSocPct %j`, async (startSocPct) => {
+      const app = createApp(await makeDeps({ mock: true, createStatiq: () => { throw new Error('live call in mock mode!'); } }));
+      const res = await app.request(endpoint, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ origin: ORIGIN, destination: DEST, startSocPct }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json() as { code: string }).code).toBe('bad_request');
+    });
+  }
+});
+
 describe('planning coordinate bounds', () => {
   for (const endpoint of ['/api/plan', '/api/ai/plan']) {
     for (const field of ['origin', 'destination']) {

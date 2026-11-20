@@ -163,6 +163,33 @@ function derivationError(label: string, issue: string): never {
   throw new VehicleSelectionError(`${label}: ${issue}`);
 }
 
+function record(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function selectionError(message: string): never {
+  throw new VehicleSelectionError(message);
+}
+
+function optionalString(value: unknown, field: string, label: string): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') selectionError(`${label}: ${field} must be a string`);
+  return value;
+}
+
+function optionalNumber(value: unknown, field: string, label: string): number | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    selectionError(`${label}: ${field} must be a finite number`);
+  }
+  return value;
+}
+
+function requiredNumber(value: unknown, field: string, label: string): number {
+  if (value === undefined || value === null) selectionError(`${label}: ${field} is required`);
+  return optionalNumber(value, field, label) as number;
+}
+
 function deriveConfig(
   label: string,
   batteryKwh: number,
@@ -203,39 +230,43 @@ function deriveConfig(
  * - Custom vehicle: user must provide battery + real-world range.
  */
 export function resolveVehicle(selection?: VehicleSelection): ResolvedVehicle {
-  // A range-only selection refers to the default vehicle. An explicit
-  // user range must not disappear just because the optional id is absent.
-  if (selection && !selection.entryId && !selection.custom && selection.realWorldRangeKm != null) {
-    selection = { ...selection, entryId: DEFAULT_HARRIER_ENTRY_ID };
-  }
-  if (!selection || (!selection.entryId && !selection.custom)) {
-    return {
-      config: HARIER_EV_75,
-      label: 'Tata Harrier EV (75 kWh)',
-      catalogId: DEFAULT_HARRIER_ENTRY_ID,
-      batteryKwh: HARIER_EV_75.batteryKwh,
-      claimedRangeKm: 627,
-      realWorldRangeKm: null,
-    };
-  }
+  if (selection === undefined) return defaultHarrier();
 
-  if (selection.custom) {
-    const c = selection.custom;
-    const label = c.label?.trim() || `Custom (${c.batteryKwh} kWh)`;
-    if (!c.realWorldRangeKm) {
-      derivationError(label, 'real-world range is required (we never invent it)');
+  const sel = selection as unknown;
+  if (!record(sel)) selectionError('vehicle selection must be an object');
+
+  const vehicleLabel = 'Vehicle selection';
+  const range = optionalNumber(sel.realWorldRangeKm, 'real-world range', vehicleLabel);
+  if (range != null && range <= 0) selectionError(`${vehicleLabel}: real-world range must be positive`);
+
+  if (sel.custom !== undefined && sel.custom !== null) {
+    if (!record(sel.custom)) selectionError(`${vehicleLabel}: custom vehicle must be an object`);
+    const custom = sel.custom;
+    const batteryKwh = requiredNumber(custom.batteryKwh, 'battery size', 'Custom vehicle');
+    const customLabelHint = optionalString(custom.label, 'label', `Custom (${batteryKwh} kWh)`);
+    const label = customLabelHint?.trim() || `Custom (${batteryKwh} kWh)`;
+    const realWorldRangeKm = requiredNumber(custom.realWorldRangeKm, 'real-world range', label);
+    if (realWorldRangeKm <= 0) derivationError(label, 'real-world range must be positive');
+    const claimedRangeKm = optionalNumber(custom.claimedRangeKm, 'claimed range', label);
+    if (claimedRangeKm != null && claimedRangeKm <= 0) {
+      derivationError(label, 'claimed range must be positive');
     }
     return {
-      config: deriveConfig(label, c.batteryKwh, c.realWorldRangeKm),
+      config: deriveConfig(label, batteryKwh, realWorldRangeKm),
       label,
       catalogId: null,
-      batteryKwh: c.batteryKwh,
-      claimedRangeKm: c.claimedRangeKm ?? null,
-      realWorldRangeKm: c.realWorldRangeKm,
+      batteryKwh,
+      claimedRangeKm,
+      realWorldRangeKm,
     };
   }
 
-  const entryId = selection.entryId as string;
+  let entryId = optionalString(sel.entryId, 'catalog id', vehicleLabel);
+  // A range-only selection refers to the default vehicle. An explicit user
+  // range must not disappear just because the optional id is absent.
+  if (entryId == null && range != null) entryId = DEFAULT_HARRIER_ENTRY_ID;
+  if (entryId == null) return defaultHarrier();
+
   const entry = VEHICLE_CATALOG.find((e) => e.id === entryId);
   if (!entry) {
     throw new VehicleSelectionError(`Unknown vehicle catalog id "${entryId}"`);
@@ -243,7 +274,7 @@ export function resolveVehicle(selection?: VehicleSelection): ResolvedVehicle {
   const label = `${entry.make} ${entry.model} (${entry.variantLabel})`;
 
   // Default Harrier: runs on the app's working estimates (unchanged default).
-  if (entryId === DEFAULT_HARRIER_ENTRY_ID && selection.realWorldRangeKm == null) {
+  if (entryId === DEFAULT_HARRIER_ENTRY_ID && range == null) {
     return {
       config: HARIER_EV_75,
       label,
@@ -254,18 +285,29 @@ export function resolveVehicle(selection?: VehicleSelection): ResolvedVehicle {
     };
   }
 
-  if (selection.realWorldRangeKm == null) {
+  if (range == null) {
     throw new VehicleSelectionError(
       `${label}: enter your real-world range. The manufacturer claim of ${entry.claimedRangeKm} km cannot be used as real-world range.`,
     );
   }
 
   return {
-    config: deriveConfig(label, entry.batteryKwh, selection.realWorldRangeKm),
+    config: deriveConfig(label, entry.batteryKwh, range),
     label,
     catalogId: entryId,
     batteryKwh: entry.batteryKwh,
     claimedRangeKm: entry.claimedRangeKm,
-    realWorldRangeKm: selection.realWorldRangeKm,
+    realWorldRangeKm: range,
+  };
+}
+
+function defaultHarrier(): ResolvedVehicle {
+  return {
+    config: HARIER_EV_75,
+    label: 'Tata Harrier EV (75 kWh)',
+    catalogId: DEFAULT_HARRIER_ENTRY_ID,
+    batteryKwh: HARIER_EV_75.batteryKwh,
+    claimedRangeKm: 627,
+    realWorldRangeKm: null,
   };
 }
