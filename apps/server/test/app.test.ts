@@ -251,6 +251,42 @@ describe('browser origin and mutation boundary', () => {
     expect(geocode).not.toHaveBeenCalled();
     expect(createStatiq).not.toHaveBeenCalled();
   });
+  it('no-Origin browser Fetch Metadata alone denies provider reads', async () => {
+    const geocode = vi.fn(async () => []);
+    const createStatiq = vi.fn(() => ({}) as unknown as StatiqClient);
+    const app = createApp(await makeDeps({ mock: false, geocode: { search: geocode } as unknown as PhotonGeocoder, createStatiq }));
+    for (const site of ['same-site', 'cross-site']) {
+      expect((await app.request('/api/geocode?q=delhi', { headers: { 'sec-fetch-site': site } })).status).toBe(403);
+      expect((await app.request('/api/stations/9101', { headers: { 'sec-fetch-site': site } })).status).toBe(403);
+    }
+    expect(geocode).not.toHaveBeenCalled();
+    expect(createStatiq).not.toHaveBeenCalled();
+  });
+
+  it('no-Origin browser Fetch Metadata alone denies mutation before a run', async () => {
+    const app = createApp(await makeDeps({ mock: true, createStatiq: () => { throw new Error('live call in mock mode!'); } }));
+    const res = await app.request('/api/plan', {
+      method: 'POST',
+      headers: { ...planHeaders, 'sec-fetch-site': 'same-site' },
+      body: planBody,
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json() as { code: string }).code).toBe('origin_denied');
+    expect(((await (await app.request('/api/health')).json()) as { chargersSeen: number }).chargersSeen).toBe(0);
+  });
+
+  it('no-Origin clients without non-same-origin metadata keep working', async () => {
+    const geocode = vi.fn(async () => []);
+    const providerApp = createApp(await makeDeps({ mock: false, geocode: { search: geocode } as unknown as PhotonGeocoder }));
+    expect((await providerApp.request('/api/geocode?q=delhi')).status).toBe(200);
+    expect((await providerApp.request('/api/geocode?q=delhi', { headers: { 'sec-fetch-site': 'same-origin' } })).status).toBe(200);
+    expect(geocode).toHaveBeenCalledTimes(2);
+
+    const planApp = createApp(await makeDeps({ mock: true, createStatiq: () => { throw new Error('live call in mock mode!'); } }));
+    const planned = await planApp.request('/api/plan', { method: 'POST', headers: planHeaders, body: planBody });
+    expect(await counterAfter(planned, planApp)).toBe(48);
+  });
+
 });
 
 describe('malformed planning inputs', () => {

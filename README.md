@@ -52,6 +52,26 @@ npm run dev            # LIVE mode: server :8787 + web :5173
   and the fail-closed stop semantics (first 429/401/403, exhaustion →
   honest not_determined).
 
+## Local request-origin policy
+
+Stateful and provider-consuming API routes accept browser requests only from
+the exact local Vite origins in `INDEV_ALLOWED_ORIGINS`: a comma-separated list
+of `http://localhost:PORT` or `http://127.0.0.1:PORT` values. Absent config,
+the two documented dev ports are allowed: `5173` (normal/dev-stack) and `5174`
+(ui-verify). The launchers pin this to their own web port. Wildcards, other
+hosts and arbitrary localhost ports are refused.
+
+Browser Fetch Metadata must say `same-origin`; `same-site`, `cross-site`, and
+`none` browser-style requests are refused even when no `Origin` header is
+present. State-changing POSTs also require `application/json`. Local nonbrowser
+clients that send neither `Origin` nor Fetch Metadata (for example the HTTP
+acceptance runner and MCP/Node tooling) keep working; POSTs still use JSON.
+
+This is a **local development/workflow policy only**. No public hostname, TLS
+termination, forwarded-header trust chain, or hosted deployment authority has
+been established. Serving these endpoints from a public origin requires a
+separate reviewed origin/proxy policy; this repository does not claim one.
+
 ## Data & privacy
 
 - Charger data is always fetched live along the route; only a running count

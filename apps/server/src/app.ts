@@ -107,15 +107,16 @@ export function createApp(deps: AppDeps): Hono {
   const allowedWebOrigins = new Set(deps.allowedWebOrigins ?? DEFAULT_ALLOWED_WEB_ORIGINS);
 
   const browserGate = (requireJson: boolean) => async (c: Context, next: Next) => {
+    // Fetch Metadata can identify a browser subresource even when no-cors
+    // omits Origin. Check it independently of Origin; nonbrowser clients
+    // that send neither header remain supported.
+    const fetchSite = c.req.header('sec-fetch-site');
+    if (fetchSite && fetchSite !== 'same-origin') {
+      return c.json({ error: 'browser origin is not allowed', code: 'origin_denied' }, 403);
+    }
     const origin = c.req.header('origin');
-    if (origin !== undefined) {
-      if (!allowedWebOrigins.has(origin)) {
-        return c.json({ error: 'browser origin is not allowed', code: 'origin_denied' }, 403);
-      }
-      const fetchSite = c.req.header('sec-fetch-site');
-      if (fetchSite && fetchSite !== 'same-origin') {
-        return c.json({ error: 'browser origin is not allowed', code: 'origin_denied' }, 403);
-      }
+    if (origin !== undefined && !allowedWebOrigins.has(origin)) {
+      return c.json({ error: 'browser origin is not allowed', code: 'origin_denied' }, 403);
     }
     if (requireJson && c.req.method === 'POST') {
       const contentType = c.req.header('content-type');
