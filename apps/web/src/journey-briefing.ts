@@ -414,7 +414,7 @@ export function buildJourneyBriefingHtml(plan: JourneyBriefingSource): string {
     `.banner{color:#111;border-color:#111}.briefing-meter{background:#eee;border-color:#888}` +
     `.journey-battery-profile{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}` +
     `.briefing-meter-fill{background:#111}.briefing-itinerary th,.briefing-itinerary td{border-color:#888}` +
-    `.briefing-itinerary{min-width:0;table-layout:fixed;font-size:10px}.briefing-itinerary td{white-space:nowrap}` +
+    `.briefing-scroll{overflow:visible}.briefing-itinerary{min-width:0;table-layout:fixed;font-size:10px}.briefing-itinerary td{white-space:nowrap}` +
     `.briefing-itinerary tbody th{min-width:120px}` +
     `.briefing-itinerary thead th{color:#111;white-space:nowrap}` +
     `.briefing-summary>div,.journey-leg,.journey-battery-point,.briefing-itinerary tr{break-inside:avoid;page-break-inside:avoid}` +
