@@ -10,6 +10,7 @@ import type { TripPlan, PlanStop } from '@indeev/core';
 import { el, escapeHtml } from './planner.js';
 import { api } from './api.js';
 import { downloadAnimatedExport } from './export.js';
+import { downloadJourneyBriefing, renderJourneyBriefingMarkup } from './journey-briefing.js';
 import { toast } from './toast.js';
 import { storageWarningText, storageWarningElement } from './storage-warning.js';
 import { formatReviewCount, formatDuration, formatEta, formatInr, lastUsedLabel, formatDateTime, formatTariff } from './format.js';
@@ -74,12 +75,17 @@ export function renderPlanPanel(
     <div class="plan-actions">
       <button type="button" class="btn btn-ghost" data-save>Trip is not saved yet — click to save</button>
       <button type="button" class="btn btn-ghost" data-export>Animated export</button>
+      <button type="button" class="btn btn-ghost" data-itinerary-export>Journey itinerary (HTML)</button>
+      <button type="button" class="btn btn-ghost" data-print>Print itinerary</button>
       ${mapsUrl ? `<a class="btn btn-ghost" data-gmaps href="${escapeHtml(mapsUrl)}" target="_blank" rel="noreferrer">Google Maps directions</a>` : '<span class="hint">Google Maps directions unavailable</span>'}
     </div>
   `);
   results.appendChild(actions);
 
   wirePlanActions(actions as HTMLElement, plan);
+
+  // ---- journey briefing: whole-trip legs, battery profile, itinerary ----
+  results.appendChild(el(renderJourneyBriefingMarkup(plan)));
 
   // ---- stops timeline ----
   const stopsWrap = el('<div class="stops"></div>');
@@ -120,6 +126,21 @@ function wirePlanActions(actions: HTMLElement, plan: TripPlan): void {
       toast('Animated export downloaded.');
     } catch {
       toast('Export failed.', 'bad');
+    }
+  });
+  actions.querySelector('[data-itinerary-export]')?.addEventListener('click', () => {
+    try {
+      downloadJourneyBriefing(plan);
+      toast('Journey itinerary downloaded.');
+    } catch {
+      toast('Itinerary export failed.', 'bad');
+    }
+  });
+  actions.querySelector('[data-print]')?.addEventListener('click', () => {
+    try {
+      window.print();
+    } catch {
+      toast('Print is unavailable in this browser.', 'bad');
     }
   });
 }
