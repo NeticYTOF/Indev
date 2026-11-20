@@ -18,7 +18,16 @@ record the user selected. Selected trips hidden by the search remain in the
 comparison and are announced; clearing or removing the selection updates that
 notice without rewriting any saved record.
 
-The query and sort are held only in this page's in-memory drawer state. Closing
+Two additional local selects filter the same drawer by **Saved source** (All,
+Live, Synthetic, Unknown) and **Saved plan status** (All, OK, Degraded,
+Unknown). These are stored plan provenance and planning-time integrity labels,
+not current charger freshness or availability. Only the exact core values are
+accepted; missing, null or malformed fields appear only under Unknown. The
+filters combine with search and sort, keep the original record index on every
+row, and can be reset with **Clear all filters**; **Clear search** continues to
+reset only the text query. Unknown source/status rows are labelled in the list.
+
+The query, filters and sort are held only in this page's in-memory drawer state. Closing
 and reopening the drawer, or a successful delete refresh, keeps the same view,
 including a no-match result when the last visible record was deleted; a page
 reload returns to the unfiltered newest-first view. Rebuilding the drawer clears
