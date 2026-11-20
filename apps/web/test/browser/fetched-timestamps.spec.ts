@@ -16,7 +16,7 @@ for (const saved of [false, true]) {
       stations: [{ stationId: 1, name: 'Fixture station', lat: 27.5, lon: 76.5 }],
     }] } }));
     await page.route('**/api/stations/*', (route) => route.fulfill({ json: { station: {
-      fetchedAt, synthetic: true, rating: 4, reviewCount: 5, reliability: null, chargers: [],
+      stationId: 1, fetchedAt, synthetic: true, rating: 4, reviewCount: 5, reliability: null, chargers: [],
       ccs2: { usable: 2, free: 1, faulted: 0, uncertain: 0 },
     } } }));
     await page.route('**/api/plan', async (route) => {

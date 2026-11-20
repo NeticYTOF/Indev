@@ -24,7 +24,7 @@ for (const failure of ['http', 'network']) {
         if (failure === 'network') await route.abort('failed');
         else await route.fulfill({ status: 503, json: { error: 'Synthetic temporary failure' } });
       } else await route.fulfill({ json: { station: {
-        synthetic: true, rating: 4, reviewCount: 5, reliability: null, chargers: [],
+        stationId: 1, synthetic: true, rating: 4, reviewCount: 5, reliability: null, chargers: [],
         ccs2: { usable: 2, faulted: 0, uncertain: 0 },
       } } });
     });
