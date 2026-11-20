@@ -224,29 +224,63 @@ describe('provider failure diagnostics', () => {
     }
     expect(parseGatewayUpstreamStatus('100')).toBe(100);
     expect(parseGatewayUpstreamStatus('599')).toBe(599);
-    for (const bad of ['+429', '429x', '4e2', ' 429', '429 ', '099', '600', '', 429, null]) {
+    for (const bad of [
+      '+429', '429x', '4e2', ' 429', '429 ', '099', '600', '',
+      '429\n', '429\r', '429\r\n', '429\u2028', '429\u2029', 429, null,
+    ]) {
       expect(parseGatewayUpstreamStatus(bad)).toBeNull();
     }
   });
 
-  it('sanitizes gateway metadata independently inside the collector', () => {
+  it('sanitizes numeric gateway metadata independently inside the collector', () => {
     const collector = createProviderFailureCollector(clockSequence([
       { wallMs: 0, monotonicMs: 0 }, { wallMs: 1, monotonicMs: 1 },
     ]));
     collector.record({
       endpointClass: 'stations/markers', phase: 'scan', sampleOrdinal: 1,
       code: 'http_400', httpStatus: 400,
-      gatewayFailureCode: 'upstream_http',
-      gatewayUpstreamStatus: '429' as never,
+      gatewayFailureCode: 'upstream_http', gatewayUpstreamStatus: 429,
     });
-    collector.record({
-      endpointClass: 'stations/markers', phase: 'scan', sampleOrdinal: 2,
-      code: 'http_400', httpStatus: 400,
-      gatewayFailureCode: 'not_allowed' as never,
-      gatewayUpstreamStatus: 500 as never,
+    for (const bad of [429.5, Number.NaN, Number.POSITIVE_INFINITY, 99, 600, -1, '429' as never]) {
+      collector.record({
+        endpointClass: 'stations/markers', phase: 'scan', code: 'http_400', httpStatus: 400,
+        gatewayFailureCode: 'upstream_http', gatewayUpstreamStatus: bad,
+      });
+    }
+    const inherited = Object.create({ gatewayFailureCode: 'upstream_http', gatewayUpstreamStatus: 429 });
+    inherited.endpointClass = 'stations/markers';
+    inherited.phase = 'scan';
+    inherited.code = 'http_400';
+    inherited.httpStatus = 400;
+    collector.record(inherited);
+    Object.defineProperty(inherited, 'gatewayUpstreamStatus', {
+      get() { throw new Error('must not affect diagnostics'); }, enumerable: true,
     });
+    collector.record(inherited);
+
     const records = collector.snapshot().failures;
     expect(records[0]).toMatchObject({ gatewayFailureCode: 'upstream_http', gatewayUpstreamStatus: 429 });
-    expect(records[1]).toMatchObject({ gatewayFailureCode: null, gatewayUpstreamStatus: null });
+    expect(records.slice(1).every((record) =>
+      record.gatewayFailureCode === 'upstream_http' && record.gatewayUpstreamStatus === null)).toBe(true);
+
+    const detailsSpoof = createProviderFailureCollector({ now: () => ({ wallMs: 0, monotonicMs: 0 }) });
+    detailsSpoof.record({
+      endpointClass: 'stations/details', phase: 'details',
+      code: 'http_400', httpStatus: 400,
+      gatewayFailureCode: 'upstream_http', gatewayUpstreamStatus: 429,
+    });
+    expect(detailsSpoof.snapshot().failures[0]).toMatchObject({
+      gatewayFailureCode: null, gatewayUpstreamStatus: null,
+    });
+
+    const successSpoof = createProviderFailureCollector({ now: () => ({ wallMs: 0, monotonicMs: 0 }) });
+    successSpoof.record({
+      endpointClass: 'stations/markers', phase: 'scan',
+      code: 'invalid_marker_list', httpStatus: 200,
+      gatewayFailureCode: 'upstream_http', gatewayUpstreamStatus: 429,
+    });
+    expect(successSpoof.snapshot().failures[0]).toMatchObject({
+      gatewayFailureCode: null, gatewayUpstreamStatus: null,
+    });
   });
 });
