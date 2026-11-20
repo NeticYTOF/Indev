@@ -144,9 +144,15 @@ function normalizeConnector(value: unknown, warnings: string[], index: number): 
 
 function normalizeCharger(value: unknown, warnings: string[], index: number): StationChargerEvidence {
   const ch = record(value);
-  const rawConnectors = Array.isArray(ch?.connectors) ? ch!.connectors as unknown[] : [];
+  const rawConnectors = Array.isArray(ch?.connectors)
+    ? ch!.connectors as unknown[]
+    : Array.isArray(ch?.plugs)
+      ? ch!.plugs as unknown[]
+      : [];
   if (!ch) warnings.push(`Charger ${index} had no usable record.`);
-  if (ch && !Array.isArray(ch.connectors)) warnings.push(`Charger ${index} connectors are Unknown.`);
+  if (ch && !Array.isArray(ch.connectors) && !Array.isArray(ch.plugs)) {
+    warnings.push(`Charger ${index} connectors are Unknown.`);
+  }
   const connectors = rawConnectors.map((connector, connectorIndex) =>
     normalizeConnector(connector, warnings, connectorIndex + 1));
   return {
@@ -233,7 +239,11 @@ export function normalizePlannedStation(station: PlanStop['station']): StationEv
 export function normalizeFetchedStationResponse(body: unknown): StationEvidence | null {
   const raw = record(body);
   if (!raw || !('station' in raw)) return null;
-  return normalizeStation(raw.station, 'fetched');
+  const evidence = normalizeStation(raw.station, 'fetched');
+  if (raw.live === false || raw.retained === true) {
+    evidence.warnings.push('This station response is not marked freshly fetched; treat it as retained evidence.');
+  }
+  return evidence;
 }
 
 export function stationMatchesId(evidence: StationEvidence, stationId: number): boolean {
