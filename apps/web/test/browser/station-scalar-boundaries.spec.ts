@@ -103,6 +103,7 @@ test('invalid saved geometry is omitted whole and never trimmed into a route', a
     const module = await import('/src/trips.ts');
     module.renderTripsDrawer(document.getElementById('trips-drawer'), null, () => true);
   });
+  await page.locator('#trips-button').click();
   await page.getByRole('button', { name: 'Open', exact: true }).click();
   await expect(page.locator('.plan-results')).toContainText('no map route was drawn');
   await expect(page.locator('.plan-results')).not.toContainText('Charging stops 0');
