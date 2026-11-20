@@ -244,7 +244,7 @@ describe('browser origin and mutation boundary', () => {
   it('untrusted browser origin cannot consume geocode or station providers', async () => {
     const geocode = vi.fn(async () => []);
     const createStatiq = vi.fn(() => ({}) as unknown as StatiqClient);
-    const app = createApp(await makeDeps({ mock: false, geocode: { search: geocode } as unknown as PhotonGeocoder, createStatiq }));
+    const app = createApp(await makeDeps({ mock: false, geocoder: { search: geocode } as unknown as PhotonGeocoder, createStatiq }));
     const headers = { origin: 'http://localhost:9999', 'sec-fetch-site': 'same-site' };
     expect((await app.request('/api/geocode?q=delhi', { headers })).status).toBe(403);
     expect((await app.request('/api/stations/9101', { headers })).status).toBe(403);
@@ -254,7 +254,7 @@ describe('browser origin and mutation boundary', () => {
   it('no-Origin browser Fetch Metadata alone denies provider reads', async () => {
     const geocode = vi.fn(async () => []);
     const createStatiq = vi.fn(() => ({}) as unknown as StatiqClient);
-    const app = createApp(await makeDeps({ mock: false, geocode: { search: geocode } as unknown as PhotonGeocoder, createStatiq }));
+    const app = createApp(await makeDeps({ mock: false, geocoder: { search: geocode } as unknown as PhotonGeocoder, createStatiq }));
     for (const site of ['same-site', 'cross-site']) {
       expect((await app.request('/api/geocode?q=delhi', { headers: { 'sec-fetch-site': site } })).status).toBe(403);
       expect((await app.request('/api/stations/9101', { headers: { 'sec-fetch-site': site } })).status).toBe(403);
@@ -279,7 +279,7 @@ describe('browser origin and mutation boundary', () => {
     const geocode = vi.fn(async () => []);
     // Non-mock is required here: the mock branch correctly serves synthetic
     // geocode results without calling the injected provider.
-    const providerApp = createApp(await makeDeps({ mock: false, geocode: { search: geocode } as unknown as PhotonGeocoder }));
+    const providerApp = createApp(await makeDeps({ mock: false, geocoder: { search: geocode } as unknown as PhotonGeocoder }));
     expect((await providerApp.request('/api/geocode?q=delhi')).status).toBe(200);
     expect((await providerApp.request('/api/geocode?q=delhi', { headers: { 'sec-fetch-site': 'same-origin' } })).status).toBe(200);
     expect(geocode).toHaveBeenCalledTimes(2);
