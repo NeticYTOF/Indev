@@ -413,9 +413,13 @@ export function buildTripComparisonHtml(comparison: TripComparison): string {
     `.compare-table th,.compare-table td{border:1px solid #34322E;padding:7px;text-align:left;vertical-align:top}.compare-delta{color:#D87932;white-space:nowrap}` +
     `@media (max-width:900px){.compare-grid{grid-template-columns:1fr}}` +
     `@media print{body{background:#fff;color:#111;padding:0}.compare-card,.compare-difference,.compare-context{border-color:#888;background:#fff}.hint,.compare-facts dt,.compare-stop-facts{color:#444}` +
-    `.badge,.compare-delta{color:#111;border-color:#888}.compare-grid{grid-template-columns:repeat(3,minmax(0,1fr))}` +
-    `.compare-toolbar,.compare-card-actions{display:none!important}.compare-card h4,.compare-difference h4,.compare-stop-id,.compare-notes{color:#111}` +
+    `.badge,.compare-delta{color:#111;border-color:#888}.compare-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}` +
+    `[data-compare-card='a']{grid-area:1/1}[data-compare-card='b']{grid-area:1/2}.compare-difference{grid-area:2/1/3/3}` +
+    `.compare-toolbar{display:block!important;border:0;padding:0 0 8px}.compare-toolbar-actions,.compare-toolbar .hint,.compare-card-actions{display:none!important}.compare-toolbar h2{display:block!important;font-size:18pt}` +
+    `.compare-card h4,.compare-difference h4,.compare-stop-id,.compare-notes,.compare-toolbar h2{color:#111}` +
     `.compare-toolbar h2,.compare-card h3,.compare-difference h3,.compare-slot,.compare-table caption,.compare-endpoints{color:#111}` +
+    `.compare-table{table-layout:fixed;width:100%;font-size:10px}.compare-table th,.compare-table td,.compare-delta{white-space:normal;overflow-wrap:anywhere}` +
+    `.compare-card h3,.compare-card h4,.compare-difference h3{break-after:avoid;page-break-after:avoid}` +
     `.compare-notes,.compare-stop,.compare-facts div{break-inside:avoid;page-break-inside:avoid}}` +
     `</style></head><body><main>${renderTripComparisonMarkup(comparison)}</main></body></html>`;
 }
