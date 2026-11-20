@@ -192,6 +192,11 @@ function plannedEvidenceMarkup(options: EvidencePanelOptions): string {
     `</section>`;
 }
 
+/** Pure fetched-snapshot markup; shared by the panel and unit regression tests. */
+export function renderFetchedStationEvidence(evidence: StationEvidence): string {
+  return evidenceMarkup(evidence);
+}
+
 export function renderStationEvidencePanel(options: EvidencePanelOptions): string {
   const stationId = options.plannedStation?.stationId ?? options.savedStation?.stationId;
   const label = options.label ?? options.plannedStation?.name ?? options.savedStation?.name ?? 'this station';
@@ -252,7 +257,7 @@ export function wireStationEvidence(
         : evidence.provenance === 'retained'
           ? `Retained response received ${received}; snapshot fetched ${snapshot}. Not a fresh fetch.`
           : `Response received ${received}; snapshot time is not verified.`;
-      target.innerHTML = evidenceMarkup(evidence);
+      target.innerHTML = renderFetchedStationEvidence(evidence);
       panel.open = true;
     } catch {
       if (requestGeneration !== generation || !status.isConnected) return;

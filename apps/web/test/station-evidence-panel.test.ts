@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { renderStationEvidencePanel } from '../src/station-evidence-panel.js';
+import { renderFetchedStationEvidence, renderStationEvidencePanel } from '../src/station-evidence-panel.js';
+import { normalizeFetchedStationResponse } from '../src/station-evidence.js';
 import type { PlanStop } from '@indeev/core';
 
 function plannedStop(): PlanStop {
@@ -63,5 +64,50 @@ describe('station evidence panel', () => {
     expect(markup).toContain('Rs. 0/kWh');
     expect(markup).toContain('Unknown');
     expect(markup).toContain('Unknown → 60%');
+  });
+
+  it('distinguishes an empty charger list from an unknown charger list', () => {
+    const base = {
+      stationId: 42, name: 'Boundary stop', fetchedAt: '2026-11-20T10:00:00Z',
+    };
+    const empty = normalizeFetchedStationResponse({ station: { ...base, chargers: [] } });
+    const missing = normalizeFetchedStationResponse({ station: base });
+    expect(empty?.chargersMissing).toBe(false);
+    expect(missing?.chargersMissing).toBe(true);
+    const emptyMarkup = renderFetchedStationEvidence(empty!);
+    const missingMarkup = renderFetchedStationEvidence(missing!);
+    expect(emptyMarkup).toContain('No chargers returned.');
+    expect(emptyMarkup).not.toContain('Charger list is Unknown.');
+    expect(missingMarkup).toContain('Charger list is Unknown.');
+  });
+
+  it('keeps all returned charger facts when connector evidence is missing', () => {
+    const evidence = normalizeFetchedStationResponse({ station: {
+      stationId: 42, name: 'Charger-only snapshot', fetchedAt: '2026-11-20T10:00:00Z',
+      chargers: [{ chargerId: 9, name: 'DC 50', type: 'DC', kw: 50, pricePerKwh: 22.75, lastUsedOn: '18/11/2026' }],
+    } });
+    const markup = renderFetchedStationEvidence(evidence!);
+    expect(markup).toContain('DC 50');
+    expect(markup).toContain('50 kW');
+    expect(markup).toContain('Rs. 22.75/kWh');
+    expect(markup).toContain('18/11/2026');
+    expect(markup).toContain('Connector list is Unknown for this charger.');
+  });
+
+  it('escapes hostile long upstream strings instead of treating them as markup', () => {
+    const hostile = '<img src=x onerror=stationProof><script>stationProof</script>' + 'x'.repeat(240);
+    const evidence = normalizeFetchedStationResponse({ station: {
+      stationId: 42, name: hostile, address: hostile, city: hostile,
+      hours: hostile, openText: hostile, fetchedAt: '2026-11-20T10:00:00Z',
+      chargers: [{ chargerId: 9, name: hostile, type: 'DC', kw: 50, pricePerKwh: 22.75, lastUsedOn: hostile,
+        connectors: [{ connectorId: 1, type: hostile, status: hostile, available: true, note: hostile }] }],
+    } });
+    const markup = renderFetchedStationEvidence(evidence!);
+    expect(markup).not.toContain('<img src=x');
+    expect(markup).not.toContain('<script>');
+    expect(markup).toContain('&lt;img src=x');
+    expect(markup).toContain('&lt;script&gt;');
+    expect(markup).not.toContain('<img src=x onerror=stationProof>');
+    expect(markup).toContain('x'.repeat(240));
   });
 });
