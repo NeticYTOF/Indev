@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { formatReviewCount, lastUsedLabel } from '../src/format.js';
-import { stationDirectionsUrl, routeDirectionsUrl } from '../src/safe-url.js';
+import { stationDirectionsUrl, routeDirectionsUrl, routeDirectionsLinks } from '../src/safe-url.js';
 
 describe('station scalar display boundaries', () => {
   it('preserves actual numeric zero and positive review counts', () => {
@@ -23,6 +23,33 @@ describe('station scalar display boundaries', () => {
     expect(routeDirectionsUrl(origin, destination, [{ lat: 27, lon: 76 }, { lat: 'bad', lon: 75.5 }])).toBeNull();
     expect(routeDirectionsUrl({ lat: 91, lon: 77 }, destination, [])).toBeNull();
   });
+  it('keeps zero through 14 chargers in exact Maps order with mobile-safe chunks', () => {
+    const origin = { lat: 28, lon: 77 }, destination = { lat: 26, lon: 75 };
+    const allStops = Array.from({ length: 14 }, (_, index) => ({
+      lat: 27 - index * 0.01, lon: 76 - index * 0.01,
+    }));
+    const coordinate = (point: { lat: number; lon: number }) => `${point.lat},${point.lon}`;
+    for (const count of [0, 1, 3, 4, 8, 9, 14]) {
+      const stops = allStops.slice(0, count);
+      const links = routeDirectionsLinks(origin, destination, stops);
+      expect(links).not.toBeNull();
+      const flattened: string[] = [];
+      for (const link of links ?? []) {
+        const params = new URL(link.url).searchParams;
+        const waypoints = (params.get('waypoints') ?? '').split('|').filter(Boolean);
+        expect(waypoints.length).toBeLessThanOrEqual(3);
+        expect(link.url.length).toBeLessThanOrEqual(1800);
+        const segment = [params.get('origin') as string, ...waypoints, params.get('destination') as string];
+        if (flattened.length > 0 && flattened.at(-1) === segment[0]) flattened.push(...segment.slice(1));
+        else flattened.push(...segment);
+      }
+      expect(flattened).toEqual([origin, ...stops, destination].map(coordinate));
+    }
+    expect(routeDirectionsLinks(origin, destination, [
+      { lat: 27, lon: 76 }, { lat: 'bad', lon: 75.9 },
+    ])).toBeNull();
+  });
+
   it('makes Directions links only from valid numeric coordinates, including zero and boundaries', () => {
     expect(stationDirectionsUrl(0, 0)).toBe('https://www.google.com/maps/dir/?api=1&destination=0%2C0');
     expect(stationDirectionsUrl(-90, 180)).toBe('https://www.google.com/maps/dir/?api=1&destination=-90%2C180');

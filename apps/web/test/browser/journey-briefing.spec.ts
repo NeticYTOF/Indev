@@ -189,6 +189,13 @@ test('downloadable itinerary is standalone, labelled, and complete', async ({ pa
   expect(html).toContain('Journey briefing');
   expect(html).toContain(escaped(plan.stops[0]!.station.name));
   expect(html).toContain(`${Math.round(plan.stops[0]!.chargeKwh * 10) / 10} kWh`);
+  expect(html).toContain(`${Math.round(plan.stops[0]!.chargeTimeMin)} min`);
+  if (plan.stops[0]!.estPriceInr != null) {
+    expect(html).toContain(`Rs. ${Math.round(plan.stops[0]!.estPriceInr).toLocaleString('en-IN')}`);
+  } else {
+    expect(html).toContain('Unknown');
+  }
+  expect(html).toContain(`${Math.round(plan.totals.distanceKm)} km`);
   expect(html).toContain('Synthetic data');
   if (plan.warnings.length > 0) expect(html).toContain(escaped(plan.warnings[0]!));
   expect(html).not.toContain('gradient');
