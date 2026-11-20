@@ -158,3 +158,59 @@ describe('summarizeCcs2', () => {
     expect(s.isUsable).toBe(true);
   });
 });
+
+it.each([0, -60, '60', 'bad', NaN, Infinity, -Infinity])('does not use malformed usable charger power %j as numeric evidence', kw => {
+  const input = station([{ type: 'DC', kw: 60, price: 20, connectors: [conn('available', true, null)] }]);
+  Object.assign(input.chargers[0]!, { kw });
+  const summary = summarizeCcs2(input);
+  expect(summary.isUsable).toBe(true); expect(summary.usable).toBe(1);
+  expect(summary.maxKw).toBeNull(); expect(summary.hasInvalidUsablePower).toBe(true);
+});
+
+it.each([null, undefined])('distinguishes legacy absent-only power %j from malformed power', kw => {
+  const input = station([{ type: 'DC', kw: 60, price: 20, connectors: [conn('available', true, null)] }]);
+  if (kw === undefined) delete (input.chargers[0] as Partial<import('../src/types.js').StatiqCharger>).kw;
+  else Object.assign(input.chargers[0]!, { kw });
+  const summary = summarizeCcs2(input);
+  expect(summary.isUsable).toBe(true); expect(summary.maxKw).toBeNull();
+  expect(summary.hasMissingUsablePower).toBe(true); expect(summary.hasInvalidUsablePower).toBe(false);
+});
+
+it.each([false, true])('selects the same valid power/tariff with malformed sibling first=%s', invalidFirst => {
+  const input = station([
+    { type: 'DC', kw: 60, price: 22, connectors: [conn('charging', false, 'Charging')] },
+    { type: 'DC', kw: 120, price: 999, connectors: [conn('available', true, null)] },
+  ]);
+  Object.assign(input.chargers[1]!, { kw: 'bad' });
+  if (invalidFirst) input.chargers.reverse();
+  const summary = summarizeCcs2(input);
+  expect(summary.maxKw).toBe(60); expect(summary.pricePerKwh).toBe(22);
+  expect(summary.hasInvalidUsablePower).toBe(true); expect(summary.usable).toBe(2);
+});
+
+it.each([-1, '20', 'bad', NaN, Infinity, null, undefined])('keeps invalid or absent selected tariff %j unknown', pricePerKwh => {
+  const input = station([{ type: 'DC', kw: 60, price: 20, connectors: [conn('available', true, null)] }]);
+  if (pricePerKwh === undefined) delete (input.chargers[0] as Partial<import('../src/types.js').StatiqCharger>).pricePerKwh;
+  else Object.assign(input.chargers[0]!, { pricePerKwh });
+  expect(summarizeCcs2(input).pricePerKwh).toBeNull();
+});
+
+it('preserves zero tariffs and never borrows a slower sibling price', () => {
+  const input = station([
+    { type: 'DC', kw: 120, price: null, connectors: [conn('available', true, null)] },
+    { type: 'DC', kw: 60, price: 0, connectors: [conn('available', true, null)] },
+  ]);
+  expect(summarizeCcs2(input).pricePerKwh).toBeNull();
+  input.chargers[0]!.pricePerKwh = 0;
+  expect(summarizeCcs2(input).pricePerKwh).toBe(0);
+});
+
+it('does not turn unrelated faulted invalid metadata into a usable-power hole', () => {
+  const input = station([
+    { type: 'DC', kw: 60, price: 22, connectors: [conn('available', true, null)] },
+    { type: 'DC', kw: -1, price: -1, connectors: [conn('faulted', false, 'Faulted')] },
+  ]);
+  const summary = summarizeCcs2(input);
+  expect(summary.maxKw).toBe(60); expect(summary.hasInvalidUsablePower).toBe(false);
+  expect(summary.hasInvalidSelectedTariff).toBe(false); expect(summary.faulted).toBe(1);
+});

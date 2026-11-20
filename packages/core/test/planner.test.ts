@@ -780,18 +780,144 @@ describe('incomplete candidate data never becomes an impossibility claim', () =>
     expect((err as PlanningError).code).toBe('no_route');
   });
 
-  it('an unknown candidate on a trip that makes NO claims never poisons the plan', async () => {
-    // 250 km from 100% SoC needs no stops, so the greedy selection never
-    // runs and no impossibility claim is ever made; the unknown candidate
-    // (its lookup throws) only leaves a visible hole in the warnings
+  it('keeps a no-stop trip available but marks unknown candidate coverage degraded', async () => {
+    // 250 km from 100% SoC needs no stops. The successful plan remains
+    // available, but incomplete candidate evidence is not full coverage.
+    // Its lookup failure leaves a visible warning and degraded status.
     const specs: StationSpec[] = [{ id: 1, name: 'Unreachable Statiq', chainageKm: 125 }];
     const plan = await planTrip(
       { router: fakeRouter(250), statiq: statiqWithFailingDetails(specs, [1]) },
       O,
       D(250),
     );
-    expect(plan.status).toBe('ok');
+    expect(plan.status).toBe('degraded');
     expect(plan.stops).toHaveLength(0);
     expect(plan.warnings.some((w) => w.includes('live details unavailable'))).toBe(true);
   });
+});
+
+/** Mutate raw provider details after fixture construction, so null/missing
+ * values are not replaced by stationDetail's convenience defaults. */
+function mutateRawChargers(specs: StationSpec[], mutate: (chargers: StatiqCharger[], id: number) => void): StatiqClient {
+  const base = fakeStatiq(specs);
+  return {
+    ...base,
+    detailsWithMeta: async (id: number) => {
+      const result = await base.detailsWithMeta(id);
+      if (result.response.station) mutate(result.response.station.chargers, id);
+      return result;
+    },
+  } as unknown as StatiqClient;
+}
+const numericSpecs: StationSpec[] = [200, 450].map((chainageKm, index) => ({ id: index + 1, name: `Statiq ${chainageKm}`, chainageKm }));
+
+it.each([0, -60, '60', 'bad', NaN, Infinity])('does not certify a required stop with malformed-only power %j', kw => {
+  const statiq = mutateRawChargers(numericSpecs, chargers => Object.assign(chargers[0]!, { kw }));
+  return expect(planTrip({ router: fakeRouter(700), statiq }, O, D(700))).rejects.toMatchObject({ code: 'not_determined', cause: 'candidate-holes' });
+});
+
+it.each([false, true])('uses a valid charger with a visible malformed sibling warning, invalid-first=%s', invalidFirst => {
+  const statiq = mutateRawChargers(numericSpecs, chargers => {
+    chargers.push({ ...chargers[0]!, kw: 'bad' as unknown as number, pricePerKwh: 999 });
+    if (invalidFirst) chargers.reverse();
+  });
+  return planTrip({ router: fakeRouter(700), statiq }, O, D(700)).then(plan => {
+    expect(plan.status).toBe('ok'); expect(plan.stops).toHaveLength(2);
+    expect(plan.stops.every(stop => stop.chargeTimeMin > 0 && Number.isFinite(stop.chargeTimeMin) && stop.pricePerKwh === 20)).toBe(true);
+    expect(plan.warnings.join(' ')).toContain('known power only');
+    expect(plan.totals.chargeTimeMin).toBeGreaterThan(0); expect(Number.isFinite(plan.totals.totalTimeMin)).toBe(true);
+  });
+});
+
+it('keeps an independently justified alternate route but discloses a genuine numeric candidate hole', async () => {
+  const specs = [...numericSpecs, { id: 3, name: 'Malformed candidate', chainageKm: 250 }];
+  const statiq = mutateRawChargers(specs, (chargers, id) => { if (id === 3) Object.assign(chargers[0]!, { kw: 0 }); });
+  const plan = await planTrip({ router: fakeRouter(700), statiq }, O, D(700));
+  expect(plan.status).toBe('degraded'); expect(plan.stops).toHaveLength(2);
+  expect(plan.stops.some(stop => stop.station.stationId === 3)).toBe(false);
+  expect(plan.warnings.join(' ')).toContain('power is invalid');
+  expect(Number.isFinite(plan.totals.totalTimeMin)).toBe(true);
+});
+
+it.each([null, undefined])('preserves the legacy absent-only %j power estimate with a visible warning', async kw => {
+  const statiq = mutateRawChargers(numericSpecs, chargers => {
+    if (kw === undefined) delete (chargers[0] as Partial<StatiqCharger>).kw;
+    else Object.assign(chargers[0]!, { kw });
+  });
+  const plan = await planTrip({ router: fakeRouter(700), statiq }, O, D(700));
+  const control = await planTrip({ router: fakeRouter(700), statiq: fakeStatiq(numericSpecs.map(spec => ({ ...spec, kw: 50 }))) }, O, D(700));
+  expect(plan.status).toBe('ok'); expect(plan.stops.map(stop => stop.chargeTimeMin)).toEqual(control.stops.map(stop => stop.chargeTimeMin));
+  expect(plan.warnings.join(' ')).toContain('50 kW estimate');
+});
+
+it.each([-20, '20', 'bad', null, undefined, NaN, Infinity])('keeps selected tariff %j unknown without concealing total cost', async pricePerKwh => {
+  const statiq = mutateRawChargers(numericSpecs, chargers => {
+    if (pricePerKwh === undefined) delete (chargers[0] as Partial<StatiqCharger>).pricePerKwh;
+    else Object.assign(chargers[0]!, { pricePerKwh });
+  });
+  const plan = await planTrip({ router: fakeRouter(700), statiq }, O, D(700));
+  expect(plan.stops.every(stop => stop.pricePerKwh === null && stop.estPriceInr === null)).toBe(true);
+  expect(plan.totals.estPriceInr).toBeNull(); expect(Number.isFinite(plan.totals.totalTimeMin)).toBe(true);
+});
+
+it('keeps a genuine zero tariff as zero without borrowing or manufacturing a price', async () => {
+  const statiq = mutateRawChargers(numericSpecs, chargers => Object.assign(chargers[0]!, { pricePerKwh: 0 }));
+  const plan = await planTrip({ router: fakeRouter(700), statiq }, O, D(700));
+  expect(plan.stops.every(stop => stop.pricePerKwh === 0 && stop.estPriceInr === 0)).toBe(true);
+  expect(plan.totals.estPriceInr).toBe(0); expect(plan.totals.chargeTimeMin).toBeGreaterThan(0);
+});
+
+it('does not create a coverage hole from an unrelated faulted charger with bad numeric metadata', async () => {
+  const statiq = mutateRawChargers(numericSpecs, chargers => {
+    chargers.push({ ...chargers[0]!, kw: -1, pricePerKwh: -1, connectors: chargers[0]!.connectors.map(connector => ({ ...connector, status: 'faulted', available: false, note: 'Faulted' })) });
+  });
+  const plan = await planTrip({ router: fakeRouter(700), statiq }, O, D(700));
+  expect(plan.status).toBe('ok'); expect(plan.warnings.join(' ')).not.toContain('incomplete charger power');
+  expect(plan.totals.chargeTimeMin).toBeGreaterThan(0); expect(plan.totals.estPriceInr).toBeGreaterThan(0);
+});
+
+it('still fetches every candidate once before resolving malformed power uncertainty', async () => {
+  const calls: number[] = []; const base = fakeStatiq(numericSpecs);
+  const statiq = { ...base, detailsWithMeta: async (id: number) => {
+    calls.push(id); const result = await base.detailsWithMeta(id);
+    Object.assign(result.response.station!.chargers[0]!, { kw: 0 }); return result;
+  } } as unknown as StatiqClient;
+  await expect(planTrip({ router: fakeRouter(700), statiq }, O, D(700))).rejects.toMatchObject({ code: 'not_determined' });
+  expect(calls.sort()).toEqual([1, 2]);
+});
+
+it('does not publish nonfinite charging time from a positive but unrepresentable power estimate', async () => {
+  const statiq = mutateRawChargers(numericSpecs, chargers => Object.assign(chargers[0]!, { kw: Number.MIN_VALUE }));
+  await expect(planTrip({ router: fakeRouter(700), statiq }, O, D(700))).rejects.toMatchObject({ code: 'not_determined' });
+});
+
+it('keeps overflowed charging cost unknown rather than serializing Infinity as null silently', async () => {
+  const statiq = mutateRawChargers(numericSpecs, chargers => Object.assign(chargers[0]!, { pricePerKwh: Number.MAX_VALUE }));
+  const plan = await planTrip({ router: fakeRouter(700), statiq }, O, D(700));
+  expect(plan.stops.every(stop => stop.estPriceInr === null)).toBe(true);
+  expect(plan.totals.estPriceInr).toBeNull(); expect(plan.warnings.join(' ')).toContain('outside the supported range');
+});
+
+it.each([false, true])('never uses the absent-only fallback for missing plus malformed required power, invalid-first=%s', async invalidFirst => {
+  const statiq = mutateRawChargers(numericSpecs, chargers => {
+    const template = chargers[0]!;
+    delete (template as Partial<StatiqCharger>).kw;
+    chargers.push({ ...template, kw: -60 });
+    if (invalidFirst) chargers.reverse();
+  });
+  await expect(planTrip({ router: fakeRouter(700), statiq }, O, D(700))).rejects.toMatchObject({ code: 'not_determined', cause: 'candidate-holes' });
+});
+
+it.each([false, true])('keeps known valid power rather than fallback when missing sibling comes first=%s', async missingFirst => {
+  const statiq = mutateRawChargers(numericSpecs, chargers => {
+    const missing: Partial<StatiqCharger> = { ...chargers[0]!, pricePerKwh: 999 };
+    delete missing.kw; chargers.push(missing as StatiqCharger);
+    if (missingFirst) chargers.reverse();
+  });
+  const plan = await planTrip({ router: fakeRouter(700), statiq }, O, D(700));
+  const control = await planTrip({ router: fakeRouter(700), statiq: fakeStatiq(numericSpecs) }, O, D(700));
+  expect(plan.status).toBe('ok');
+  expect(plan.stops.map(stop => [stop.chargeTimeMin, stop.pricePerKwh])).toEqual(control.stops.map(stop => [stop.chargeTimeMin, stop.pricePerKwh]));
+  expect(plan.warnings.join(' ')).toContain('known power only');
+  expect(plan.warnings.join(' ')).not.toContain('50 kW estimate');
 });

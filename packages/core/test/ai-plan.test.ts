@@ -309,7 +309,7 @@ function handBuiltBundle(chainages: number[], totalKm: number) {
           stationUrl: '',
         },
       },
-      summary: { total: 1, usable: 1, free: 1, occupied: 0, uncertain: 0, faulted: 0, offline: 0, maxKw: 60, pricePerKwh: 20, hasContradiction: false, isUsable: true },
+      summary: { total: 1, usable: 1, free: 1, occupied: 0, uncertain: 0, faulted: 0, offline: 0, maxKw: 60, pricePerKwh: 20, hasInvalidUsablePower: false, hasMissingUsablePower: false, hasInvalidSelectedTariff: false, hasContradiction: false, isUsable: true },
       view: {
         stationId: id,
         name: `Hand ${ch}`,
@@ -387,4 +387,23 @@ describe('AI-safe candidates', () => {
       'stationId',
     ]);
   });
+});
+
+it('AI alternatives inherit degraded numeric evidence and unknown cost without reintroducing bad candidates', async () => {
+  const base = fakeStatiq(stations);
+  const brokenId = stations[2]!.id;
+  const statiq = { ...base, detailsWithMeta: async (id: number) => {
+    const result = await base.detailsWithMeta(id);
+    if (result.response.station) Object.assign(result.response.station.chargers[0]!, { kw: id === brokenId ? 0 : 60, pricePerKwh: -20 });
+    return result;
+  } } as unknown as StatiqClient;
+  const bundle = await planTripDetailed({ router: fakeRouter(700), statiq }, O, D(700));
+  expect(bundle.plan.status).toBe('degraded');
+  expect(bundle.usableCandidates.some(candidate => candidate.candidate.stationId === brokenId)).toBe(false);
+  const validation = validateAiChoice(bundle, { stationIds: bundle.plan.stops.map(stop => stop.station.stationId) }, {}, HARIER_EV_75);
+  expect(validation.ok).toBe(true); if (!validation.ok) return;
+  const plan = assembleAiPlan(bundle, validation.seq, { applied: true }, {}, HARIER_EV_75);
+  expect(plan.status).toBe('degraded'); expect(plan.totals.estPriceInr).toBeNull();
+  expect(Number.isFinite(plan.totals.totalTimeMin)).toBe(true);
+  expect(plan.warnings.join(' ')).toContain('power is invalid');
 });
