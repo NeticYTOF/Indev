@@ -105,14 +105,15 @@ test('comparison controls return focus and preserve only the remaining selection
   await page.route('**/api/trips', (route) => route.fulfill({ json: { trips: savedTrips } }));
   await page.goto('/');
   await page.locator('#trips-button').click();
-  await page.locator('[data-compare-toggle]').nth(1).click();
-  await page.locator('[data-compare-toggle]').nth(0).click();
+  const row = (name: string) => page.locator('.trip-row').filter({ hasText: name });
+  await row('Delhi to Jaipur').getByRole('button', { name: 'Select to compare' }).click();
+  await row('Delhi to Agra').getByRole('button', { name: 'Select to compare' }).click();
   await page.locator('[data-compare-selected]').click();
   await page.locator('[data-compare-remove="A"]').click();
   await expect(page.locator('[data-compare-selected]')).toBeDisabled();
   await expect(page.locator('[data-compare-selected]')).toHaveText('Compare selected (1/2)');
   await expect(page.locator('[data-compare-toggle]').first()).toBeFocused();
-  await page.locator('[data-compare-toggle]').nth(0).click();
+  await row('Delhi to Jaipur').getByRole('button', { name: 'Select to compare' }).click();
   await page.locator('[data-compare-selected]').click();
   await page.locator('[data-compare-clear]').click();
   await expect(page.locator('[data-compare-selected]')).toHaveText('Compare selected (0/2)');

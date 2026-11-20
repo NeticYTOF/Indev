@@ -18,6 +18,14 @@ record the user selected. Selected trips hidden by the search remain in the
 comparison and are announced; clearing or removing the selection updates that
 notice without rewriting any saved record.
 
+The query and sort are held only in this page's in-memory drawer state. Closing
+and reopening the drawer, or a successful delete refresh, keeps the same view,
+including a no-match result when the last visible record was deleted; a page
+reload returns to the unfiltered newest-first view. Rebuilding the drawer clears
+the comparison selection instead of restoring an index that may belong to a
+deleted record, while pending, unavailable and failed loads continue to disable
+the controls and show their own status rather than an empty list.
+
 The comparison workspace is a read-only view of the same `GET /api/trips` data
 already loaded by the drawer. Selecting, swapping, removing, clearing, going
 back, and opening the standalone download perform no plan, geocode, station,

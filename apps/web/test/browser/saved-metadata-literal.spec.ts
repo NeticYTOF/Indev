@@ -40,7 +40,8 @@ test('new saves reject string ranges and legacy values stay literal when opened'
   await expect(vehicle).toContainText('legacy stored claim text:');
   await expect(vehicle).toContainText(realRange); await expect(vehicle).toContainText(claimRange);
   await expect(page.locator('[data-range-proof], [data-claim-proof], [data-station-attribute-proof]')).toHaveCount(0);
-  await expect(page.locator('.saved-stop').first()).toHaveAttribute('data-station-id', trip.stations[0].stationId);
+  await expect(page.locator('.saved-stop').first()).toHaveAttribute('data-station-id', 'Unknown');
+  await expect(page.locator('.saved-stop').first().getByRole('button', { name: 'Fetch unavailable — station id Unknown' })).toBeDisabled();
   await vehicle.scrollIntoViewIfNeeded();
   await page.screenshot({ path: info.outputPath('saved-metadata-literal.png') });
 });

@@ -44,6 +44,15 @@ test('saved trips search, sort and clear preserve original record identity', asy
   const names = page.locator('.trip-row .trip-name');
   await expect(page.locator('[data-trip-result-count]')).toHaveText('Showing 3 of 3 saved trips.');
   await expect(names).toHaveText(['Yankee', 'Zulu', 'Beta']);
+  const geometry = await page.locator('.trip-row').first().evaluate((row) => ({
+    row: row.getBoundingClientRect().width,
+    main: row.querySelector<HTMLElement>('.trip-main')?.getBoundingClientRect().width ?? 0,
+    actions: row.querySelector<HTMLElement>('.trip-actions')?.getBoundingClientRect().width ?? 0,
+  }));
+  expect(geometry.main).toBeGreaterThan(geometry.row * 0.6);
+  expect(geometry.actions).toBeLessThanOrEqual(geometry.row);
+  const pageOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(pageOverflow).toBeLessThanOrEqual(1);
 
   await page.locator('[data-trip-search]').fill('goa');
   await expect(names).toHaveText(['Beta']);
