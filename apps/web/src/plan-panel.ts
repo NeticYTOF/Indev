@@ -12,6 +12,7 @@ import { api } from './api.js';
 import { downloadAnimatedExport } from './export.js';
 import { downloadJourneyBriefing, renderJourneyBriefingMarkup } from './journey-briefing.js';
 import { renderStationEvidencePanel, wireStationEvidence } from './station-evidence-panel.js';
+import { connectorSlug } from '@indeev/core/plug-classifier';
 import { toast } from './toast.js';
 import { storageWarningText, storageWarningElement } from './storage-warning.js';
 import { formatReviewCount, formatDuration, formatEta, formatInr, lastUsedLabel, formatDateTime, formatTariff } from './format.js';
@@ -150,14 +151,17 @@ function wirePlanActions(actions: HTMLElement, plan: TripPlan): void {
 }
 
 
+const SAFE_BRANDS = new Set(['statiq', 'tata', 'bpcl', 'hp', 'other']);
+
 function renderStopCard(stop: PlanStop, index: number): HTMLElement {
   const s = stop.station;
   const inventoryKnown = Array.isArray(s.chargers);
   const chargers = inventoryKnown ? s.chargers : [];
-  const brandKnown = typeof s.brand === 'string' && s.brand.length > 0;
-  const brandKey = brandKnown ? s.brand : 'Unknown';
+  const rawBrand = typeof s.brand === 'string' ? s.brand.toLowerCase().trim() : '';
+  const brandKnown = SAFE_BRANDS.has(rawBrand);
+  const brandKey = brandKnown ? rawBrand : 'other';
   const brandLabel = brandKnown
-    ? s.brand.charAt(0).toUpperCase() + s.brand.slice(1)
+    ? rawBrand.charAt(0).toUpperCase() + rawBrand.slice(1)
     : 'Unknown';
   const directionsUrl = stationDirectionsUrl(s.lat, s.lon);
   // Station page link: the url arrives from upstream data and is untrusted.
@@ -175,7 +179,7 @@ function renderStopCard(stop: PlanStop, index: number): HTMLElement {
         <div class="stop-head">
           <div class="stop-title">
             <span class="stop-name">${escapeHtml(s.name)}</span>
-            <span class="stop-brand brand-${escapeHtml(brandKey)}">${brandLabel}</span>
+            <span class="stop-brand brand-${escapeHtml(brandKey)}">${escapeHtml(brandLabel)}</span>
           </div>
           <span class="stop-tariff">${stop.pricePerKwh != null ? escapeHtml(formatTariff(stop.pricePerKwh)) : 'Tariff unknown'}</span>
         </div>
@@ -253,8 +257,9 @@ function uncertaintyChips(s: PlanStop['station'], inventoryKnown = true): string
   if (!plugsKnown) {
     chips.push('<span class="chip chip-uncertain">Plug inventory Unknown</span>');
   } else {
-    const ccs2 = chargers.some((ch) => ch?.type === 'DC' && plugsOf(ch).some((p) =>
-      typeof p?.type === 'string' && p.type.toLowerCase().includes('ccs')));
+    const ccs2 = chargers.some((ch) =>
+      connectorSlug(typeof ch?.type === 'string' ? ch.type : '') === 'dc' &&
+      plugsOf(ch).some((p) => connectorSlug(typeof p?.type === 'string' ? p.type : '') === 'ccs2'));
     if (!ccs2) chips.push('<span class="chip chip-warn">No CCS2 DC found for this car</span>');
   }
   return chips.length > 0 ? `<div class="chips">${chips.join('')}</div>` : '';

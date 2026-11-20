@@ -367,7 +367,8 @@ test('one malformed planned stop does not suppress other cards or evidence panel
   await expect(cards).toHaveCount(2);
   await expect(cards.first()).toContainText('Last used Unknown');
   await expect(cards.first()).toContainText('Charger inventory Unknown');
-  await expect(cards.first()).toContainText('brand-Unknown');
+  await expect(cards.first().locator('.stop-brand')).toHaveText('Unknown');
+  await expect(cards.first().locator('.stop-brand')).toHaveClass(/brand-other/);
   await expect(cards.first().locator('[data-station-evidence]')).toBeVisible();
   await expect(cards.first().locator('[data-station-evidence]')).toContainText(
     'Charger snapshot unavailable — the planned charger list is Unknown.',
