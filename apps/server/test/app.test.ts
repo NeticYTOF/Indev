@@ -277,6 +277,8 @@ describe('browser origin and mutation boundary', () => {
 
   it('no-Origin clients without non-same-origin metadata keep working', async () => {
     const geocode = vi.fn(async () => []);
+    // Non-mock is required here: the mock branch correctly serves synthetic
+    // geocode results without calling the injected provider.
     const providerApp = createApp(await makeDeps({ mock: false, geocode: { search: geocode } as unknown as PhotonGeocoder }));
     expect((await providerApp.request('/api/geocode?q=delhi')).status).toBe(200);
     expect((await providerApp.request('/api/geocode?q=delhi', { headers: { 'sec-fetch-site': 'same-origin' } })).status).toBe(200);

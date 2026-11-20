@@ -41,7 +41,7 @@ async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = createServer();
     srv.once('error', reject);
-    srv.listen(0, 'localhost', () => {
+    srv.listen(0, '127.0.0.1', () => {
       const addr = srv.address();
       const port = typeof addr === 'object' && addr ? addr.port : 0;
       srv.close(() => resolve(port));
@@ -169,7 +169,7 @@ describe('live acceptance runner (mock integration, fail-closed by construction)
         res.end();
       });
       const MODE_GATE_PORT = String(await freePort());
-      await new Promise<void>((r) => impostor.listen(Number(MODE_GATE_PORT), 'localhost', () => r()));
+      await new Promise<void>((r) => impostor.listen(Number(MODE_GATE_PORT), '127.0.0.1', () => r()));
 
       let child: ChildProcess | null = null;
       try {
@@ -249,7 +249,7 @@ describe('live acceptance runner (mock integration, fail-closed by construction)
         res.end();
       });
       const INSTANCE_GATE_PORT = String(await freePort());
-      await new Promise<void>((r) => impostor.listen(Number(INSTANCE_GATE_PORT), 'localhost', () => r()));
+      await new Promise<void>((r) => impostor.listen(Number(INSTANCE_GATE_PORT), '127.0.0.1', () => r()));
 
       let child: ChildProcess | null = null;
       try {
