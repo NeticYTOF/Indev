@@ -79,7 +79,7 @@ describe('Statiq provider failure evidence', () => {
     }]);
   });
 
-  it('emits 200 body decode failures without retrying', async () => {
+  it('records each existing 200 body-decode retry with a dispatch sequence', async () => {
     const collector = createProviderFailureCollector({
       now: () => ({ wallMs: 0, monotonicMs: 0 }),
     });
@@ -159,5 +159,38 @@ describe('Statiq provider failure evidence', () => {
     const report = collector.snapshot();
     expect(report.failures).toHaveLength(PROVIDER_FAILURE_LIMIT);
     expect(report.omittedFailureCount).toBe(3);
+  });
+
+  it('records one HTTP500 evidence entry per existing retry attempt', async () => {
+    const collector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    let calls = 0;
+    const fetchImpl = async (): Promise<Response> => {
+      calls += 1;
+      return response('bad', 500);
+    };
+    const client = clientWith(fetchImpl, collector, { retries: 2, budget: new UpstreamBudget(8) });
+    await expect(client.markers(0, 0)).rejects.toThrow();
+    expect(calls).toBe(3);
+    const records = collector.snapshot().failures;
+    expect(records.map((record) => record.dispatchSeq)).toEqual([1, 2, 3]);
+    expect(records.every((record) => record.httpStatus === 500 && record.code === 'http_5xx')).toBe(true);
+  });
+
+  it('records one abort entry after 200 headers while retaining the status', async () => {
+    const collector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    const controller = new AbortController();
+    const fetchImpl = async (): Promise<Response> => {
+      controller.abort();
+      return response('{"ok":true}', 200);
+    };
+    const client = clientWith(fetchImpl, collector, { budget: new UpstreamBudget(2) });
+    await expect(client.markers(0, 0, controller.signal)).rejects.toThrow();
+    const records = collector.snapshot().failures;
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ httpStatus: 200, code: 'deadline', dispatchSeq: 1 });
   });
 });

@@ -62,8 +62,8 @@ const app = createApp({
     },
   }),
   // Sanitized run summary: outcome + call count. No route data ever.
-  onRunComplete: (outcome, upstreamCalls) => {
-    console.log(JSON.stringify({ type: 'plan-run', outcome, upstreamCalls }));
+  onRunComplete: (outcome, upstreamCalls, providerFailures) => {
+    console.log(JSON.stringify({ type: 'plan-run', outcome, upstreamCalls, providerFailures }));
   },
   // AI planning is OFF unless all three env vars are set.
   ...(aiEnabled(env)

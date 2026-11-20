@@ -145,6 +145,27 @@ describe('GET /api/vehicles', () => {
   });
 });
 
+describe('completion failure evidence', () => {
+  it('delivers completion evidence even if the observer throws', async () => {
+    const observed: Array<{ outcome: string; calls: number; report?: unknown }> = [];
+    const app = createApp(await makeDeps({ mock: true,
+      createStatiq: () => { throw new Error('live call in mock mode!'); },
+      onRunComplete: (outcome, calls, report) => {
+        observed.push({ outcome, calls, report });
+        throw new Error('observer failure must not alter the response');
+      },
+    }));
+    const res = await app.request('/api/plan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: ORIGIN, destination: DEST }),
+    });
+    expect(res.status).toBe(200);
+    expect(observed).toHaveLength(1);
+    expect(observed[0]?.outcome).toBe('ok');
+    expect(observed[0]?.report).toMatchObject({ failures: [], omittedFailureCount: 0 });
+  });
+});
+
 describe('browser origin and mutation boundary', () => {
   const planBody = JSON.stringify({ origin: ORIGIN, destination: DEST });
   const planHeaders = { 'Content-Type': 'application/json' };

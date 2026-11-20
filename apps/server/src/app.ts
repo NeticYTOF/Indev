@@ -20,6 +20,9 @@ import {
   STORE_LOCK_CLEANUP_WARNING,
   type SavedTrip,
   recordPlanCounter,
+  createProviderFailureCollector,
+  emptyProviderFailureReport,
+  type ProviderFailureReport,
   OsrmRouter,
   PhotonGeocoder,
   PlanningError,
@@ -53,8 +56,12 @@ export interface AppDeps {
   trips: TripsStore;
   counters: CountersStore;
   mock: boolean;
-  /** Sanitized run-completion hook: outcome + upstream call count only. */
-  onRunComplete?: (outcome: string, upstreamCalls: number) => void;
+  /** Sanitized run summary plus bounded, completion-only failure evidence. */
+  onRunComplete?: (
+    outcome: string,
+    upstreamCalls: number,
+    providerFailures?: ProviderFailureReport,
+  ) => void;
   /** AI planning config: all three set = enabled. Off by default. */
   ai?: { baseUrl: string; apiKey: string; model: string };
   /** Injectable for tests; defaults to the real provider call. */
@@ -100,6 +107,16 @@ function auditOutcomeFor(err: unknown): string {
     return err.cause ? `${err.code}:${err.cause}` : err.code;
   }
   return 'error';
+}
+
+function completeRun(
+  deps: AppDeps,
+  outcome: string,
+  upstreamCalls: number,
+  evidence: ProviderFailureReport = emptyProviderFailureReport(),
+): void {
+  // The observer is diagnostic only; its failure cannot change a response.
+  try { deps.onRunComplete?.(outcome, upstreamCalls, evidence); } catch { /* ignored */ }
 }
 
 export function createApp(deps: AppDeps): Hono {
@@ -226,6 +243,7 @@ export function createApp(deps: AppDeps): Hono {
       vehicle?: VehicleSelection;
       startSocPct?: number;
     };
+    const providerFailures = createProviderFailureCollector();
     const origin = coordRef(b.origin);
     const destination = coordRef(b.destination);
     if (!origin || !destination) {
@@ -256,7 +274,7 @@ export function createApp(deps: AppDeps): Hono {
       const plan = mockPlan(origin, destination, resolved);
       await recordPlanCounter(deps.counters, plan);
       // synthetic plans make zero upstream calls; the run audit stays honest
-      deps.onRunComplete?.('ok', 0);
+      completeRun(deps, 'ok', 0);
       return c.json({ plan });
     }
 
@@ -267,17 +285,18 @@ export function createApp(deps: AppDeps): Hono {
     };
     try {
       const plan = await planTrip(
-        { router: deps.router, statiq, vehicle: resolved.config, resolvedVehicle: resolved },
+        { router: deps.router, statiq, vehicle: resolved.config, resolvedVehicle: resolved,
+          failureCollector: providerFailures },
         origin,
         destination,
         options,
       );
       // Persist only the running count of chargers seen; never station data.
       await recordPlanCounter(deps.counters, plan);
-      deps.onRunComplete?.('ok', statiq.upstreamCallsMade());
+      completeRun(deps, 'ok', statiq.upstreamCallsMade(), providerFailures.snapshot());
       return c.json({ plan });
     } catch (err) {
-      deps.onRunComplete?.(auditOutcomeFor(err), statiq.upstreamCallsMade());
+      completeRun(deps, auditOutcomeFor(err), statiq.upstreamCallsMade(), providerFailures.snapshot());
       throw err;
     }
   });
@@ -291,6 +310,7 @@ export function createApp(deps: AppDeps): Hono {
       startSocPct?: number;
       request?: string;
     } | null;
+    const providerFailures = createProviderFailureCollector();
     const origin = coordRef(b?.origin);
     const destination = coordRef(b?.destination);
     if (!origin || !destination) {
@@ -319,7 +339,7 @@ export function createApp(deps: AppDeps): Hono {
     if (deps.mock) {
       const plan = mockPlan(origin, destination, resolved);
       await recordPlanCounter(deps.counters, plan);
-      deps.onRunComplete?.('ok', 0);
+      completeRun(deps, 'ok', 0);
       return c.json({
         plan,
         ai: {
@@ -362,7 +382,8 @@ export function createApp(deps: AppDeps): Hono {
     let bundle: PlanBundle;
     try {
       bundle = await planTripDetailed(
-        { router: deps.router, statiq, vehicle: resolved.config, resolvedVehicle: resolved },
+        { router: deps.router, statiq, vehicle: resolved.config, resolvedVehicle: resolved,
+          failureCollector: providerFailures },
         origin,
         destination,
         {
@@ -371,7 +392,7 @@ export function createApp(deps: AppDeps): Hono {
         },
       );
     } catch (err) {
-      deps.onRunComplete?.(auditOutcomeFor(err), statiq.upstreamCallsMade());
+      completeRun(deps, auditOutcomeFor(err), statiq.upstreamCallsMade(), providerFailures.snapshot());
       throw err;
     }
     await recordPlanCounter(deps.counters, bundle.plan);
@@ -414,7 +435,7 @@ export function createApp(deps: AppDeps): Hono {
       const { stationIds, notes } = parseChoiceJson(content);
 
       if (!stationIds || stationIds.length === 0) {
-        deps.onRunComplete?.('ai-invalid', statiq.upstreamCallsMade());
+        completeRun(deps, 'ai-invalid', statiq.upstreamCallsMade(), providerFailures.snapshot());
         return c.json({
           plan: bundle.plan,
           ai: { applied: false, reason: 'The AI returned no stop sequence; showing the computed plan.' },
@@ -423,7 +444,7 @@ export function createApp(deps: AppDeps): Hono {
 
       const validation = validateAiChoice(bundle, { stationIds, notes }, planOptions, resolved.config);
       if (!validation.ok) {
-        deps.onRunComplete?.('ai-invalid', statiq.upstreamCallsMade());
+        completeRun(deps, 'ai-invalid', statiq.upstreamCallsMade(), providerFailures.snapshot());
         return c.json({
           plan: bundle.plan,
           ai: { applied: false, reason: `The AI choice was rejected (${validation.reason}). Showing the computed plan.` },
@@ -431,14 +452,14 @@ export function createApp(deps: AppDeps): Hono {
       }
 
       const rebuilt = assembleAiPlan(bundle, validation.seq, { applied: true, notes }, planOptions, resolved.config);
-      deps.onRunComplete?.('ok', statiq.upstreamCallsMade());
+      completeRun(deps, 'ok', statiq.upstreamCallsMade(), providerFailures.snapshot());
       return c.json({ plan: rebuilt, ai: { applied: true, notes } });
     } catch (err) {
       const reason =
         err instanceof AiProviderError || err instanceof PlanningError || err instanceof SyntaxError
           ? err.message
           : 'The AI provider failed; showing the computed plan.';
-      deps.onRunComplete?.('ai-error', statiq.upstreamCallsMade());
+      completeRun(deps, 'ai-error', statiq.upstreamCallsMade(), providerFailures.snapshot());
       return c.json({
         plan: bundle.plan,
         ai: { applied: false, reason },
