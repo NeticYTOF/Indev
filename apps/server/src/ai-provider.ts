@@ -72,14 +72,22 @@ export async function chatCompletion(
 
 /** Parse the model's JSON answer defensively; strict shape checks after. */
 export function parseChoiceJson(content: string): { stationIds?: number[]; notes?: string } {
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(content) as AiChoiceRaw;
-    const ids = Array.isArray(parsed.chosenStationIds)
-      ? parsed.chosenStationIds.filter((x): x is number => typeof x === 'number' && Number.isInteger(x))
-      : undefined;
-    const notes = typeof parsed.notes === 'string' ? parsed.notes : undefined;
-    return { stationIds: ids, notes };
+    parsed = JSON.parse(content);
   } catch {
     throw new AiProviderError('AI response was not valid JSON');
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new AiProviderError('AI response was not a choice object');
+  }
+  const choice = parsed as AiChoiceRaw;
+  if (!Array.isArray(choice.chosenStationIds) || choice.chosenStationIds.length === 0 ||
+      choice.chosenStationIds.some((id) => typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0)) {
+    // Never turn malformed model output into a different stop sequence by
+    // dropping elements. Let the route return its computed base plan.
+    throw new AiProviderError('AI response contained an invalid station sequence');
+  }
+  const notes = typeof choice.notes === 'string' ? choice.notes : undefined;
+  return { stationIds: choice.chosenStationIds, notes };
 }
