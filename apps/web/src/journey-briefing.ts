@@ -1,10 +1,62 @@
 /**
  * Journey briefing: a whole-trip, print-ready view derived ONLY from facts
- * already present on a TripPlan. No provider calls, persistence, clock, or
- * simulator values are introduced here.
+ * already present on a live TripPlan or saved trip. No provider calls,
+ * persistence, clock, or simulator values are introduced here.
  */
-import type { TripPlan } from '@indeev/core';
+import type { SavedTrip, TripPlan } from '@indeev/core';
 import { formatDuration, formatInr, formatKwh, formatTariff } from './format.js';
+
+export interface JourneyBriefingStopSource {
+  station: { stationId: number; name: string };
+  chainageKm: number;
+  legKm: number;
+  detourKm: number;
+  arriveSocPct: number;
+  leaveSocPct: number;
+  chargeKwh: number;
+  pricePerKwh: number | null;
+  estPriceInr: number | null;
+  chargeTimeMin: number;
+  /** Not stored on a saved trip; the briefing renders it as unknown. */
+  arrivalEtaMin?: number;
+  departureEtaMin?: number;
+}
+
+export interface JourneyBriefingSource {
+  origin: { label: string };
+  destination: { label: string };
+  status: TripPlan['status'];
+  source: TripPlan['source'];
+  totals: TripPlan['totals'];
+  stops: readonly JourneyBriefingStopSource[];
+  warnings?: readonly string[];
+}
+
+/**
+ * Saved trips keep the planned charging facts but not per-stop ETAs. Adapt
+ * only that schema boundary; unknown times stay unknown in the briefing.
+ */
+export function journeySourceFromSavedTrip(trip: SavedTrip): JourneyBriefingSource {
+  return {
+    origin: trip.origin,
+    destination: trip.destination,
+    status: trip.status,
+    source: trip.source,
+    totals: trip.totals,
+    stops: trip.stations.map((station) => ({
+      station: { stationId: station.stationId, name: station.name },
+      chainageKm: station.chainageKm,
+      legKm: station.legKm,
+      detourKm: station.detourKm,
+      arriveSocPct: station.arriveSocPct,
+      leaveSocPct: station.leaveSocPct,
+      chargeKwh: station.chargeKwh,
+      pricePerKwh: station.pricePerKwh,
+      estPriceInr: station.estPriceInr,
+      chargeTimeMin: station.chargeTimeMin,
+    })),
+  };
+}
 
 export type JourneyLegKind = 'origin' | 'between' | 'final';
 
@@ -77,7 +129,7 @@ function stationIdValue(value: unknown): number | null {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
-function legDistance(totalKm: number | null, stop: TripPlan['stops'][number] | undefined): {
+function legDistance(totalKm: number | null, stop: JourneyBriefingStopSource | undefined): {
   km: number | null;
   basis: JourneyLeg['distanceBasis'];
 } {
@@ -95,7 +147,7 @@ function legDistance(totalKm: number | null, stop: TripPlan['stops'][number] | u
  * reachability math. `routeDistanceKm` is provider metadata and is not mixed
  * into the derived final leg. Per-stop `legKm` values are already authoritative.
  */
-export function buildJourneyBriefingData(plan: TripPlan): JourneyBriefingData {
+export function buildJourneyBriefingData(plan: JourneyBriefingSource): JourneyBriefingData {
   const stopsAvailable = Array.isArray(plan.stops);
   const stops = stopsAvailable ? plan.stops : [];
   // Evidence holes are local to this presentation; never mutate the plan's own warnings.
@@ -265,7 +317,7 @@ function statusBanners(data: JourneyBriefingData): string {
 }
 
 /** DOM-ready markup; the same function is used by the standalone HTML export. */
-export function renderJourneyBriefingMarkup(plan: TripPlan): string {
+export function renderJourneyBriefingMarkup(plan: JourneyBriefingSource): string {
   const data = buildJourneyBriefingData(plan);
   const legItems = data.legs.map((leg) => {
     const basis = leg.distanceBasis === 'totals-chainage'
@@ -324,7 +376,7 @@ export function renderJourneyBriefingMarkup(plan: TripPlan): string {
 }
 
 /** Standalone printable/saveable itinerary; CSS is flat, local, and gradient-free. */
-export function buildJourneyBriefingHtml(plan: TripPlan): string {
+export function buildJourneyBriefingHtml(plan: JourneyBriefingSource): string {
   const title = `${plan.origin.label} to ${plan.destination.label}`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width,initial-scale=1">` +
@@ -358,7 +410,7 @@ export function buildJourneyBriefingHtml(plan: TripPlan): string {
     `</style></head><body><main>${renderJourneyBriefingMarkup(plan)}</main></body></html>`;
 }
 
-export function downloadJourneyBriefing(plan: TripPlan): void {
+export function downloadJourneyBriefing(plan: JourneyBriefingSource): void {
   const htmlDocument = buildJourneyBriefingHtml(plan);
   const blob = new Blob([htmlDocument], { type: 'text/html' });
   const url = URL.createObjectURL(blob);

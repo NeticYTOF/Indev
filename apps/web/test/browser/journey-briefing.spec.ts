@@ -97,6 +97,48 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
   });
 }
 
+test('reopening a saved trip exposes its planned charging itinerary', async ({ page }) => {
+  await page.route(/^https?:\/\//, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') await route.continue();
+    else await route.abort();
+  });
+  await page.route('**/api/trips', (route) => route.fulfill({ json: { trips: [{
+    id: 'saved-journey-fixture', name: 'Saved journey', source: 'synthetic',
+    status: 'degraded', createdAt: '2026-11-19T18:00:00Z',
+    origin: { label: 'Delhi', lat: 28, lon: 77 },
+    destination: { label: 'Jaipur', lat: 27, lon: 76 },
+    routeDistanceKm: 285, routeDurationMin: 270,
+    geometry: [[28, 77], [27, 76]],
+    vehicle: { label: 'Fixture EV', catalogId: null, batteryKwh: 75, claimedRangeKm: 627, realWorldRangeKm: null },
+    totals: {
+      distanceKm: 285, driveTimeMin: 270, chargeTimeMin: 42,
+      totalTimeMin: 312, chargeKwh: 42.7, estPriceInr: 854, finalSocPct: 12,
+    },
+    stations: [{
+      stationId: 42, name: 'Saved highway stop', lat: 27.5, lon: 76.5,
+      chainageKm: 160, legKm: 162, detourKm: 2,
+      arriveSocPct: 20, leaveSocPct: 80, chargeKwh: 42.7,
+      pricePerKwh: 20, estPriceInr: 854, chargeTimeMin: 42,
+    }],
+  }] } }));
+  await page.goto('/');
+  await page.locator('#trips-button').click();
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+
+  const briefing = page.locator('[data-journey-briefing]');
+  await expect(briefing).toBeVisible();
+  await expect(briefing.locator('.journey-leg')).toHaveCount(2);
+  await expect(briefing.locator('.briefing-itinerary tbody tr')).toHaveCount(1);
+  await expect(briefing.locator('.briefing-itinerary tbody tr')).toContainText('42.7 kWh');
+  await expect(briefing.locator('.briefing-itinerary tbody tr')).toContainText('Rs. 20/kWh');
+  await expect(briefing.locator('.briefing-itinerary tbody tr')).toContainText('Unknown');
+  await expect(page.locator('.saved-stop').getByRole('button', { name: 'Fetch current details' })).toBeVisible();
+  await expect(page.locator('[data-itinerary-export]')).toBeVisible();
+  await expect(page.locator('[data-print]')).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath('journey-briefing-saved.png') });
+});
+
 test('downloadable itinerary is standalone, labelled, and complete', async ({ page }) => {
   await page.route(/^https?:\/\//, async (route) => {
     const url = new URL(route.request().url());

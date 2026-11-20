@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { TripPlan } from '@indeev/core';
+import type { SavedTrip, TripPlan } from '@indeev/core';
 import {
   buildJourneyBriefingData,
   buildJourneyBriefingHtml,
+  journeySourceFromSavedTrip,
   renderJourneyBriefingMarkup,
 } from '../src/journey-briefing.js';
 
@@ -137,6 +138,36 @@ describe('journey briefing', () => {
     expect(data.itinerary[0]?.pricePerKwh).toBe(22.75);
     expect(renderJourneyBriefingMarkup(invalid)).toContain('Rs. 22.75/kWh');
     expect(buildJourneyBriefingHtml(invalid)).toContain('Rs. 22.75/kWh');
+  });
+
+  it('adapts saved station facts while keeping unstored ETAs unknown', () => {
+    const live = plan();
+    const saved: SavedTrip = {
+      id: 'saved-fixture', name: 'Fixture trip', createdAt: live.createdAt,
+      origin: live.origin, destination: live.destination, vehicle: live.vehicle,
+      status: live.status, source: live.source,
+      routeDistanceKm: live.routeDistanceKm, routeDurationMin: live.routeDurationMin,
+      geometry: [[0, 0], [2, 0]],
+      stations: [{
+        stationId: 42, name: 'Stop & Co', lat: 0, lon: 0,
+        chainageKm: 280, legKm: 282, detourKm: 2,
+        arriveSocPct: 20, leaveSocPct: 80, chargeKwh: 42.7,
+        pricePerKwh: 20, estPriceInr: 854, chargeTimeMin: 42,
+      }],
+      totals: live.totals,
+    };
+
+    const data = buildJourneyBriefingData(journeySourceFromSavedTrip(saved));
+    expect(data.stopsAvailable).toBe(true);
+    expect(data.legs[0]).toMatchObject({ distanceKm: 282, distanceBasis: 'stop-leg' });
+    expect(data.itinerary[0]).toMatchObject({
+      stationId: 42, chargeKwh: 42.7, chargeTimeMin: 42,
+      arrivalEtaMin: null, departureEtaMin: null,
+    });
+    const markup = renderJourneyBriefingMarkup(journeySourceFromSavedTrip(saved));
+    expect(markup).toContain('42.7 kWh');
+    expect(markup).toContain('Station 42');
+    expect(markup).not.toContain('No charging stops are needed');
   });
 
   it('shows unknown costs as unknown and handles no-stop routes', () => {

@@ -194,6 +194,10 @@ function renderSavedSummary(panel: HTMLElement, trip: SavedTrip): void {
       <div class="strip-cell accent"><span class="strip-num">${Math.round(trip.totals.finalSocPct)}<span class="unit">%</span></span><span class="strip-label">Arrival charge</span></div>
       <div class="strip-cell"><span class="strip-num">${escapeHtml(formatDuration(trip.totals.chargeTimeMin))}</span><span class="strip-label">Charging time</span></div>
     </div>
+    <div class="plan-actions saved-briefing-actions">
+      <button type="button" class="btn btn-ghost" data-itinerary-export>Journey itinerary (HTML)</button>
+      <button type="button" class="btn btn-ghost" data-print>Print itinerary</button>
+    </div>
     <div class="stops saved-stops">
       ${trip.stations
         .map(
@@ -215,6 +219,25 @@ function renderSavedSummary(panel: HTMLElement, trip: SavedTrip): void {
         .join('')}
     </div>
   `;
+
+  const source = journeySourceFromSavedTrip(trip);
+  const briefing = el(renderJourneyBriefingMarkup(source));
+  results.querySelector('.saved-stops')?.before(briefing);
+  results.querySelector('[data-itinerary-export]')?.addEventListener('click', () => {
+    try {
+      downloadJourneyBriefing(source);
+      toast('Journey itinerary downloaded.');
+    } catch {
+      toast('Itinerary export failed.', 'bad');
+    }
+  });
+  results.querySelector('[data-print]')?.addEventListener('click', () => {
+    try {
+      window.print();
+    } catch {
+      toast('Print is unavailable in this browser.', 'bad');
+    }
+  });
 
   results.querySelectorAll<HTMLElement>('[data-revalidate]').forEach((btn) => {
     btn.addEventListener('click', async () => {

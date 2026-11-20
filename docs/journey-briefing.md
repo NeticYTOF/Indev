@@ -37,9 +37,13 @@ does not restate it as a physical guarantee.
 Synthetic/degraded status, plan warnings, and briefing evidence warnings are
 carried into the on-screen briefing, the standalone HTML file, and print. A
 synthetic plan is labelled as mock data and never presented as live charger
-evidence. The briefing performs no provider calls, adds no persistence, and
-changes no planner, vehicle, tariff, availability, candidate-lookup, or pacing
-policy.
+evidence. Reopening a saved trip shows the same briefing from its stored
+planned charging facts; because saved trips do not store per-stop ETA offsets,
+those cells appear as `Unknown` rather than being recomputed with invented
+timing. Station cards still fetch current details only on request.
+
+The briefing performs no provider calls, adds no persistence, and changes no
+planner, vehicle, tariff, availability, candidate-lookup, or pacing policy.
 
 Browser source coverage exercises desktop 1280x800 and mobile 390x844, the
 screen/print media views, and the downloaded HTML file. Actual rendered
