@@ -94,6 +94,52 @@ describe('station evidence panel', () => {
     expect(markup).toContain('Connector list is Unknown for this charger.');
   });
 
+  it('normalizes untrusted saved station refs without injection or invented charger facts', () => {
+    const injection = '<img src=x onerror=stationProof><script>stationProof</script>';
+    const hostile = {
+      stationId: 1.5,
+      name: injection,
+      lat: 'not-a-number',
+      lon: Number.NaN,
+      chargers: [{ name: 'Invented DC', kw: 60, pricePerKwh: 22.75 }],
+      connectors: [{ type: 'CCS-2' }],
+    };
+    const throwing = {
+      stationId: 42,
+      name: 'Hostile getters',
+      get lat() { throw new Error('latitude trap'); },
+      get lon() { throw new Error('longitude trap'); },
+    };
+    const values: unknown[] = [null, undefined, 42, injection, {}, hostile, throwing];
+    for (const savedStation of values) {
+      const markup = renderStationEvidencePanel({
+        savedStation,
+        plannedFacts: { tariffPerKwh: 20, chargeKwh: 40, chargeTimeMin: 30 },
+      });
+      expect(markup).toContain('Manual station status');
+      expect(markup).toContain('No current status requested.');
+      expect(markup).not.toContain(injection);
+      expect(markup).not.toContain('<img src=x');
+      expect(markup).not.toContain('<script>');
+      expect(markup).not.toContain('Invented DC');
+      expect(markup).not.toContain('Rs. 22.75/kWh');
+      expect(markup).not.toContain('data-station-id="1.5"');
+    }
+
+    const legitimate = renderStationEvidencePanel({
+      savedStation: {
+        stationId: 9, name: 'Saved stop', lat: 0, lon: 0,
+        chainageKm: 50, legKm: 52, detourKm: 2,
+        arriveSocPct: 22, leaveSocPct: 60, chargeKwh: 30,
+        pricePerKwh: 0, estPriceInr: 0, chargeTimeMin: 25,
+      },
+      plannedFacts: { tariffPerKwh: 20, chargeKwh: 40, chargeTimeMin: 30 },
+    });
+    expect(legitimate).toContain('data-station-id="9"');
+    expect(legitimate).toContain('Charger evidence for Saved stop');
+    expect(legitimate).toContain('Rs. 20/kWh');
+  });
+
   it('uses human one-based ordinals when charger IDs are missing', () => {
     const evidence = normalizeFetchedStationResponse({ station: {
       stationId: 42, name: 'Ordinal stop', fetchedAt: '2026-11-20T10:00:00Z',
