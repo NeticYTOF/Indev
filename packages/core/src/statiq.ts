@@ -218,23 +218,30 @@ export class StatiqClient {
    * fetch time (not access time) so status displays stay honest.
    */
   async detailsWithMeta(stationId: number, signal?: AbortSignal): Promise<StationDetailsWithMeta> {
+    if (signal?.aborted) throw new StatiqAbortError();
     const cached = this.detailsCache.get(stationId);
     if (cached && this.now() - cached.at < this.cacheTtlMs) {
+      if (signal?.aborted) throw new StatiqAbortError();
       return { response: cached.response, fetchedAt: cached.fetchedAt };
     }
     const response = await this.postJson<StatiqDetailsResponse>('/stations/details', {
       station_id: stationId,
     }, signal);
+    if (signal?.aborted) throw new StatiqAbortError();
     const fetchedAt = new Date();
     if (response && response.station) {
-      this.detailsCache.set(stationId, { at: this.now(), response, fetchedAt });
+      const at = this.now();
+      if (signal?.aborted) throw new StatiqAbortError();
+      this.detailsCache.set(stationId, { at, response, fetchedAt });
     }
     return { response, fetchedAt };
   }
 
   /** Wire-shaped details (no fetch metadata). */
   async details(stationId: number, signal?: AbortSignal): Promise<StatiqDetailsResponse> {
-    return (await this.detailsWithMeta(stationId, signal)).response;
+    const result = await this.detailsWithMeta(stationId, signal);
+    if (signal?.aborted) throw new StatiqAbortError();
+    return result.response;
   }
 
   /**
@@ -365,6 +372,9 @@ export class StatiqClient {
       // awaited BEFORE any reservation - no up-front reservation can be
       // cancelled by another waiter finding the cap exhausted.
       await this.acquireSlot(signal);
+      // A permit can settle before this continuation runs. Refuse an
+      // intervening abort BEFORE reservation, keeping reserved == dispatched.
+      if (signal?.aborted) throw new StatiqAbortError();
       // 2) Atomic reserve immediately before fetch, with NO await between a
       // successful reserve and the dispatch (reservation-race invariant):
       //  - fatal stop (first 429/401/403): this caller fails fast, zero NEW
@@ -379,6 +389,7 @@ export class StatiqClient {
       // answered on the wire; the catch's audit-0 fallbacks skip when it
       // already ran (a body-read failure after headers must not double-).
       let attemptAudited = false;
+      let fatalAtHeaders: StatiqRunFatalError | undefined;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.timeoutMs);
       const onOuterAbort = () => controller.abort();
@@ -421,17 +432,27 @@ export class StatiqClient {
             : undefined;
         if (budget && fatalCause) {
           budget.stop(fatalCause, fatalRetryAfter);
+          // Preserve the known fatal status even if an aborted body cannot
+          // supply diagnostics. No body is invented when none was read.
+          fatalAtHeaders = new StatiqRunFatalError(fatalCause, res.status, path, '', fatalRetryAfter);
         }
         // HEADER-TIME AUDIT: the attempt reached the wire and answered with
         // this status - recorded even if the body then never arrives.
         this.audit(path, res.status);
         attemptAudited = true;
+        // Observe real headers before cancellation: fatal status must still
+        // stop the shared budget and every dispatched attempt audits once.
+        if (signal?.aborted) {
+          if (fatalAtHeaders) throw fatalAtHeaders;
+          throw new StatiqAbortError();
+        }
         const text = await res.text();
         if (fatalCause) {
           // no retry path is entered under a budget: the fatal error carries
           // the full body diagnostics and the parsed wait for honest evidence
           throw new StatiqRunFatalError(fatalCause, res.status, path, text, fatalRetryAfter);
         }
+        if (signal?.aborted) throw new StatiqAbortError();
         if (!res.ok) {
           const retryAfter =
             res.status === 429 ? this.parseRetryAfterMs(res.headers?.get('retry-after')) : undefined;
@@ -451,6 +472,7 @@ export class StatiqClient {
         if (err instanceof StatiqRunFatalError || err instanceof UpstreamRunStoppedError) {
           throw err;
         }
+        if (fatalAtHeaders) throw fatalAtHeaders;
         // OUTER cancellation (run deadline / explicit abort) is never
         // retried. Detected by the AUTHORITATIVE signal state, NOT by the
         // error shape: an AbortError-shaped rejection without the outer
