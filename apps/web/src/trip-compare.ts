@@ -395,7 +395,7 @@ export function buildTripComparisonHtml(comparison: TripComparison): string {
     `.compare-workspace{max-width:1400px;margin:auto}` +
     `.compare-toolbar{display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;align-items:flex-start;border-bottom:1px solid #34322E;padding-bottom:12px}` +
     `.compare-toolbar h2,.compare-card h3,.compare-difference h3{color:#F4F2EE;margin:0 0 6px}` +
-    `.compare-toolbar-actions{display:flex;flex-wrap:wrap;gap:8px}button{display:none}` +
+    `.compare-toolbar-actions,.compare-card-actions{display:flex;flex-wrap:wrap;gap:8px}button{display:none}` +
     `.hint{color:#B8B4AD;font-size:12px}.compare-badges{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}` +
     `.badge{padding:3px 7px;border:1px solid #F4B951;color:#F4B951;font-size:11px}` +
     `.badge-synthetic{border-color:#E99455;color:#E99455}.badge-soft,.badge-warn{border-color:#34322E;color:#B8B4AD}` +
@@ -414,7 +414,8 @@ export function buildTripComparisonHtml(comparison: TripComparison): string {
     `@media (max-width:900px){.compare-grid{grid-template-columns:1fr}}` +
     `@media print{body{background:#fff;color:#111;padding:0}.compare-card,.compare-difference,.compare-context{border-color:#888;background:#fff}.hint,.compare-facts dt,.compare-stop-facts{color:#444}` +
     `.badge,.compare-delta{color:#111;border-color:#888}.compare-grid{grid-template-columns:repeat(3,minmax(0,1fr))}` +
+    `.compare-toolbar,.compare-card-actions{display:none!important}.compare-card h4,.compare-difference h4,.compare-stop-id,.compare-notes{color:#111}` +
     `.compare-toolbar h2,.compare-card h3,.compare-difference h3,.compare-slot,.compare-table caption,.compare-endpoints{color:#111}` +
-    `.compare-card,.compare-difference,.compare-notes,.compare-stop,.compare-facts div{break-inside:avoid;page-break-inside:avoid}}` +
+    `.compare-notes,.compare-stop,.compare-facts div{break-inside:avoid;page-break-inside:avoid}}` +
     `</style></head><body><main>${renderTripComparisonMarkup(comparison)}</main></body></html>`;
 }
