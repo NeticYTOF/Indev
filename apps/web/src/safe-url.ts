@@ -77,3 +77,61 @@ export function routeDirectionsUrl(
   if (![origin, destination, ...stops].every(point => stationDirectionsUrl(point.lat, point.lon) !== null)) return null;
   return `https://www.google.com/maps/dir/?api=1&origin=${origin.lat},${origin.lon}&destination=${destination.lat},${destination.lon}${stops.length > 0 ? `&waypoints=${stops.map(point => `${point.lat}%2C${point.lon}`).join('%7C')}` : ''}`;
 }
+
+export interface RouteDirectionsLink {
+  readonly url: string;
+  readonly part: number;
+  readonly total: number;
+  /** Inclusive 1-based stop indices represented by this link. */
+  readonly firstStop: number;
+  readonly lastStop: number;
+  readonly startsAtOrigin: boolean;
+  readonly endsAtDestination: boolean;
+}
+
+/** Current Google Maps URL guidance: mobile-safe 3 waypoints, 2048 encoded chars. */
+const MAX_WAYPOINTS_PER_LINK = 3;
+const MAX_URL_LENGTH = 1800;
+
+/**
+ * Build an ordered [origin, ...stops, destination] route. A link carries at
+ * most a start, 3 waypoints and an end; consecutive links share exactly the
+ * previous end point, so the flattened sequence has no omission, interior
+ * duplication or backtracking.
+ */
+export function routeDirectionsLinks(
+  origin: { lat: unknown; lon: unknown },
+  destination: { lat: unknown; lon: unknown },
+  stops: Array<{ lat: unknown; lon: unknown }>,
+): RouteDirectionsLink[] | null {
+  const points = [origin, ...stops, destination];
+  if (!points.every(point => stationDirectionsUrl(point.lat, point.lon) !== null)) return null;
+  const single = routeDirectionsUrl(origin, destination, stops);
+  if (single != null && stops.length <= MAX_WAYPOINTS_PER_LINK && single.length <= MAX_URL_LENGTH) {
+    return [{
+      url: single, part: 1, total: 1, firstStop: 1, lastStop: stops.length,
+      startsAtOrigin: true, endsAtDestination: true,
+    }];
+  }
+  const links: RouteDirectionsLink[] = [];
+  let start = 0;
+  while (start < points.length - 1) {
+    const end = Math.min(start + MAX_WAYPOINTS_PER_LINK + 1, points.length - 1);
+    const segmentOrigin = points[start] as { lat: unknown; lon: unknown };
+    const segmentDestination = points[end] as { lat: unknown; lon: unknown };
+    const waypoints = points.slice(start + 1, end);
+    const url = routeDirectionsUrl(segmentOrigin, segmentDestination, waypoints);
+    if (url == null || url.length > MAX_URL_LENGTH) return null;
+    links.push({
+      url,
+      part: links.length + 1,
+      total: 0,
+      firstStop: Math.max(start, 1),
+      lastStop: Math.min(end, stops.length),
+      startsAtOrigin: start === 0,
+      endsAtDestination: end === points.length - 1,
+    });
+    start = end;
+  }
+  return links.map((link) => ({ ...link, total: links.length }));
+}
