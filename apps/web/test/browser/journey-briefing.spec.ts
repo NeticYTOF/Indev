@@ -126,5 +126,16 @@ test('downloadable itinerary is standalone, labelled, and complete', async ({ pa
   await page.goto(pathToFileURL(path).href);
   await expect(page.locator('[data-journey-briefing]')).toBeVisible();
   await expect(page.locator('.briefing-itinerary tbody tr')).toHaveCount(plan.stops.length);
+  await expect(page.locator('.briefing-itinerary tbody th .hint').first()).toHaveCSS('display', 'block');
   await page.screenshot({ path: test.info().outputPath('journey-briefing-export.png') });
+  await page.emulateMedia({ media: 'print' });
+  const batteryColumns = await page.locator('.journey-battery-profile').evaluate((element) => {
+    const style = getComputedStyle(element);
+    return style.gridTemplateColumns.split(' ').filter(Boolean).length;
+  });
+  expect(batteryColumns).toBe(2);
+  await page.screenshot({
+    path: test.info().outputPath('journey-briefing-export-print.png'),
+    fullPage: true,
+  });
 });

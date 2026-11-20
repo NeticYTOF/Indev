@@ -337,7 +337,7 @@ export function buildJourneyBriefingHtml(plan: TripPlan): string {
     `.briefing-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}` +
     `.briefing-summary div{border:1px solid #34322E;padding:10px}.briefing-summary dt{color:#B8B4AD;font-size:12px}` +
     `.briefing-summary dd{margin:4px 0 0;font-weight:700}` +
-    `.journey-legs,.journey-battery-profile{list-style:none;padding:0}` +
+    `.journey-legs,.journey-battery-profile{list-style:none;padding:0;display:grid;gap:8px}` +
     `.journey-leg,.journey-battery-point{border-bottom:1px solid #34322E;padding:10px 0;min-width:0;overflow-wrap:anywhere}` +
     `.journey-leg{display:grid;gap:4px}.journey-leg-place{font-weight:700}.journey-leg-distance,.journey-leg-eta{color:#F4B951}` +
     `.briefing-battery-value{display:grid;grid-template-columns:54px minmax(40px,1fr) 56px;gap:8px;align-items:center;margin-top:6px}` +
@@ -351,7 +351,7 @@ export function buildJourneyBriefingHtml(plan: TripPlan): string {
     `@media print{body{background:#fff;color:#111;padding:0}.journey-briefing{border:0;background:#fff;color:#111;padding:0}` +
     `h3,h4,.briefing-summary dd{color:#111}.hint,.briefing-summary dt,.briefing-itinerary caption{color:#444}` +
     `.banner{color:#111;border-color:#111}.briefing-meter{background:#eee;border-color:#888}` +
-    `.journey-battery-profile{grid-template-columns:repeat(2,minmax(0,1fr))}` +
+    `.journey-battery-profile{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}` +
     `.briefing-battery-value strong{white-space:normal;overflow-wrap:anywhere}` +
     `.briefing-meter-fill{background:#111}.briefing-itinerary th,.briefing-itinerary td{border-color:#888}` +
     `.briefing-itinerary thead th{color:#111}}` +
