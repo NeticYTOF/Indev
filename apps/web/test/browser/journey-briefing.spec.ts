@@ -110,12 +110,16 @@ test('downloadable itinerary is standalone, labelled, and complete', async ({ pa
   const path = test.info().outputPath('journey-briefing.html');
   await download.saveAs(path);
   const html = await readFile(path, 'utf8');
+  const escaped = (value: string) => value.replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[character] as string);
   expect(html).toContain('<!doctype html>');
   expect(html).toContain('@media print');
   expect(html).toContain('Journey briefing');
-  expect(html).toContain(plan.stops[0]!.station.name);
+  expect(html).toContain(escaped(plan.stops[0]!.station.name));
   expect(html).toContain(`${Math.round(plan.stops[0]!.chargeKwh * 10) / 10} kWh`);
-  expect(html).toContain(plan.warnings[0] ?? 'Synthetic data');
+  expect(html).toContain('Synthetic data');
+  if (plan.warnings.length > 0) expect(html).toContain(escaped(plan.warnings[0]!));
   expect(html).not.toContain('gradient');
 
   await page.setViewportSize({ width: 1280, height: 800 });
