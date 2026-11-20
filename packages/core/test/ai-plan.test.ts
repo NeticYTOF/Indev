@@ -10,6 +10,21 @@ import type { Coords } from '../src/geo.js';
 
 const KM_PER_DEG = 111.32;
 
+function routeLengthKmForTest(geometry: Coords[]): number {
+  let total = 0;
+  for (let i = 1; i < geometry.length; i++) {
+    const a = geometry[i - 1] as Coords;
+    const b = geometry[i] as Coords;
+    const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+    const dLon = ((b.lon - a.lon) * Math.PI) / 180;
+    const lat1 = (a.lat * Math.PI) / 180;
+    const lat2 = (b.lat * Math.PI) / 180;
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+    total += 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+  return total;
+}
+
 function makeRoute(totalKm: number): RouteResult {
   const n = Math.max(2, Math.ceil(totalKm / 10));
   const geometry: Coords[] = Array.from({ length: n + 1 }, (_, i) => ({
@@ -387,6 +402,26 @@ describe('AI-safe candidates', () => {
       'stationId',
     ]);
   });
+});
+
+it('AI rebuild uses geometry chainage, not OSRM metadata distance, for final-leg evidence', () => {
+  const geometryKm = 700;
+  const bundle = handBuiltBundle([300, 550], geometryKm);
+  // OSRM metadata can differ from the geometry chainage used for selection.
+  bundle.plan.routeDistanceKm = 650;
+  const validation = validateAiChoice(bundle, { stationIds: [idAt(300), idAt(550)] }, {}, HARIER_EV_75);
+  expect(validation.ok).toBe(true);
+  if (!validation.ok) return;
+  const plan = assembleAiPlan(bundle, validation.seq, { applied: true }, {}, HARIER_EV_75);
+
+  const geometryTotalKm = routeLengthKmForTest(bundle.route.geometry);
+  expect(plan.totals.distanceKm).toBeCloseTo(geometryTotalKm, 6);
+  const last = plan.stops.at(-1)!;
+  expect(last.leaveSocPct).toBeGreaterThan(0);
+  // The final leg must be charged from geometry chainage. With the old
+  // metadata-based rebuild, total distance and final-leg evidence diverged.
+  const expectedFinalLegKm = geometryTotalKm - last.chainageKm + last.detourKm;
+  expect(expectedFinalLegKm).toBeGreaterThan(140);
 });
 
 it('AI alternatives inherit degraded numeric evidence and unknown cost without reintroducing bad candidates', async () => {

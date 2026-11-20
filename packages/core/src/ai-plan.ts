@@ -78,9 +78,7 @@ export function validateAiChoice(
   }
 
   // simulate the whole chain with the minimal-charge policy
-  const totalKm = route.geometry.length
-    ? routeLengthKm(route.geometry)
-    : bundle.plan.routeDistanceKm;
+  const totalKm = validatedRouteKm(route.geometry, bundle.plan.routeDistanceKm);
 
   let cursorChain = 0;
   let cursorDetour = 0;
@@ -142,14 +140,22 @@ export function assembleAiPlan(
     ...base.warnings,
     `Stop plan adjusted by AI${ai.notes ? `: ${String(ai.notes).slice(0, 240)}` : ''}.`,
   ];
-  const stops: PlanStop[] = finalize(seq, base.routeDistanceKm, bundle.route, opts, vehicle, warnings);
-  const totals: PlanTotals = computeTotals(stops, base.routeDistanceKm, bundle.route, opts, vehicle);
+  // The greedy planner validates and totals against cumulative geometry
+  // chainage, not the OSRM-reported distance displayed in metadata. AI
+  // rebuild must use the same number or final-leg/SoC evidence diverges.
+  const totalKm = validatedRouteKm(bundle.route.geometry, base.routeDistanceKm);
+  const stops: PlanStop[] = finalize(seq, totalKm, bundle.route, opts, vehicle, warnings);
+  const totals: PlanTotals = computeTotals(stops, totalKm, bundle.route, opts, vehicle);
   return {
     ...base,
     stops,
     totals,
     warnings,
   };
+}
+
+function validatedRouteKm(geometry: Coords[], fallbackKm: number): number {
+  return geometry.length > 0 ? routeLengthKm(geometry) : fallbackKm;
 }
 
 function routeLengthKm(geometry: Coords[]): number {
