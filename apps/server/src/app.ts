@@ -31,6 +31,7 @@ import {
   VEHICLE_CATALOG,
   summarizeCcs2,
   DEFAULT_HARRIER_ENTRY_ID,
+  DEFAULT_PLAN_OPTIONS,
   type PlanOptions,
   type PlanRunBudget,
   type ResolvedVehicle,
@@ -305,6 +306,14 @@ export function createApp(deps: AppDeps): Hono {
       runBudget,
       ...(startSocPct === undefined ? {} : { startSocPct }),
     };
+    // Mirror the planner's user-range cap so AI validation enforces the
+    // same safe running range the base plan used.
+    if (resolved.realWorldRangeKm != null && Number.isFinite(resolved.realWorldRangeKm)) {
+      planOptions.maxLegKm = Math.min(
+        planOptions.maxLegKm ?? DEFAULT_PLAN_OPTIONS.maxLegKm,
+        resolved.realWorldRangeKm,
+      );
+    }
     // 1) base plan + AI-safe candidates (no occupancy anywhere).
     //    Audit the base-plan run on failure too: a not_determined base plan
     //    (throttle/budget/deadline) must surface in the run audit, not vanish.
@@ -329,7 +338,7 @@ export function createApp(deps: AppDeps): Hono {
     const system =
       'You are an EV trip-planning assistant for India. You receive a computed base plan ' +
       'and its candidate charging stations. Choose the best stop sequence respecting: ' +
-      'legs at most 300 km, fewest stops, brands preferred in order Statiq > Tata > BPCL > HP > others. ' +
+      'legs no longer than the maxLegKm limit below, fewest stops, brands preferred in order Statiq > Tata > BPCL > HP > others. ' +
       'You may keep the base sequence if it is already best. Respond with STRICT JSON only: ' +
       '{"chosenStationIds": number[], "notes": string}. chosenStationIds must be the station ids in ' +
       'route order, drawn only from the provided candidates. notes is one short sentence for the user.';
@@ -340,6 +349,7 @@ export function createApp(deps: AppDeps): Hono {
         claimedRangeKm: bundle.plan.vehicle.claimedRangeKm,
         realWorldRangeKm: bundle.plan.vehicle.realWorldRangeKm,
       },
+      limits: { maxLegKm: planOptions.maxLegKm ?? DEFAULT_PLAN_OPTIONS.maxLegKm },
       basePlan: {
         stopIds: bundle.plan.stops.map((s) => s.station.stationId),
         stopNames: bundle.plan.stops.map((s) => s.station.name),

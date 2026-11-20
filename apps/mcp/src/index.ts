@@ -77,7 +77,8 @@ function toolErrorText(err: unknown): { content: Array<{ type: 'text'; text: str
 server.tool(
   'plan_trip',
   'Plan a charging route for an India-market EV (default: Tata Harrier EV 75 kWh). ' +
-    'Fetches live Statiq chargers along the fastest route; fewest stops, legs up to 300 km. ' +
+    'Fetches live Statiq chargers along the fastest route; fewest stops, ' +
+    'legs within the selected vehicle safe range (300 km for the default Harrier). ' +
     'Optionally saves the trip (minimal station references only).',
   {
     origin: z.string().min(2).describe('Start: place name ("Jaipur") or "lat,lon"'),

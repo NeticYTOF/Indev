@@ -238,7 +238,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
       <label for="ai-request" class="search-label">AI planning — custom requests (optional)</label>
       <textarea id="ai-request" rows="2" placeholder="e.g. Prefer stops with cafes, avoid single-plug stations"></textarea>
       <button type="button" class="btn btn-ghost" data-ai-plan>Plan with AI</button>
-      <p class="hint">The AI picks from the same live candidates and every choice is validated against the 300 km rules.</p>
+      <p class="hint">The AI picks from the same live candidates and every choice is validated against the selected vehicle's safe range and leg rules.</p>
     </div>
   `);
   form.appendChild(aiBox);
