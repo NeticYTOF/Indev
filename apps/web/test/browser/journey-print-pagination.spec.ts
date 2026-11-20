@@ -139,13 +139,13 @@ for (const options of [
     const widths = await briefing.evaluate((section) => {
       const table = section.querySelector('.briefing-itinerary') as HTMLTableElement;
       const cells = Array.from(table.querySelectorAll('.briefing-itinerary thead th'));
-      const column = (name: string) => table.querySelector(`.briefing-col-${name}`) as HTMLTableColElement;
-      const px = (element: HTMLElement) => Number.parseFloat(getComputedStyle(element).width);
+      const headCell = (index: number) => table.tHead?.rows[0]?.cells[index] as HTMLElement;
+      const px = (element: HTMLElement) => element.getBoundingClientRect().width;
       return {
         tableLayout: getComputedStyle(table).tableLayout,
         tableMinWidth: Number.parseFloat(getComputedStyle(table).minWidth),
-        chargeTimeWidth: px(column('charge-time')),
-        costWidth: px(column('cost')),
+        chargeTimeWidth: px(headCell(4)),
+        costWidth: px(headCell(5)),
         headerWhiteSpace: cells.map((cell) => getComputedStyle(cell).whiteSpace),
         pageFits: document.body.scrollWidth <= window.innerWidth,
       };

@@ -2,10 +2,16 @@ import { expect, test } from '@playwright/test';
 
 const SAVED_ORIGIN = { label: 'Delhi — saved exact', lat: 28.6139, lon: 77.209 };
 const SAVED_DESTINATION = { label: 'Jaipur — saved exact', lat: 26.9124, lon: 75.7873 };
-const CATALOG = [{
-  id: 'tata-harrier-ev-75', make: 'Tata', model: 'Harrier EV',
-  variantLabel: '75 kWh', batteryKwh: 75, claimedRangeKm: 627,
-}];
+const CATALOG = [
+  {
+    id: 'tata-harrier-ev-75', make: 'Tata', model: 'Harrier EV',
+    variantLabel: '75 kWh', batteryKwh: 75, claimedRangeKm: 627,
+  },
+  {
+    id: 'nondefault-exact', make: 'Example', model: 'Exact Pack',
+    variantLabel: '75.01 kWh', batteryKwh: 75.01, claimedRangeKm: 640,
+  },
+];
 
 interface PlanBody {
   origin: { label: string; lat: number; lon: number };
@@ -72,7 +78,13 @@ function syntheticPlan(requestBody: {
 async function wiredPage(
   page: import('@playwright/test').Page,
   counters: Counters,
-  options: { holdVehicles?: Promise<void>; holdPlan?: Promise<void>; batteryKwh?: number | null; catalogId?: string | null } = {},
+  options: {
+    holdVehicles?: Promise<void>;
+    holdPlan?: Promise<void>;
+    batteryKwh?: number | null;
+    catalogId?: string | null;
+    geocodeHits?: Array<{ label: string; lat: number; lon: number }>;
+  } = {},
 ): Promise<void> {
   await page.route(/^https?:\/\//, async (route) => {
     const url = new URL(route.request().url());
@@ -93,7 +105,13 @@ async function wiredPage(
     return route.fulfill({ json: { trips: [savedTrip(options.batteryKwh, options.catalogId)] } });
   });
   await page.route('**/api/trips/*', (route) => route.fulfill({ json: { ok: true } }));
-  await page.route('**/api/geocode*', (route) => { counters.geocode++; return route.abort(); });
+  await page.route('**/api/geocode*', (route) => {
+    counters.geocode++;
+    const hits = (options.geocodeHits ?? []).map((hit) => ({
+      ...hit, name: hit.label, city: null, state: null, country: null,
+    }));
+    return hits.length > 0 ? route.fulfill({ json: { hits } }) : route.abort();
+  });
   await page.route('**/api/stations/*', (route) => { counters.station++; return route.abort(); });
   await page.route('**/api/ai/plan', async (route) => {
     counters.ai++;
@@ -136,6 +154,22 @@ test('editing from the drawer copies facts only, with mobile focus and no reques
   await page.screenshot({ path: info.outputPath('saved-route-edit-mobile.png') });
 });
 
+test('editing from the saved summary uses the same manual-only flow', async ({ page }, info) => {
+  const counters: Counters = { geocode: 0, plan: 0, ai: 0, station: 0, save: 0 };
+  await wiredPage(page, counters);
+  await page.locator('#trips-button').click();
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+  await expect(page.locator('[data-journey-briefing]')).toBeVisible();
+
+  await page.locator('.saved-briefing-actions [data-edit-saved]').click();
+  await expect(page.locator('.saved-route-review')).toContainText('Editing saved route');
+  await expect(page.getByRole('searchbox', { name: 'From', exact: true })).toHaveValue(SAVED_ORIGIN.label);
+  await expect(page.getByRole('searchbox', { name: 'To', exact: true })).toHaveValue(SAVED_DESTINATION.label);
+  await expect(page.locator('.plan-results')).toHaveCount(0);
+  expect(counters).toEqual({ geocode: 0, plan: 0, ai: 0, station: 0, save: 0 });
+  await page.screenshot({ path: info.outputPath('saved-route-summary-edit.png') });
+});
+
 test('manual replan waits for deferred catalog and preserves saved coordinates', async ({ page }, info) => {
   let releaseVehicles!: () => void;
   const vehicles = new Promise<void>((resolve) => { releaseVehicles = resolve; });
@@ -166,6 +200,25 @@ test('manual replan waits for deferred catalog and preserves saved coordinates',
   await page.screenshot({ path: info.outputPath('saved-route-manual-replan.png') });
 });
 
+test('AI replan is refused while a deferred saved catalog is still loading', async ({ page }) => {
+  let releaseVehicles!: () => void;
+  const vehicles = new Promise<void>((resolve) => { releaseVehicles = resolve; });
+  const counters: Counters = { geocode: 0, plan: 0, ai: 0, station: 0, save: 0 };
+  await wiredPage(page, counters, { holdVehicles: vehicles });
+  await page.locator('#trips-button').click();
+  await page.getByRole('button', { name: 'Edit route', exact: true }).click();
+
+  await page.getByRole('button', { name: 'Plan with AI', exact: true }).click();
+  await expect(page.locator('.error-box')).toContainText('Waiting for the saved vehicle selection');
+  expect(counters.ai).toBe(0);
+  expect(counters.plan).toBe(0);
+  releaseVehicles();
+  await expect(page.locator('input[data-custom-kwh]')).toHaveValue('75');
+  await page.getByRole('button', { name: 'Plan with AI', exact: true }).click();
+  await expect(page.locator('.plan-results')).toBeVisible();
+  expect(counters.ai).toBe(1);
+});
+
 test('stale saved battery stays in custom inputs with a visible reason', async ({ page }) => {
   const counters: Counters = { geocode: 0, plan: 0, ai: 0, station: 0, save: 0 };
   await wiredPage(page, counters, { batteryKwh: 62, catalogId: 'tata-harrier-ev-75' });
@@ -175,6 +228,28 @@ test('stale saved battery stays in custom inputs with a visible reason', async (
   await expect(page.locator('input[data-custom-kwh]')).toHaveValue('62');
   await expect(page.locator('.saved-route-review')).toContainText('saved battery does not match');
   await expect(page.locator('.saved-route-review')).toContainText('Saved Harrier — label must survive fallback');
+  expect(counters.plan).toBe(0);
+});
+
+test('a fractional battery mismatch never maps to a catalog entry', async ({ page }) => {
+  const counters: Counters = { geocode: 0, plan: 0, ai: 0, station: 0, save: 0 };
+  await wiredPage(page, counters, { batteryKwh: 75, catalogId: 'nondefault-exact' });
+  await page.locator('#trips-button').click();
+  await page.getByRole('button', { name: 'Edit route', exact: true }).click();
+  await expect(page.locator('select[data-vehicle]')).toHaveValue('custom');
+  await expect(page.locator('input[data-custom-kwh]')).toHaveValue('75');
+  await expect(page.locator('.saved-route-review')).toContainText('saved battery does not match');
+  expect(counters.plan).toBe(0);
+});
+
+test('an exactly matching non-default catalog entry restores its range', async ({ page }) => {
+  const counters: Counters = { geocode: 0, plan: 0, ai: 0, station: 0, save: 0 };
+  await wiredPage(page, counters, { batteryKwh: 75.01, catalogId: 'nondefault-exact' });
+  await page.locator('#trips-button').click();
+  await page.getByRole('button', { name: 'Edit route', exact: true }).click();
+  await expect(page.locator('select[data-vehicle]')).toHaveValue('nondefault-exact');
+  await expect(page.locator('input[data-real-world]')).toHaveValue('300');
+  await expect(page.locator('.saved-route-review')).not.toContainText('custom inputs');
   expect(counters.plan).toBe(0);
 });
 
@@ -189,6 +264,26 @@ test('a missing saved battery stays blank and requires user input', async ({ pag
   await expect(page.locator('.saved-route-review')).toContainText('Saved battery size was missing');
   await expect(page.locator('.saved-route-review')).toContainText('saved battery does not match');
   expect(counters.plan).toBe(0);
+});
+
+test('typing invalidates restored coordinates and late geocode results', async ({ page }) => {
+  const counters: Counters = { geocode: 0, plan: 0, ai: 0, station: 0, save: 0 };
+  await wiredPage(page, counters, {
+    geocodeHits: [{ label: 'Late geocoded Delhi', lat: 19.076, lon: 72.8777 }],
+  });
+  await page.locator('#trips-button').click();
+  await page.getByRole('button', { name: 'Edit route', exact: true }).click();
+  const origin = page.getByRole('searchbox', { name: 'From', exact: true });
+  await origin.fill('Late geocoded Delhi');
+  await expect(page.locator('.suggestions:not(.hidden) .suggestion-item')).toContainText('Late geocoded Delhi');
+  await expect(origin).toHaveValue('Late geocoded Delhi');
+  await expect(origin).not.toHaveValue(SAVED_ORIGIN.label);
+  await page.getByRole('button', { name: 'Plan route', exact: true }).click();
+  await expect(page.locator('.error-box')).toContainText('Pick both a starting point');
+  expect(counters.geocode).toBeGreaterThan(0);
+  expect(counters.plan).toBe(0);
+  expect(counters.ai).toBe(0);
+  expect(counters.save).toBe(0);
 });
 
 test('editing is refused while a plan is in flight', async ({ page }) => {
