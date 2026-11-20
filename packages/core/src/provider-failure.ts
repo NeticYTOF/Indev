@@ -53,6 +53,22 @@ export type ProviderFailureCode =
   | 'fatal_auth'
   | 'unknown';
 
+export type GatewayContractReason =
+  | 'envelope_invalid'
+  | 'meta_missing'
+  | 'meta_invalid'
+  | 'success_missing'
+  | 'success_false'
+  | 'success_invalid';
+
+export type GatewayContractData =
+  | 'data_missing'
+  | 'data_invalid'
+  | 'stations_missing'
+  | 'stations_invalid'
+  | 'stations_empty'
+  | 'stations_nonempty';
+
 export type GatewayFailureCode =
   | 'input_invalid'
   | 'upstream_http'
@@ -76,6 +92,10 @@ export interface ProviderFailureEvidence {
   gatewayFailureCode: GatewayFailureCode | null;
   /** Validated gateway upstream status; null when absent or malformed. */
   gatewayUpstreamStatus: number | null;
+  /** Contract reason label; only valid on upstream_contract marker failures. */
+  gatewayContractReason: GatewayContractReason | null;
+  /** Contract data label; only valid on upstream_contract marker failures. */
+  gatewayContractData: GatewayContractData | null;
   elapsedWallMs: number;
   elapsedMonotonicMs: number;
 }
@@ -102,6 +122,8 @@ export interface ProviderFailureInput extends ProviderCallContext {
   httpStatus?: number | null;
   gatewayFailureCode?: GatewayFailureCode | null;
   gatewayUpstreamStatus?: number | null;
+  gatewayContractReason?: GatewayContractReason | null;
+  gatewayContractData?: GatewayContractData | null;
 }
 
 export interface ProviderFailureClock {
@@ -128,6 +150,28 @@ export function parseGatewayUpstreamStatus(value: unknown): number | null {
   if (!/^[1-5][0-9][0-9]$/.test(value)) return null;
   const status = Number(value);
   return status >= 100 && status <= 599 ? status : null;
+}
+
+const GATEWAY_CONTRACT_REASONS: ReadonlySet<string> = new Set([
+  'envelope_invalid', 'meta_missing', 'meta_invalid',
+  'success_missing', 'success_false', 'success_invalid',
+]);
+
+const GATEWAY_CONTRACT_DATA: ReadonlySet<string> = new Set([
+  'data_missing', 'data_invalid', 'stations_missing',
+  'stations_invalid', 'stations_empty', 'stations_nonempty',
+]);
+
+export function parseGatewayContractReason(value: unknown): GatewayContractReason | null {
+  return typeof value === 'string' && GATEWAY_CONTRACT_REASONS.has(value)
+    ? value as GatewayContractReason
+    : null;
+}
+
+export function parseGatewayContractData(value: unknown): GatewayContractData | null {
+  return typeof value === 'string' && GATEWAY_CONTRACT_DATA.has(value)
+    ? value as GatewayContractData
+    : null;
 }
 
 const FAILURE_CODES: readonly ProviderFailureCode[] = [
@@ -325,6 +369,13 @@ export function createProviderFailureCollector(
         const gatewayStatusInput = gatewayCodeInput != null
           ? safeHttpStatus(ownDataValue(inputRecord, 'gatewayUpstreamStatus'))
           : null;
+        const contractEligible = gatewayCodeInput === 'upstream_contract';
+        const gatewayContractReasonInput = contractEligible
+          ? parseGatewayContractReason(ownDataValue(inputRecord, 'gatewayContractReason'))
+          : null;
+        const gatewayContractDataInput = contractEligible
+          ? parseGatewayContractData(ownDataValue(inputRecord, 'gatewayContractData'))
+          : null;
         const record: ProviderFailureEvidence = Object.freeze({
           endpointClass: endpointInput === 'stations/markers' ||
             endpointInput === 'stations/details' ? endpointInput : 'none',
@@ -337,6 +388,8 @@ export function createProviderFailureCollector(
           gatewayFailureCode: gatewayCodeInput,
           // Gateway status is meaningful only with a valid gateway code.
           gatewayUpstreamStatus: gatewayCodeInput != null ? gatewayStatusInput : null,
+          gatewayContractReason: gatewayContractReasonInput,
+          gatewayContractData: gatewayContractDataInput,
           elapsedWallMs: wallElapsed,
           elapsedMonotonicMs: monotonicElapsed,
         });

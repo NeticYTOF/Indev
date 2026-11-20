@@ -40,6 +40,8 @@ import type {
 import { sleep as defaultSleep } from './utils.js';
 import { UpstreamBudget, UpstreamRunStoppedError } from './upstream-budget.js';
 import {
+  parseGatewayContractData,
+  parseGatewayContractReason,
   parseGatewayFailureCode,
   parseGatewayUpstreamStatus,
   statusCodeForHttp,
@@ -299,6 +301,8 @@ export class StatiqClient {
     httpStatus: number | null,
     gatewayFailureCode: ReturnType<typeof parseGatewayFailureCode> = null,
     gatewayUpstreamStatus: number | null = null,
+    gatewayContractReason: ReturnType<typeof parseGatewayContractReason> = null,
+    gatewayContractData: ReturnType<typeof parseGatewayContractData> = null,
   ): void {
     const collector = this.failureCollector;
     if (!collector) return;
@@ -316,6 +320,8 @@ export class StatiqClient {
         code,
         gatewayFailureCode,
         gatewayUpstreamStatus,
+        gatewayContractReason,
+        gatewayContractData,
       });
     } catch {
       /* Diagnostics must never alter run behavior. */
@@ -490,10 +496,12 @@ export class StatiqClient {
       attemptEvidenceRecorded = false;
       let gatewayFailureCode: ReturnType<typeof parseGatewayFailureCode> = null;
       let gatewayUpstreamStatus: number | null = null;
+      let gatewayContractReason: ReturnType<typeof parseGatewayContractReason> = null;
+      let gatewayContractData: ReturnType<typeof parseGatewayContractData> = null;
       const recordAttempt = (code: Parameters<ProviderFailureCollector['record']>[0]['code'], status: number | null): void => {
         if (attemptEvidenceRecorded) return;
         this.reportFailure(context, path, code, dispatchSeq, status,
-          gatewayFailureCode, gatewayUpstreamStatus);
+          gatewayFailureCode, gatewayUpstreamStatus, gatewayContractReason, gatewayContractData);
         attemptEvidenceRecorded = true;
       };
       // ONE AUDIT PER ATTEMPT: header-time audit marks the attempt as
@@ -538,6 +546,18 @@ export class StatiqClient {
               gatewayUpstreamStatus = parseGatewayUpstreamStatus(
                 res.headers?.get('x-evroute-upstream-status'),
               );
+            }
+            if (gatewayFailureCode === 'upstream_contract') {
+              try {
+                gatewayContractReason = parseGatewayContractReason(
+                  res.headers?.get('x-evroute-contract-reason'),
+                );
+              } catch { gatewayContractReason = null; }
+              try {
+                gatewayContractData = parseGatewayContractData(
+                  res.headers?.get('x-evroute-contract-data'),
+                );
+              } catch { gatewayContractData = null; }
             }
           } catch { gatewayFailureCode = null; gatewayUpstreamStatus = null; }
         }
