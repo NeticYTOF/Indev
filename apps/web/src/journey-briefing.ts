@@ -371,13 +371,13 @@ export function renderJourneyBriefingMarkup(plan: JourneyBriefingSource): string
     `<dl class="briefing-summary">${summary}</dl>` +
     `<h4>Whole-trip legs</h4><ol class="journey-legs">${legItems}</ol>` +
     `<h4>Battery profile</h4><ol class="journey-battery-profile">${batteryItems}</ol>` +
-    `<h4>Charging itinerary</h4>` +
+    `<h4 class="briefing-itinerary-heading">Charging itinerary</h4>` +
     `<div class="briefing-scroll" role="region" aria-label="Charging itinerary table" tabindex="0">` +
     `<table class="briefing-itinerary">` +
+    `<caption class="briefing-itinerary-caption">Every charging stop with planned energy and known cost</caption>` +
     `<colgroup><col class="briefing-col-stop"><col class="briefing-col-arrive"><col class="briefing-col-depart">` +
     `<col class="briefing-col-added"><col class="briefing-col-charge-time"><col class="briefing-col-cost">` +
     `<col class="briefing-col-arrive-at"><col class="briefing-col-depart-at"><col class="briefing-col-tariff"></colgroup>` +
-    `<caption>Every charging stop with planned energy and known cost</caption>` +
     `<thead><tr><th scope="col">Stop</th><th scope="col">Arrive</th><th scope="col">Depart</th>` +
     `<th scope="col">Added</th><th scope="col">Charge time</th><th scope="col">Cost</th>` +
     `<th scope="col">Arrive at</th><th scope="col">Depart at</th><th scope="col">Tariff</th></tr></thead>` +
@@ -421,8 +421,8 @@ export function buildJourneyBriefingHtml(plan: JourneyBriefingSource): string {
     `.briefing-scroll{overflow:visible}.briefing-itinerary{min-width:0;table-layout:fixed;font-size:10px}.briefing-itinerary td{white-space:nowrap}` +
     `.briefing-itinerary tbody th{min-width:120px}` +
     `.briefing-itinerary thead th{color:#111;white-space:nowrap}` +
-    `.briefing-col-stop{width:21%}.briefing-col-arrive,.briefing-col-depart{width:7%}.briefing-col-added{width:8%}` +
-    `.briefing-col-charge-time{width:13%}.briefing-col-cost{width:11%}.briefing-col-arrive-at,.briefing-col-depart-at{width:11%}.briefing-col-tariff{width:11%}` +
+    `.briefing-col-stop{width:20%}.briefing-col-arrive,.briefing-col-depart{width:7%}.briefing-col-added{width:8%}` +
+    `.briefing-col-charge-time{width:14%}.briefing-col-cost{width:12%}.briefing-col-arrive-at,.briefing-col-depart-at{width:10%}.briefing-col-tariff{width:12%}` +
     `.briefing-itinerary-heading,.briefing-itinerary-caption,.briefing-itinerary thead{break-after:avoid;page-break-after:avoid}` +
     `.briefing-itinerary tbody tr:first-child{break-before:avoid;page-break-before:avoid}` +
     `.briefing-summary>div,.journey-leg,.journey-battery-point,.briefing-itinerary tr{break-inside:avoid;page-break-inside:avoid}` +

@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import type { SavedTrip, TripPlan } from '@indeev/core';
 import {
@@ -73,8 +74,9 @@ describe('journey briefing', () => {
     expect(markup).toContain('aria-label="Arrive charge at Stop &amp; Co"');
     expect(markup).toContain('role="region"');
     expect(markup).toContain('tabindex="0"');
-    expect(markup).toContain('class="briefing-itinerary-heading"');
-    expect(markup).toContain('class="briefing-itinerary-caption"');
+    expect(markup).toContain('<h4 class="briefing-itinerary-heading">Charging itinerary</h4>');
+    expect(markup.indexOf('<caption class="briefing-itinerary-caption"')).toBeGreaterThan(-1);
+    expect(markup.indexOf('<caption class="briefing-itinerary-caption"')).toBeLessThan(markup.indexOf('<colgroup>'));
     expect(markup).toContain('class="briefing-col-charge-time"');
     expect(markup).toContain('class="briefing-col-cost"');
     expect(markup).not.toContain('gradient');
@@ -86,6 +88,34 @@ describe('journey briefing', () => {
     expect(html).toContain('42.7 kWh');
     expect(html).toContain('.briefing-itinerary tbody th .hint{display:block');
     expect(html).not.toContain('gradient');
+  });
+
+  it('ties print pagination CSS to real heading/caption markup and a 100% column budget', async () => {
+    const markup = renderJourneyBriefingMarkup(plan());
+    const html = buildJourneyBriefingHtml(plan());
+    const appCss = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+    const widthNames = [
+      'stop', 'arrive', 'depart', 'added', 'charge-time', 'cost',
+      'arrive-at', 'depart-at', 'tariff',
+    ];
+    const budget = (css: string) => widthNames.reduce((sum, name) => {
+      const match = css.match(new RegExp(`\\.briefing-col-${name}(?![-\\w])[^{}]*\\{[^}]*width:\\s*(\\d+)%`));
+      expect(match, `missing print width for ${name}`).not.toBeNull();
+      const percent = match ? Number(match[1]) : Number.NaN;
+      expect(Number.isFinite(percent)).toBe(true);
+      expect(percent).toBeGreaterThan(0);
+      return sum + percent;
+    }, 0);
+
+    expect(budget(appCss)).toBe(100);
+    expect(budget(html)).toBe(100);
+    for (const source of [appCss, html]) {
+      const compact = source.replace(/\s+/g, '');
+      expect(compact).toContain('.briefing-itinerary-heading,.briefing-itinerary-caption,.briefing-itinerary thead{'.replace(/\s+/g, ''));
+    }
+    expect(markup).toContain('<h4 class="briefing-itinerary-heading">Charging itinerary</h4>');
+    expect(markup).toContain('<caption class="briefing-itinerary-caption">Every charging stop with planned energy and known cost</caption>');
+    expect(markup.indexOf('<caption class="briefing-itinerary-caption"')).toBeLessThan(markup.indexOf('<colgroup>'));
   });
 
   it('keeps every declared stop with explicit Unknown cells and no plan mutation', () => {

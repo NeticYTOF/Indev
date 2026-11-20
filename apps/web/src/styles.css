@@ -2118,15 +2118,15 @@ body {
 
   /* Print-only column budget: readable charge/cost labels without forcing
      horizontal scrolling; screen keeps its own min-width and scroll rule. */
-  .briefing-col-stop { width: 21%; }
+  .briefing-col-stop { width: 20%; }
   .briefing-col-arrive,
   .briefing-col-depart { width: 7%; }
   .briefing-col-added { width: 8%; }
-  .briefing-col-charge-time { width: 13%; }
-  .briefing-col-cost { width: 11%; }
+  .briefing-col-charge-time { width: 14%; }
+  .briefing-col-cost { width: 12%; }
   .briefing-col-arrive-at,
-  .briefing-col-depart-at { width: 11%; }
-  .briefing-col-tariff { width: 11%; }
+  .briefing-col-depart-at { width: 10%; }
+  .briefing-col-tariff { width: 12%; }
 
   /* Keep the heading, caption, header and first row together; later rows
      remain independent so a long multi-stop table can still paginate. */
