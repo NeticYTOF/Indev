@@ -1,3 +1,4 @@
+import { hasFreshProvenance } from './provenance.js';
 /**
  * Statiq API replica client.
  *
@@ -63,6 +64,13 @@ export class StatiqApiError extends Error {
     // include request headers (token safety).
     super(`Statiq API ${status} on ${path}: ${body.slice(0, 200)}`);
     this.name = 'StatiqApiError';
+  }
+}
+
+export class StatiqProvenanceError extends StatiqApiError {
+  constructor(path: string) {
+    super(200, path, 'Fresh station provenance could not be verified');
+    this.name = 'StatiqProvenanceError';
   }
 }
 
@@ -221,6 +229,7 @@ export class StatiqClient {
     if (signal?.aborted) throw new StatiqAbortError();
     const cached = this.detailsCache.get(stationId);
     if (cached && this.now() - cached.at < this.cacheTtlMs) {
+      if (!hasFreshProvenance(cached.response)) throw new StatiqProvenanceError('/stations/details');
       if (signal?.aborted) throw new StatiqAbortError();
       return { response: cached.response, fetchedAt: cached.fetchedAt };
     }
@@ -228,6 +237,7 @@ export class StatiqClient {
       station_id: stationId,
     }, signal);
     if (signal?.aborted) throw new StatiqAbortError();
+    if (!hasFreshProvenance(response)) throw new StatiqProvenanceError('/stations/details');
     const fetchedAt = new Date();
     if (response && response.station) {
       const at = this.now();
@@ -465,7 +475,9 @@ export class StatiqClient {
           }
           throw new StatiqApiError(res.status, path, text, retryAfter);
         }
-        return JSON.parse(text) as T;
+        const parsed = JSON.parse(text) as T;
+        if (!hasFreshProvenance(parsed)) throw new StatiqProvenanceError(path);
+        return parsed;
       } catch (err) {
         // run-fatal and budget-gate errors are never retried, never
         // counted as sample failures: they unwind the whole planning run

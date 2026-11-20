@@ -17,3 +17,4 @@ export * from './trips.js';
 export * from './store-lock.js';
 export * from './counters.js';
 export * from './utils.js';
+export * from './provenance.js';

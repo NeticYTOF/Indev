@@ -1,3 +1,4 @@
+import { hasFreshProvenance } from './provenance.js';
 /**
  * Corridor scanning: fetch live stations along a route.
  *
@@ -171,7 +172,7 @@ export async function scanCorridor(
       // Missing/non-array marker lists are coverage holes, not proof that
       // a sample has no chargers. Check before success counting so a bad
       // list cannot be counted as both completed successfully and failed.
-      if (!res || res.ok !== true || !Array.isArray(res.stations)) {
+      if (!hasFreshProvenance(res) || !res || res.ok !== true || !Array.isArray(res.stations)) {
         throw new Error('Invalid marker response');
       }
       let malformedMarker = false;

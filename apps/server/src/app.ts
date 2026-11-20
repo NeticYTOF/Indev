@@ -1,3 +1,4 @@
+import { hasFreshProvenance, StatiqProvenanceError } from '@indeev/core';
 /**
  * IndEV HTTP API.
  *
@@ -105,6 +106,7 @@ export function createApp(deps: AppDeps): Hono {
   const statiqRetries = deps.statiqRetries;
 
   app.onError((err, c) => {
+    if (err instanceof StatiqProvenanceError) return c.json({ error: err.message, code: 'upstream_invalid' }, 502);
     if (err instanceof StoreLockBusyError) {
       return c.json({ error: err.message, code: 'storage_busy' }, 423);
     }
@@ -500,7 +502,7 @@ export function createApp(deps: AppDeps): Hono {
     // Never revalidate one station with another station's plug data.
     // An invalid upstream reply is unavailable evidence, not a successful
     // refresh or proof that the requested station does not exist.
-    if (!response || response.ok !== true ||
+    if (!hasFreshProvenance(response) || !response || response.ok !== true ||
         (response.station && (response.station.stationId !== id ||
           !Array.isArray(response.station.chargers) ||
           response.station.chargers.some((charger) => !charger || !Array.isArray(charger.connectors))))) {
