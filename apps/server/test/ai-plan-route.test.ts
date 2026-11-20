@@ -307,3 +307,34 @@ describe('POST /api/ai/plan', () => {
     expect(seenPrompt).toContain('"chosenStationIds"');
   });
 });
+
+
+it.each([
+  ['bad-id', 705, 711], [705, 711, 'bad-id'], [705, 'bad-id', 711], [705, null, 711], [705, {}, 711], [705, [], 711],
+  [705, false, 711], [705, 0, 711], [705, -1, 711], [705, 1.5, 711],
+  [705, Number.MAX_SAFE_INTEGER + 1, 711],
+].map(ids => ({ ids })))('keeps base plan and honest audit for malformed sequence $ids', async ({ ids }) => {
+  const audit: string[] = [];
+  let returnMalformed = true;
+  const source = fakeStatiq(stations);
+  const app = createApp(await makeDeps({ ai: AI_CFG,
+    createStatiq: () => ({ ...source, upstreamCallsMade: () => 0 }) as unknown as StatiqClient,
+    aiCall: async () => { if (returnMalformed) return JSON.stringify({ chosenStationIds: ids }); throw new Error('synthetic baseline fallback'); },
+    onRunComplete: outcome => audit.push(outcome),
+  }));
+  const res = await app.request('/api/ai/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ origin: ORIGIN, destination: DEST }) });
+  expect(res.status).toBe(200);
+  const body = await res.json() as { plan: { stops: unknown[]; warnings: string[]; totals: unknown; status: string }; ai: { applied: boolean; reason: string } };
+  expect(body.ai.applied).toBe(false);
+  expect(body.ai.reason).toContain('invalid station sequence');
+  expect(body.plan.stops).toHaveLength(2);
+  expect(body.plan.warnings.some(warning => warning.includes('adjusted by AI'))).toBe(false);
+  expect(audit).toHaveLength(1);
+  expect(audit).not.toContain('ok');
+  returnMalformed = false;
+  const baselineRes = await app.request('/api/ai/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ origin: ORIGIN, destination: DEST }) });
+  const baseline = await baselineRes.json() as typeof body;
+  expect(body.plan.totals).toEqual(baseline.plan.totals);
+  expect(body.plan.status).toEqual(baseline.plan.status);
+  expect(body.plan.warnings).toEqual(baseline.plan.warnings);
+});
