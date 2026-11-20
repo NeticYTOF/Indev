@@ -8,7 +8,8 @@ import * as maplibregl from 'maplibre-gl';
 import type { GeocodeHit, VehicleCatalogEntry } from '@indeev/core';
 import { api, ApiError, type PlanRequest } from './api.js';
 import type { TripPlan } from '@indeev/core';
-import { drawTrip } from './map.js';
+import { clearTrip, drawTrip } from './map.js';
+import { stationDirectionsUrl } from './safe-url.js';
 import { renderPlanPanel } from './plan-panel.js';
 import { toast } from './toast.js';
 import { formatElapsedMs, planFailureGuidance, type PlanFailureGuidance } from './plan-errors.js';
@@ -407,7 +408,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
         ...(vehicleResult.kind === 'ok' ? { vehicle: vehicleResult.vehicle } : {}),
         ...(customRequest ? { request: customRequest } : {}),
       });
-      onPlanAvailable(plan, map);
+      onPlanAvailable(plan, map, errorBox);
       if (ai.applied) {
         toast(ai.notes ? `AI plan applied: ${ai.notes}` : 'AI plan applied.');
       } else if (ai.reason) {
@@ -467,7 +468,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
       };
       if (vehicleResult.kind === 'ok') req.vehicle = vehicleResult.vehicle;
       const { plan } = await api.plan(req);
-      onPlanAvailable(plan, map);
+      onPlanAvailable(plan, map, errorBox);
     } catch (err) {
       showPlanningError(errorBox, err, 'Planning failed.');
       // Context restore: the disabled button lost focus to <body> during
@@ -495,21 +496,71 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
   return { loadSavedRoute };
 }
 
-export function onPlanAvailable(plan: TripPlan, map: maplibregl.Map): void {
-  drawTrip(map, {
-    geometry: plan.geometry.map((p) => [p.lon, p.lat] as [number, number]),
-    origin: plan.origin,
-    destination: plan.destination,
-    stops: plan.stops.map((s) => ({
-      lat: s.station.lat,
-      lon: s.station.lon,
-      label: s.station.name,
-      brand: s.station.brand,
-    })),
-  });
+interface DrawablePlan {
+  geometry: Array<[number, number]>;
+  origin: { lat: number; lon: number; label: string };
+  destination: { lat: number; lon: number; label: string };
+  stops: Array<{ lat: number; lon: number; label: string; brand: string }>;
+  stopsKnown: boolean;
+}
+
+function planRecord(value: unknown): Record<string, unknown> | null {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function drawablePlan(value: unknown): DrawablePlan | null {
+  const raw = planRecord(value);
+  if (!raw || !Array.isArray(raw.geometry)) return null;
+  const geometry: Array<[number, number]> = [];
+  for (const point of raw.geometry) {
+    const p = planRecord(point);
+    const lat = p?.lat, lon = p?.lon;
+    if (stationDirectionsUrl(lat, lon) == null) return null;
+    geometry.push([lon as number, lat as number]);
+  }
+  const origin = planRecord(raw.origin);
+  const destination = planRecord(raw.destination);
+  if (stationDirectionsUrl(origin?.lat, origin?.lon) == null ||
+      stationDirectionsUrl(destination?.lat, destination?.lon) == null) return null;
+  const stopsKnown = Array.isArray(raw.stops);
+  const stops: DrawablePlan['stops'] = [];
+  if (stopsKnown) {
+    for (const entry of raw.stops as unknown[]) {
+      const station = planRecord(planRecord(entry)?.station);
+      const lat = station?.lat, lon = station?.lon;
+      if (stationDirectionsUrl(lat, lon) == null) return null;
+      stops.push({
+        lat: lat as number, lon: lon as number,
+        label: typeof station.name === 'string' ? station.name : 'Unknown station',
+        brand: typeof station.brand === 'string' ? station.brand : 'other',
+      });
+    }
+  }
+  return {
+    geometry,
+    origin: { lat: origin.lat as number, lon: origin.lon as number, label: typeof origin.label === 'string' ? origin.label : 'Origin' },
+    destination: { lat: destination.lat as number, lon: destination.lon as number, label: typeof destination.label === 'string' ? destination.label : 'Destination' },
+    stops, stopsKnown,
+  };
+}
+
+export function onPlanAvailable(plan: TripPlan, map: maplibregl.Map, errorBox?: HTMLElement): void {
+  const raw = planRecord(plan);
+  if (!raw) throw new Error('The route response was malformed. Please try again.');
+  const drawable = drawablePlan(raw);
+  if (drawable) drawTrip(map, drawable);
+  else clearTrip(map);
   const panel = document.getElementById('planner-panel') as HTMLElement;
   panel.querySelector<HTMLElement>('.saved-route-review')?.classList.add('hidden');
-  renderPlanPanel(panel, map, plan);
+  const warnings = Array.isArray(raw.warnings) ? raw.warnings.filter((w): w is string => typeof w === 'string') : [];
+  const displayPlan = {
+    ...raw,
+    warnings: drawable ? warnings : [...warnings, 'Map route unavailable — the route facts are shown, but drawing was refused because geometry or stop coordinates were missing or invalid.'],
+  } as TripPlan;
+  renderPlanPanel(panel, map, displayPlan);
+  if (!drawable && errorBox) showError(errorBox, 'Map route unavailable — route facts are still shown; geometry or a stop coordinate was invalid.');
   if (window.innerWidth <= 720) {
     panel.classList.add('open');
     // keep the FAB's expanded state true for assistive tech
