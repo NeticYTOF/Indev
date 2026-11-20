@@ -380,7 +380,7 @@ export function renderTripComparisonMarkup(comparison: TripComparison): string {
     `<button type="button" class="btn btn-ghost" data-compare-download>Download comparison</button>` +
     `<button type="button" class="btn btn-ghost" data-compare-print>Print comparison</button>` +
     `</div></div>` +
-    `<div class="compare-context"><p class="hint">No automatic best route. Compare the stored facts directly.</p>` +
+    `<div class="compare-context"><p class="hint">Stored planned facts from saved trips, not live charger status. Units: km, minutes, kWh, INR and %; B − A uses matching facts only. No automatic best route.</p>` +
     notesMarkup(comparison.contextNotes, 'compare-notes') + `</div>` +
     `<div class="compare-grid">${sideMarkup(comparison.sides[0])}${differenceMarkup(comparison)}${sideMarkup(comparison.sides[1])}</div>` +
     `</section>`;
