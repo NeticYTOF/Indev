@@ -152,8 +152,10 @@ describe('saved trip comparison model', () => {
       expect(css).toMatch(/repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
       expect(css).toMatch(/compare-difference\{grid-area:2\/1\/3\/3|\.compare-difference \{ grid-area: 2 \/ 1 \/ 3 \/ 3; \}/);
       expect(css).toMatch(/compare-toolbar h2\{display:block!important|body\.comparing-trips \.compare-toolbar h2 \{\s*display: block !important/);
-      expect(css).toMatch(/table-layout:fixed|table-layout: fixed/);
-      expect(css).toMatch(/overflow-wrap:anywhere|overflow-wrap: anywhere/);
+      expect(css).toMatch(/table-layout:fixed;\s*width:100%;\s*font-size:12px|table-layout: fixed;\s*width: 100%;\s*font-size: 12px/);
+      expect(css).toMatch(/\.compare-table thead th[^{}]*color:\s*#111|body\.comparing-trips \.compare-table thead th/);
+      expect(css).toMatch(/\.compare-delta[^{}]*color:\s*#111|body\.comparing-trips \.compare-delta \{\s*color:\s*#111/);
+      expect(css).toMatch(/white-space:\s*normal/);
       expect(css).not.toMatch(/\.compare-card,\s*\.compare-difference[^}]*break-inside:\s*avoid/);
       expect(css).not.toMatch(/body\.comparing-trips \.compare-card,\s*body\.comparing-trips \.compare-difference[^}]*break-inside:\s*avoid/);
     }
