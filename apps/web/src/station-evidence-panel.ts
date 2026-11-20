@@ -53,8 +53,8 @@ function concise(value: number | null, suffix = ''): string {
   return escapeHtml(displayEvidence(value, suffix));
 }
 
-function chargerIdentity(chargerId: number | null, index: number): string {
-  return chargerId != null ? `Charger ${chargerId}` : `Charger ${index} (ID Unknown)`;
+function chargerIdentity(chargerId: number | null, humanOrdinal: number): string {
+  return chargerId != null ? `Charger ${chargerId}` : `Charger ${humanOrdinal} (ID Unknown)`;
 }
 
 function connectorMarkup(connector: StationEvidence['chargers'][number]['connectors'][number], index: number): string {
@@ -75,7 +75,7 @@ function connectorMarkup(connector: StationEvidence['chargers'][number]['connect
 function chargerMarkup(charger: StationEvidence['chargers'][number], index: number): string {
   return `<li class="evidence-charger">` +
     `<div class="evidence-charger-head"><strong>${named(charger.name)}</strong>` +
-    `<span class="hint">${chargerIdentity(charger.chargerId, index)} · ${named(charger.type)}</span></div>` +
+    `<span class="hint">${chargerIdentity(charger.chargerId, index + 1)} · ${named(charger.type)}</span></div>` +
     `<dl class="evidence-grid">` +
     `<div><dt>Power</dt><dd>${concise(charger.kw, ' kW')}</dd></div>` +
     `<div><dt>Tariff</dt><dd>${charger.pricePerKwh == null ? 'Unknown' : formatTariff(charger.pricePerKwh)}</dd></div>` +

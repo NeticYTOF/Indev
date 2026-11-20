@@ -288,6 +288,8 @@ test('reopening saved trips with same and different IDs uses each own evidence c
   });
 
   await openSavedTripByIndex(page, 0);
+  const firstCard = await page.locator('.saved-stop').first().elementHandle();
+  if (!firstCard) throw new Error('First saved stop was not rendered');
   const first = page.locator('.saved-stop').first();
   await expect(first.locator('[data-station-evidence]')).toHaveAttribute('data-station-id', String(STATION_ID));
   await page.getByRole('button', { name: 'Fetch current details', exact: true }).first().click();
@@ -305,7 +307,7 @@ test('reopening saved trips with same and different IDs uses each own evidence c
   await expect.poll(() => completedFetches).toBe(2);
   await expect(second.locator('[data-station-evidence-fetched] [data-station-evidence-result]'))
     .toHaveAttribute('data-evidence-station-id', String(STATION_ID + 55));
-  await expect(first).toHaveCount(0);
+  expect(await firstCard.isDetached()).toBe(true);
   expect(fetches).toBe(2);
 });
 
@@ -335,7 +337,7 @@ test('switching from fresh plan to saved trip keeps separate evidence state', as
   await expect(page.locator('.stop-card')).toHaveCount(1);
   const savedDetails = page.locator('.saved-stop').first().locator('[data-station-evidence]');
   await expect(savedDetails.locator('[data-station-evidence-status]')).toContainText('No current status requested');
-  await expect(savedDetails.locator('[data-station-id]')).toHaveAttribute('data-station-id', String(STATION_ID + 55));
+  await expect(savedDetails).toHaveAttribute('data-station-id', String(STATION_ID + 55));
   await page.getByRole('button', { name: 'Fetch current details', exact: true }).click();
   await expect.poll(() => completedFetches).toBe(2);
   await expect(savedDetails.locator('[data-station-evidence-fetched] [data-station-evidence-result]'))
@@ -370,9 +372,8 @@ test('one malformed planned stop does not suppress other cards or evidence panel
   await expect(cards.first().locator('.stop-brand')).toHaveText('Unknown');
   await expect(cards.first().locator('.stop-brand')).toHaveClass(/brand-other/);
   await expect(cards.first().locator('[data-station-evidence]')).toBeVisible();
-  await expect(cards.first().locator('[data-station-evidence]')).toContainText(
-    'Charger snapshot unavailable — the planned charger list is Unknown.',
-  );
+  await expect(cards.first().locator('[data-station-evidence]')).toContainText('Charger list is Unknown.');
+  await expect(cards.first().locator('[data-station-evidence]')).not.toContainText('No chargers returned.');
   await expect(cards.nth(1).locator('[data-station-evidence]')).toBeVisible();
   await expect(cards.nth(1)).toContainText('Plug inventory Unknown');
   await expect(cards.nth(1)).not.toContainText('No CCS2 DC found for this car');
@@ -523,7 +524,8 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
       await planFresh(page);
       const details = page.locator('.stop-card').first().locator('[data-station-evidence]');
       await details.locator('summary').click();
-      await expect(details).toContainText('Charger snapshot unavailable — the planned charger list is Unknown.');
+      await expect(details).toContainText('Charger list is Unknown.');
+      await expect(details).not.toContainText('No chargers returned.');
       await page.getByRole('button', { name: 'Revalidate', exact: true }).first().click();
       const result = details.locator('[data-station-evidence-fetched] [data-station-evidence-result]');
       await expect(result).toContainText(listShape === 'zero' ? 'No chargers returned.' : 'Charger list is Unknown.');

@@ -45,7 +45,10 @@ test(`stop Revalidate recovers from ${failure} failure without duplicate request
   await expect(card.locator('.revalidate-box')).toContainText('Synthetic station');
   await expect(card.locator('.revalidate-box')).toContainText('3 usable CCS2 plugs');
   await expect(card.locator('.revalidate-box')).toContainText('2 free');
-  await expect(card.locator('.revalidate-box')).toContainText('Last used 2/11/2026');
+  const fetched = card.locator('[data-station-evidence-fetched] [data-station-evidence-result]');
+  const lastUsedLabel = fetched.locator('dt', { hasText: /^Last used$/ });
+  await expect(lastUsedLabel).toHaveCount(1);
+  await expect(lastUsedLabel.locator('xpath=following-sibling::dd[1]')).toHaveText('2/11/2026');
   await card.scrollIntoViewIfNeeded();
   await page.screenshot({ path: test.info().outputPath('station-revalidated.png') });
 });

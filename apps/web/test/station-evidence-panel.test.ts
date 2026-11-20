@@ -94,6 +94,17 @@ describe('station evidence panel', () => {
     expect(markup).toContain('Connector list is Unknown for this charger.');
   });
 
+  it('uses human one-based ordinals when charger IDs are missing', () => {
+    const evidence = normalizeFetchedStationResponse({ station: {
+      stationId: 42, name: 'Ordinal stop', fetchedAt: '2026-11-20T10:00:00Z',
+      chargers: [{ name: 'First' }, { name: 'Second' }],
+    } });
+    const markup = renderFetchedStationEvidence(evidence!);
+    expect(markup).toContain('Charger 1 (ID Unknown)');
+    expect(markup).toContain('Charger 2 (ID Unknown)');
+    expect(markup).not.toContain('Charger 0 (ID Unknown)');
+  });
+
   it('escapes hostile long upstream strings instead of treating them as markup', () => {
     const hostile = '<img src=x onerror=stationProof><script>stationProof</script>' + 'x'.repeat(240);
     const evidence = normalizeFetchedStationResponse({ station: {
