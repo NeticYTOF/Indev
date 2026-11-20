@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { getEventListeners } from 'node:events';
+import { planTrip } from '../src/planner.js';
+import { StatiqClient } from '../src/statiq.js';
 import { OsrmRouter, RouterError } from '../src/router.js';
 
 function osrmOk() {
@@ -84,4 +87,128 @@ describe('OsrmRouter', () => {
     expect(r.distanceKm).toBeCloseTo(284.9, 1);
     expect(calls).toHaveLength(2);
   });
+});
+
+// These fetches never touch a network. Each transport cooperatively observes
+// its own request signal, or deliberately ignores it for the late-response case.
+const origin = { lat: 1, lon: 1 }, destination = { lat: 2, lon: 2 };
+function abortableFetch(counter: { attempts: number; aborted: number }): typeof fetch {
+  return (async (_url, init) => {
+    counter.attempts++;
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        counter.aborted++; reject(new DOMException('Aborted', 'AbortError'));
+      }, { once: true });
+    });
+  }) as typeof fetch;
+}
+
+it('does not dispatch a preaborted route', async () => {
+  const outer = new AbortController(); outer.abort(); const counter = { attempts: 0, aborted: 0 };
+  const router = new OsrmRouter({ fetchImpl: abortableFetch(counter) });
+  await expect(router.route(origin, destination, outer.signal)).rejects.toMatchObject({ name: 'AbortError' });
+  expect(counter.attempts).toBe(0);
+});
+
+it('cancels active routing fetch without retry and removes its outer listener', async () => {
+  const outer = new AbortController(); const counter = { attempts: 0, aborted: 0 };
+  const router = new OsrmRouter({ fetchImpl: abortableFetch(counter), retries: 2, timeoutMs: 1000 });
+  const pending = router.route(origin, destination, outer.signal);
+  setTimeout(() => outer.abort(), 10);
+  await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  expect(counter).toEqual({ attempts: 1, aborted: 1 });
+  expect(getEventListeners(outer.signal, 'abort')).toHaveLength(0);
+});
+
+it('cancels response-body reading and does not retry it after outer abort', async () => {
+  const outer = new AbortController(); let attempts = 0, bodyAborted = false;
+  const fetchImpl = (async (_url, init) => {
+    attempts++;
+    return { ok: true, json: () => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => { bodyAborted = true; reject(new DOMException('Aborted', 'AbortError')); });
+      setTimeout(() => outer.abort(), 10);
+    }) } as unknown as Response;
+  }) as typeof fetch;
+  const router = new OsrmRouter({ fetchImpl, retries: 2 });
+  await expect(router.route(origin, destination, outer.signal)).rejects.toMatchObject({ name: 'AbortError' });
+  expect(attempts).toBe(1); expect(bodyAborted).toBe(true);
+  expect(getEventListeners(outer.signal, 'abort')).toHaveLength(0);
+});
+
+it('cancels retry backoff without a second dispatch', async () => {
+  const outer = new AbortController(); let attempts = 0;
+  const fetchImpl = (async () => { attempts++; setTimeout(() => outer.abort(), 10); return new Response('no route', { status: 503 }); }) as typeof fetch;
+  const router = new OsrmRouter({ fetchImpl, retries: 2 });
+  await expect(router.route(origin, destination, outer.signal)).rejects.toMatchObject({ name: 'AbortError' });
+  expect(attempts).toBe(1); expect(getEventListeners(outer.signal, 'abort')).toHaveLength(0);
+});
+
+it('still retries a per-request timeout while the outer run remains alive', async () => {
+  const outer = new AbortController(); let attempts = 0;
+  const fetchImpl = (async (_url, init) => {
+    attempts++;
+    if (attempts === 1) return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('Timeout', 'AbortError'))));
+    return new Response(osrmOk().body, { status: 200 });
+  }) as typeof fetch;
+  const router = new OsrmRouter({ fetchImpl, timeoutMs: 10, retries: 1 });
+  expect((await router.route(origin, destination, outer.signal)).distanceKm).toBe(284.9);
+  expect(attempts).toBe(2); expect(outer.signal.aborted).toBe(false);
+  expect(getEventListeners(outer.signal, 'abort')).toHaveLength(0);
+});
+
+it.each(['fetch', 'body'] as const)('refuses late noncooperative %s success after outer abort', async phase => {
+  const outer = new AbortController(); let attempts = 0;
+  const fetchImpl = (async () => {
+    attempts++;
+    const late = async () => { await new Promise(resolve => setTimeout(resolve, 25)); return JSON.parse(osrmOk().body); };
+    setTimeout(() => outer.abort(), 5);
+    if (phase === 'fetch') { await late(); return new Response(osrmOk().body); }
+    return { ok: true, json: late } as unknown as Response;
+  }) as typeof fetch;
+  const router = new OsrmRouter({ fetchImpl, retries: 2 });
+  await expect(router.route(origin, destination, outer.signal)).rejects.toMatchObject({ name: 'AbortError' });
+  expect(attempts).toBe(1); expect(getEventListeners(outer.signal, 'abort')).toHaveLength(0);
+});
+
+it('keeps simultaneous route cancellation signals independent', async () => {
+  const one = new AbortController(), two = new AbortController(); let attempts = 0;
+  const fetchImpl = (async (_url, init) => new Promise<Response>((resolve, reject) => {
+    attempts++; const timer = setTimeout(() => resolve(new Response(osrmOk().body)), 30);
+    init?.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); });
+  })) as typeof fetch;
+  const router = new OsrmRouter({ fetchImpl });
+  const aborted = router.route(origin, destination, one.signal), successful = router.route(origin, destination, two.signal);
+  setTimeout(() => one.abort(), 5);
+  await expect(aborted).rejects.toMatchObject({ name: 'AbortError' });
+  expect((await successful).distanceKm).toBe(284.9); expect(attempts).toBe(2); expect(two.signal.aborted).toBe(false);
+  expect(getEventListeners(one.signal, 'abort')).toHaveLength(0); expect(getEventListeners(two.signal, 'abort')).toHaveLength(0);
+});
+
+it('planner deadline cancels routing and reports no-verdict without a Statiq attempt', async () => {
+  const counter = { attempts: 0, aborted: 0 }; let stationAttempts = 0;
+  const router = new OsrmRouter({ fetchImpl: abortableFetch(counter), retries: 2, timeoutMs: 2000 });
+  const statiq = new StatiqClient({ token: 'offline-fixture', fetchImpl: (async () => { stationAttempts++; throw new Error('unexpected synthetic dispatch'); }) as typeof fetch });
+  await expect(planTrip({ router, statiq }, { ...origin, label: 'A' }, { ...destination, label: 'B' }, { runBudget: { deadlineMs: 50, maxUpstreamCalls: 100 } })).rejects.toMatchObject({ code: 'not_determined', cause: 'deadline' });
+  expect(counter).toEqual({ attempts: 1, aborted: 1 }); expect(stationAttempts).toBe(0);
+});
+
+
+it.each(['success', 'fetch error', 'body error'] as const)('cleans owned timeout and outer listener after %s', async outcome => {
+  vi.useFakeTimers();
+  try {
+    const outer = new AbortController();
+    const fetchImpl = (async () => {
+      if (outcome === 'fetch error') throw new Error('synthetic fetch failure');
+      if (outcome === 'body error') return { ok: true, json: async () => { throw new Error('synthetic body failure'); } } as unknown as Response;
+      return new Response(osrmOk().body);
+    }) as typeof fetch;
+    const router = new OsrmRouter({ fetchImpl, retries: 0, timeoutMs: 1000 });
+    const pending = router.route(origin, destination, outer.signal);
+    if (outcome === 'success') expect((await pending).distanceKm).toBe(284.9);
+    else await expect(pending).rejects.toThrow('synthetic');
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getEventListeners(outer.signal, 'abort')).toHaveLength(0);
+  } finally {
+    vi.useRealTimers();
+  }
 });
