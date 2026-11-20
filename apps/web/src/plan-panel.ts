@@ -17,7 +17,7 @@ import { connectorSlug } from '@indeev/core/plug-classifier';
 import { toast } from './toast.js';
 import { storageWarningText, storageWarningElement } from './storage-warning.js';
 import { formatReviewCount, formatDuration, formatEta, formatInr, lastUsedLabel, formatDateTime, formatTariff } from './format.js';
-import { safeHttpUrl, stationDirectionsUrl, routeDirectionsUrl } from './safe-url.js';
+import { safeHttpUrl, stationDirectionsUrl, routeDirectionsLinks } from './safe-url.js';
 
 export function renderPlanPanel(
   panel: HTMLElement,
@@ -97,17 +97,26 @@ export function renderPlanPanel(
   // Waypoint links depend on coordinates only. A caller may label a real
   // coordinate Unknown; that must not suppress a valid route URL. An unreadable
   // stop list suppresses the whole link rather than implying zero waypoints.
-  const mapsUrl = !stopsKnown ? null : routeDirectionsUrl(
+  const mapsLinks = !stopsKnown ? null : routeDirectionsLinks(
     coordinatePoint(raw.origin), coordinatePoint(raw.destination),
     stops.map((stop) => coordinatePoint(record(stop)?.station)),
   );
+  const mapsMarkup = !mapsLinks ? '<span class="hint">Google Maps directions unavailable</span>'
+    : `<div class="maps-links" aria-label="Google Maps route segments">` +
+      mapsLinks.map((link) => {
+        const from = link.startsAtOrigin ? 'Origin' : `charger ${link.firstStop}`;
+        const to = link.endsAtDestination ? 'destination' : `charger ${link.lastStop}`;
+        const range = `${from} → ${to}`;
+        const prefix = link.total > 1 ? `Part ${link.part} of ${link.total}: ` : '';
+        return `<a class="btn btn-ghost" data-gmaps href="${escapeHtml(link.url)}" target="_blank" rel="noreferrer">Google Maps directions — ${escapeHtml(prefix + range)}</a>`;
+      }).join('') + '</div>';
   const actions = el(`
     <div class="plan-actions">
       <button type="button" class="btn btn-ghost" data-save>Trip is not saved yet — click to save</button>
       <button type="button" class="btn btn-ghost" data-export>Animated export</button>
       <button type="button" class="btn btn-ghost" data-itinerary-export>Journey itinerary (HTML)</button>
       <button type="button" class="btn btn-ghost" data-print>Print itinerary</button>
-      ${mapsUrl ? `<a class="btn btn-ghost" data-gmaps href="${escapeHtml(mapsUrl)}" target="_blank" rel="noreferrer">Google Maps directions</a>` : '<span class="hint">Google Maps directions unavailable</span>'}
+      ${mapsMarkup}
     </div>
   `);
   results.appendChild(actions);
