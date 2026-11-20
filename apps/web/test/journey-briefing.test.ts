@@ -77,7 +77,7 @@ describe('journey briefing', () => {
     const html = buildJourneyBriefingHtml(plan());
     expect(html).toContain('<style>');
     expect(html).toContain('@media print');
-    expect(html).toContain('Region "end"');
+    expect(html).toContain('Destination &quot;end&quot;');
     expect(html).toContain('42.7 kWh');
     expect(html).not.toContain('gradient');
   });
