@@ -22,10 +22,12 @@ for (const mode of ['plan', 'ai']) {
     const button = page.locator(mode === 'plan' ? '.planner-go' : '[data-ai-plan]');
     await button.click();
     await expect(button).toBeDisabled();
+    await expect(page.locator('.planner-form')).toHaveAttribute('aria-busy', 'true');
     const field = page.getByRole('searchbox', { name: 'From', exact: true });
     await field.focus();
     release();
     await expect(button).toBeEnabled();
+    await expect(page.locator('.planner-form')).toHaveAttribute('aria-busy', 'false');
     await expect(page.locator('.error-box')).toBeVisible();
     await expect(field).toBeFocused();
     await field.fill('Updated origin');

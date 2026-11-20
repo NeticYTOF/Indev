@@ -65,13 +65,16 @@ for (const mode of ['plan', 'ai'] as const) {
     const button = page.locator(mode === 'plan' ? '.planner-go' : '[data-ai-plan]');
     await button.click();
     await expect(button).toBeDisabled();
+    await expect(page.locator('.planner-form')).toHaveAttribute('aria-busy', 'true');
     release();
     await expect(page.locator('.plan-results')).toContainText('Charging stop list is Unknown');
     await expect(button).toBeEnabled();
     await expect(page.locator('.error-box')).toContainText('Map route unavailable');
+    await expect(page.locator('.planner-form')).toHaveAttribute('aria-busy', 'false');
     await button.click();
     await expect(page.locator('.stop-card')).toHaveCount(1);
     await expect(button).toBeEnabled();
+    await expect(page.locator('.planner-form')).toHaveAttribute('aria-busy', 'false');
     expect(call).toBe(2);
   });
 }
