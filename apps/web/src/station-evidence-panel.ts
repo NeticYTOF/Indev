@@ -6,7 +6,7 @@
  * guarded against duplicate clicks, late responses, mismatched station IDs,
  * and detached views. The underlying plan/saved-trip state is never mutated.
  */
-import type { PlanStop, SavedStationRef } from '@indeev/core';
+import type { PlanStop } from '@indeev/core';
 import { formatDateTime, formatDuration, formatTariff, lastUsedLabel } from './format.js';
 
 import { safeHttpUrl, stationDirectionsUrl } from './safe-url.js';
@@ -38,8 +38,8 @@ export interface PlannedStopFacts {
 interface EvidencePanelOptions {
   /** PlanStop station for a fresh plan; omitted for saved refs. */
   plannedStation?: PlanStop['station'];
-  /** Minimal stored station ref for a saved trip. */
-  savedStation?: SavedStationRef;
+  /** Untrusted saved station ref; validated inside this rendering boundary. */
+  savedStation?: unknown;
   plannedFacts: PlannedStopFacts;
   label?: string;
   includeLinks?: boolean;
@@ -136,6 +136,36 @@ function evidenceMarkup(evidence: StationEvidence): string {
     `</div>`;
 }
 
+function record(value: unknown): Record<string, unknown> | null {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function finiteOrUnknown(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : Number.NaN;
+}
+
+function textOrEmpty(value: unknown): string {
+  return typeof value === 'string' && value.trim().length > 0 ? value : '';
+}
+
+/** Validate an untrusted saved ref without inventing charger facts. */
+function normalizeSavedStationRef(value: unknown): StationEvidence {
+  const raw = record(value) ?? {};
+  return normalizePlannedStation({
+    stationId: finiteOrUnknown(raw.stationId),
+    name: textOrEmpty(raw.name),
+    brand: 'other',
+    lat: finiteOrUnknown(raw.lat),
+    lon: finiteOrUnknown(raw.lon),
+    address: null, city: null, hours: null, openText: null,
+    rating: null, reviewCount: null, reliability: null,
+    fetchedAt: '', synthetic: false,
+    amenities: [], stationUrl: null, navUrl: null, chargers: [],
+  });
+}
+
 function finiteFact(value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max ? value : null;
 }
@@ -158,20 +188,15 @@ function plannedFactsMarkup(facts: PlannedStopFacts): string {
 function plannedEvidenceMarkup(options: EvidencePanelOptions): string {
   const evidence = options.plannedStation
     ? normalizePlannedStation(options.plannedStation)
-    : options.savedStation
-      ? normalizePlannedStation({
-        ...options.savedStation,
-        brand: 'other', rating: null, reviewCount: null, reliability: null,
-        fetchedAt: '', synthetic: options.savedStation ? false : undefined,
-        amenities: [], stationUrl: null, navUrl: null, chargers: [],
-      } as unknown as PlanStop['station'])
+    : options.savedStation != null
+      ? normalizeSavedStationRef(options.savedStation)
       : null;
-  const station = options.plannedStation ?? options.savedStation;
+  const station = record(options.plannedStation ?? options.savedStation);
   const external = safeHttpUrl(options.plannedStation?.stationUrl);
   const directions = stationDirectionsUrl(station?.lat, station?.lon);
   const emptySnapshot = evidence?.chargersMissing
     ? '<p class="hint">Charger snapshot unavailable — the planned charger list is Unknown.</p>'
-    : options.savedStation
+    : options.savedStation != null
       ? '<p class="hint">This saved trip stores planned charging facts, not a charger snapshot. Fetch current details below for station status.</p>'
       : '<p class="hint">No charger connectors were returned in this planned snapshot. Fetch current details below for station status.</p>';
   const hasChargerData = evidence != null && (evidence.chargers.length > 0 || evidence.chargersMissing);
@@ -198,8 +223,11 @@ export function renderFetchedStationEvidence(evidence: StationEvidence): string 
 }
 
 export function renderStationEvidencePanel(options: EvidencePanelOptions): string {
-  const stationId = options.plannedStation?.stationId ?? options.savedStation?.stationId;
-  const label = options.label ?? options.plannedStation?.name ?? options.savedStation?.name ?? 'this station';
+  const saved = record(options.savedStation);
+  const stationId = options.plannedStation?.stationId ?? (typeof saved?.stationId === 'number' ? saved.stationId : null);
+  const rawLabel = options.label ?? (typeof options.plannedStation?.name === 'string' ? options.plannedStation.name : undefined)
+    ?? (typeof saved?.name === 'string' ? saved.name : undefined);
+  const label = rawLabel != null && `${rawLabel}`.trim().length > 0 ? `${rawLabel}` : 'this station';
   return `<details class="station-evidence" data-station-evidence data-station-id="${escapeHtml(String(stationId ?? ''))}">` +
     `<summary><span class="evidence-summary-title">Charger evidence for ${escapeHtml(label)}</span>` +
     `<span class="hint">Open to inspect planned facts; fetching is a separate explicit action.</span></summary>` +

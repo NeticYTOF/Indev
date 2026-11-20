@@ -358,7 +358,7 @@ function renderSavedSummary(
             </div>
             <div class="stop-body">
               ${renderStationEvidencePanel({
-                savedStation: s as SavedTrip['stations'][number],
+                savedStation: s,
                 plannedFacts: {
                   tariffPerKwh: s.pricePerKwh as number | null,
                   chargeKwh: s.chargeKwh as number | null,
