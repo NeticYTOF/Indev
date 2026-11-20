@@ -24,8 +24,8 @@ const STYLE_URLS = [
 
 // Last-resort route colors when CSS custom props are unavailable (e.g. in
 // a non-browser test environment).
-const FALLBACK_ROUTE = '#4D9FFF';
-const FALLBACK_CASING = '#E9F1FC';
+const FALLBACK_ROUTE = '#D87932';
+const FALLBACK_CASING = '#F4F2EE';
 
 export interface MapStop {
   lat: number;

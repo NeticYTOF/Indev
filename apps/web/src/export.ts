@@ -88,12 +88,12 @@ export function buildAnimatedExportSvg(plan: TripPlan): string {
       const begin = (drawTime * (i + 1)) / (stopPts.length + 1);
       return `
     <g class="stop" transform="translate(${p.x.toFixed(1)},${p.y.toFixed(1)})">
-      <circle r="13" fill="#E9F1FC"/>
-      <circle r="10" fill="#131F33" stroke="#4D9FFF" stroke-width="2.5">
+      <circle r="13" fill="#F4F2EE"/>
+      <circle r="10" fill="#151517" stroke="#D87932" stroke-width="2.5">
         <animate attributeName="r" from="10" to="10" begin="${begin.toFixed(2)}s" dur="0.01s" fill="freeze"/>
         <animate attributeName="opacity" from="0" to="1" begin="${begin.toFixed(2)}s" dur="0.28s" fill="freeze"/>
       </circle>
-      <text y="4" text-anchor="middle" font-size="11" font-weight="700" fill="#F1F5FB" font-family="Inter, sans-serif">${i + 1}</text>
+      <text y="4" text-anchor="middle" font-size="11" font-weight="700" fill="#F4F2EE" font-family="Inter, sans-serif">${i + 1}</text>
     </g>`;
     })
     .join('');
@@ -111,8 +111,8 @@ export function buildAnimatedExportSvg(plan: TripPlan): string {
     .map(
       (s, i) => `
     <g class="stat" transform="translate(${70 + i * 177}, ${H - 66})">
-      <text font-size="11" font-weight="700" fill="#6C7B95" font-family="Inter, sans-serif" letter-spacing="1.2">${escapeXml(s.label).toUpperCase()}</text>
-      <text y="24" font-size="20" font-weight="700" fill="#F1F5FB" font-family="Inter, sans-serif">${escapeXml(s.value)}</text>
+      <text font-size="11" font-weight="700" fill="#88837B" font-family="Inter, sans-serif" letter-spacing="1.2">${escapeXml(s.label).toUpperCase()}</text>
+      <text y="24" font-size="20" font-weight="700" fill="#F4F2EE" font-family="Inter, sans-serif">${escapeXml(s.value)}</text>
     </g>`,
     )
     .join('');
@@ -130,8 +130,8 @@ export function buildAnimatedExportSvg(plan: TripPlan): string {
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" font-family="Inter, sans-serif">
   <title>${escapeXml(fullRouteTitle)}</title>
-  <rect width="${W}" height="${H}" fill="#0E1626"/>
-  <rect x="1" y="1" width="${W - 2}" height="${H - 2}" fill="none" stroke="#2C3D5C" stroke-width="2" rx="0"/>
+  <rect width="${W}" height="${H}" fill="#0E0E10"/>
+  <rect x="1" y="1" width="${W - 2}" height="${H - 2}" fill="none" stroke="#34322E" stroke-width="2" rx="0"/>
 
   <style>
     .draw { stroke-dasharray: ${totalPathLen}; stroke-dashoffset: ${totalPathLen}; animation: draw ${drawTime}s cubic-bezier(.4,.1,.2,1) forwards; }
@@ -141,28 +141,28 @@ export function buildAnimatedExportSvg(plan: TripPlan): string {
     text { user-select: none; }
   </style>
 
-  <text x="${padX}" y="52" font-size="30" font-weight="700" fill="#F1F5FB" letter-spacing="-0.5" ${fitHeaderText(routeTitle, 30, W - padX * 2)}><title>${escapeXml(fullRouteTitle)}</title>${escapeXml(routeTitle)}</text>
-  <text x="${padX}" y="76" font-size="15" fill="#A9B8CF" ${fitHeaderText(vehicleLine, 15, W - padX * 2)}><title>${escapeXml(fullVehicleLine)}</title>${escapeXml(vehicleLine)}</text>
+  <text x="${padX}" y="52" font-size="30" font-weight="700" fill="#F4F2EE" letter-spacing="-0.5" ${fitHeaderText(routeTitle, 30, W - padX * 2)}><title>${escapeXml(fullRouteTitle)}</title>${escapeXml(routeTitle)}</text>
+  <text x="${padX}" y="76" font-size="15" fill="#B8B4AD" ${fitHeaderText(vehicleLine, 15, W - padX * 2)}><title>${escapeXml(fullVehicleLine)}</title>${escapeXml(vehicleLine)}</text>
 
   <!-- static base route: full path at low opacity so previews without
        SMIL/CSS animation still show the route -->
-  <path d="${path}" fill="none" stroke="#4D9FFF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="0.28"/>
-  <path d="${path}" fill="none" stroke="#E9F1FC" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" opacity="0.001"/>
-  <path class="draw" pathLength="1" d="${path}" fill="none" stroke="#4D9FFF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="${path}" fill="none" stroke="#D87932" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="0.28"/>
+  <path d="${path}" fill="none" stroke="#F4F2EE" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" opacity="0.001"/>
+  <path class="draw" pathLength="1" d="${path}" fill="none" stroke="#D87932" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
 
   <g transform="translate(${originP.x.toFixed(1)},${originP.y.toFixed(1)})">
-    <circle r="11" fill="#4D9FFF" stroke="#0E1626" stroke-width="3"/>
-    <text y="4" text-anchor="middle" font-size="10" font-weight="700" fill="#04182E" font-family="Inter, sans-serif">A</text>
+    <circle r="11" fill="#D87932" stroke="#0E0E10" stroke-width="3"/>
+    <text y="4" text-anchor="middle" font-size="10" font-weight="700" fill="#1A0F06" font-family="Inter, sans-serif">A</text>
   </g>
   <g transform="translate(${destP.x.toFixed(1)},${destP.y.toFixed(1)})">
-    <circle r="11" fill="#F26D76" stroke="#0E1626" stroke-width="3"/>
+    <circle r="11" fill="#F26D76" stroke="#0E0E10" stroke-width="3"/>
     <text y="4" text-anchor="middle" font-size="10" font-weight="700" fill="#FFFFFF" font-family="Inter, sans-serif">B</text>
   </g>
   ${stopCircles}
 
-  <line x1="${padX}" y1="${H - 100}" x2="${W - padX}" y2="${H - 100}" stroke="#2C3D5C" stroke-width="1"/>
+  <line x1="${padX}" y1="${H - 100}" x2="${W - padX}" y2="${H - 100}" stroke="#34322E" stroke-width="1"/>
   <g class="fade">${statBlocks}</g>
-  <text class="fade" x="${padX}" y="${H - 16}" font-size="11" fill="#6C7B95">IndEV — planned ${escapeXml(new Date(plan.createdAt).toLocaleDateString('en-IN'))}${plan.status === 'degraded' ? ' · partial coverage' : ''}${plan.source === 'synthetic' ? ' · synthetic schematic, not live geometry' : ''}</text>
+  <text class="fade" x="${padX}" y="${H - 16}" font-size="11" fill="#88837B">IndEV — planned ${escapeXml(new Date(plan.createdAt).toLocaleDateString('en-IN'))}${plan.status === 'degraded' ? ' · partial coverage' : ''}${plan.source === 'synthetic' ? ' · synthetic schematic, not live geometry' : ''}</text>
 </svg>`;
 }
 
