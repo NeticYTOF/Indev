@@ -26,6 +26,13 @@ facts already present in the returned `TripPlan` into a whole-trip overview:
   stops in plan order; if a plan exceeds the conservative one-link bounds, the
   UI shows clearly labelled ordered segments instead of silently dropping a
   waypoint. Live Maps acceptance is verified separately from these local checks.
+  The downloaded HTML is a self-contained handoff: it shows visible origin →
+  destination identity, the same ordered map segments, and per-charger Directions
+  links built only from coordinates already stored in the plan. It states that
+  Maps needs internet access and may recalculate the route; the itinerary's
+  cost, charge time, and energy remain planned facts, not live or Maps estimates.
+  If any whole-route coordinate is invalid, those route links are withheld while
+  individually valid charger links remain available.
 
 Times in the briefing are always relative to departure. The planner does not
 return a wall-clock departure time, physical charger availability, or a
