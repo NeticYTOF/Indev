@@ -11,7 +11,7 @@ import { el, escapeHtml } from './planner.js';
 import { drawTrip } from './map.js';
 import { toast } from './toast.js';
 import { storageWarningText, storageWarningElement } from './storage-warning.js';
-import { formatDuration, formatDateTime } from './format.js';
+import { formatReviewCount, formatDuration, formatDateTime } from './format.js';
 
 /**
  * Hide the saved-trips drawer. Closing it leaves every in-drawer focus
@@ -247,7 +247,7 @@ function renderSavedSummary(panel: HTMLElement, trip: SavedTrip): void {
         box.innerHTML = `
           ${station.synthetic ? '<div class="banner banner-synthetic">Synthetic station (mock mode) — a fixed sample, not live charger data.</div>' : ''}
           <div class="stop-meta">
-            <span class="meta">${station.rating != null ? `★ ${Math.round(station.rating * 10) / 10} (${(station.reviewCount ?? 0).toLocaleString('en-IN')} reviews)` : 'No rating'}</span>
+            <span class="meta">${station.rating != null ? `★ ${Math.round(station.rating * 10) / 10} (${formatReviewCount(station.reviewCount)} reviews)` : 'No rating'}</span>
             <span class="meta">Last used ${escapeHtml(lastUsed)}${station.synthetic ? ' (fixture)' : ''}</span>
             <span class="meta">Reliability: unavailable</span>
             <span class="meta fetched">Details fetched ${escapeHtml(formatDateTime(station.fetchedAt))}</span>

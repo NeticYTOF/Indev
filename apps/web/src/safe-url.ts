@@ -19,8 +19,8 @@
  * Pure module - unit-testable in a plain node env (URL is global in
  * Node and browsers).
  */
-export function safeHttpUrl(raw: string | null | undefined): string | null {
-  if (raw == null) return null;
+export function safeHttpUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
   const trimmed = raw.trim();
   if (trimmed.length === 0) return null;
   let parsed: URL;
@@ -35,4 +35,21 @@ export function safeHttpUrl(raw: string | null | undefined): string | null {
     return null;
   }
   return parsed.href;
+}
+
+/** A Directions link is meaningful only for a real numeric coordinate pair. */
+export function stationDirectionsUrl(lat: unknown, lon: unknown): string | null {
+  if (typeof lat !== 'number' || !Number.isFinite(lat) || lat < -90 || lat > 90 ||
+      typeof lon !== 'number' || !Number.isFinite(lon) || lon < -180 || lon > 180) return null;
+  return `https://www.google.com/maps/dir/?api=1&destination=${lat}%2C${lon}`;
+}
+
+/** Preserve every waypoint or omit the entire route link. Never drop a stop. */
+export function routeDirectionsUrl(
+  origin: { lat: unknown; lon: unknown },
+  destination: { lat: unknown; lon: unknown },
+  stops: Array<{ lat: unknown; lon: unknown }>,
+): string | null {
+  if (![origin, destination, ...stops].every(point => stationDirectionsUrl(point.lat, point.lon) !== null)) return null;
+  return `https://www.google.com/maps/dir/?api=1&origin=${origin.lat},${origin.lon}&destination=${destination.lat},${destination.lon}${stops.length > 0 ? `&waypoints=${stops.map(point => `${point.lat}%2C${point.lon}`).join('%7C')}` : ''}`;
 }

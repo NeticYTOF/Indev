@@ -12,8 +12,8 @@ import { api } from './api.js';
 import { downloadAnimatedExport } from './export.js';
 import { toast } from './toast.js';
 import { storageWarningText, storageWarningElement } from './storage-warning.js';
-import { formatDuration, formatEta, formatInr, lastUsedLabel, formatDateTime, formatTariff } from './format.js';
-import { safeHttpUrl } from './safe-url.js';
+import { formatReviewCount, formatDuration, formatEta, formatInr, lastUsedLabel, formatDateTime, formatTariff } from './format.js';
+import { safeHttpUrl, stationDirectionsUrl, routeDirectionsUrl } from './safe-url.js';
 
 export function renderPlanPanel(
   panel: HTMLElement,
@@ -69,11 +69,12 @@ export function renderPlanPanel(
   results.appendChild(strip);
 
   // ---- actions ----
+  const mapsUrl = routeDirectionsUrl(plan.origin, plan.destination, plan.stops.map(stop => stop.station));
   const actions = el(`
     <div class="plan-actions">
       <button type="button" class="btn btn-ghost" data-save>Trip is not saved yet — click to save</button>
       <button type="button" class="btn btn-ghost" data-export>Animated export</button>
-      <a class="btn btn-ghost" data-gmaps href="https://www.google.com/maps/dir/?api=1&origin=${plan.origin.lat},${plan.origin.lon}&destination=${plan.destination.lat},${plan.destination.lon}${plan.stops.length > 0 ? `&waypoints=${plan.stops.map((s) => `${s.station.lat}%2C${s.station.lon}`).join('%7C')}` : ''}" target="_blank" rel="noreferrer">Google Maps directions</a>
+      ${mapsUrl ? `<a class="btn btn-ghost" data-gmaps href="${escapeHtml(mapsUrl)}" target="_blank" rel="noreferrer">Google Maps directions</a>` : '<span class="hint">Google Maps directions unavailable</span>'}
     </div>
   `);
   results.appendChild(actions);
@@ -157,7 +158,7 @@ async function revalidateStop(btn: HTMLElement, plan: TripPlan): Promise<void> {
     box.innerHTML = `
       ${station.synthetic ? '<div class="banner banner-synthetic">Synthetic station (mock mode) — a fixed sample, not live charger data.</div>' : ''}
       <div class="stop-meta">
-        <span class="meta">${station.rating != null ? `★ ${Math.round(station.rating * 10) / 10} (${(station.reviewCount ?? 0).toLocaleString('en-IN')} reviews)` : 'No rating'}</span>
+        <span class="meta">${station.rating != null ? `★ ${Math.round(station.rating * 10) / 10} (${formatReviewCount(station.reviewCount)} reviews)` : 'No rating'}</span>
         <span class="meta">Last used ${escapeHtml(String(lastUsed))}${station.synthetic ? ' (fixture)' : ''}</span>
         <span class="meta">Reliability: unavailable</span>
         <span class="meta fetched">Details fetched ${escapeHtml(formatDateTime(station.fetchedAt))}</span>
@@ -182,7 +183,7 @@ async function revalidateStop(btn: HTMLElement, plan: TripPlan): Promise<void> {
 function renderStopCard(stop: PlanStop, index: number): HTMLElement {
   const s = stop.station;
   const brandLabel = s.brand.charAt(0).toUpperCase() + s.brand.slice(1);
-  const directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${s.lat}%2C${s.lon}`;
+  const directionsUrl = stationDirectionsUrl(s.lat, s.lon);
   // Station page link: the url arrives from upstream data and is untrusted.
   // Only absolute http/https urls survive the allowlist; anything else
   // renders NO link (honest absence) - html-escaping alone below does not
@@ -215,7 +216,7 @@ function renderStopCard(stop: PlanStop, index: number): HTMLElement {
             <span class="stat">Detour ${stop.detourKm.toFixed(1)} km</span>
           </div>
           <div class="stop-meta">
-            <span class="meta">${s.rating != null ? `★ ${Math.round(s.rating * 10) / 10} (${(s.reviewCount ?? 0).toLocaleString('en-IN')} reviews)` : 'No rating'}</span>
+            <span class="meta">${s.rating != null ? `★ ${Math.round(s.rating * 10) / 10} (${formatReviewCount(s.reviewCount)} reviews)` : 'No rating'}</span>
             <span class="meta">Last used ${escapeHtml(lastUsedLabel(s.chargers))}</span>
             <span class="meta">Reliability: unavailable</span>
             <span class="meta fetched">Status fetched ${escapeHtml(formatDateTime(s.fetchedAt))}</span>
@@ -225,7 +226,7 @@ function renderStopCard(stop: PlanStop, index: number): HTMLElement {
         </div>
       </div>
       <div class="stop-foot">
-        <a class="btn btn-compact btn-ghost" href="${directionsUrl}" target="_blank" rel="noreferrer">Directions</a>
+        ${directionsUrl ? `<a class="btn btn-compact btn-ghost" href="${escapeHtml(directionsUrl)}" target="_blank" rel="noreferrer">Directions</a>` : '<span class="hint">Directions unavailable</span>'}
         ${stationPageUrl ? `<a class="btn btn-compact btn-ghost" href="${escapeHtml(stationPageUrl)}" target="_blank" rel="noreferrer">Station page</a>` : ''}
         <button type="button" class="btn btn-compact btn-ghost" data-refresh="${s.stationId}">Revalidate</button>
       </div>

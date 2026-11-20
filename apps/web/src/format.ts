@@ -139,3 +139,10 @@ export function socTone(soc: number | null | undefined): 'high' | 'mid' | 'low' 
 
 /** "Reliability: unavailable" — the honest label (null, never 0). */
 export const RELIABILITY_LABEL = 'Unavailable';
+
+/** Provider counts are unknown unless they are nonnegative safe integers. */
+export function formatReviewCount(value: unknown): string {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value.toLocaleString('en-IN')
+    : 'unknown';
+}
