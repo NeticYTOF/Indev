@@ -232,6 +232,28 @@ describe('journey briefing', () => {
     expect(markup).not.toContain('No charging stops are needed');
   });
 
+  it('preserves unreadable stop lists as Unknown, never as a no-stop route', () => {
+    const fresh = plan({ stops: undefined as unknown as TripPlan['stops'] });
+    expect(buildJourneyBriefingData(fresh).stopsAvailable).toBe(false);
+    const freshMarkup = renderJourneyBriefingMarkup(fresh);
+    expect(freshMarkup).toContain('Charging itinerary unavailable — the plan stop list is missing or malformed.');
+    expect(freshMarkup).not.toContain('No charging stops are needed for this trip.');
+
+    const saved = {
+      id: 'saved-missing-list', name: 'Missing list', createdAt: '2026-01-01T00:00:00.000Z',
+      origin: { label: 'Old origin' }, destination: { label: 42 },
+      status: 'ok', source: 'live', routeDistanceKm: 120, routeDurationMin: 120,
+      geometry: [], totals: {},
+    } as unknown as SavedTrip;
+    const source = journeySourceFromSavedTrip(saved);
+    expect(source.stops).toBeNull();
+    expect(source.destination.label).toBe('Unknown');
+    const markup = renderJourneyBriefingMarkup(source);
+    expect(markup).toContain('Charging itinerary unavailable — the plan stop list is missing or malformed.');
+    expect(markup).not.toContain('No charging stops are needed for this trip.');
+    expect(markup).not.toContain('undefined');
+  });
+
   it('shows unknown costs as unknown and handles no-stop routes', () => {
     const noStops = plan({
       stops: [],

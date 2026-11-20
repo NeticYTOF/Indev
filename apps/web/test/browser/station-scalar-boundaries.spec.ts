@@ -46,6 +46,59 @@ test('invalid review counts remain unknown in plan and both revalidation views',
   await page.screenshot({ path: info.outputPath('station-review-unknown.png') });
 });
 
+test('a missing stop list stays Unknown and does not suppress coordinate-only directions', async ({ page }) => {
+  await blockOutside(page);
+  const response = await page.request.post('/api/plan', { data: places });
+  const { plan } = await response.json();
+  delete plan.stops;
+  plan.origin.label = null;
+  plan.destination.label = 42;
+  await page.goto('/');
+  await page.evaluate(async (plan) => {
+    const module = await import('/src/plan-panel.ts');
+    module.renderPlanPanel(document.getElementById('planner-panel'), null, plan);
+  }, plan);
+  await expect(page.locator('.plan-results')).toContainText('Charging stop list is Unknown');
+  await expect(page.locator('.no-stops')).toHaveCount(0);
+  await expect(page.locator('.plan-results')).not.toContainText('No charging stops needed');
+  await expect(page.locator('.origin')).toHaveText('Unknown');
+  await expect(page.locator('[data-gmaps]')).toHaveCount(1);
+});
+
+test('invalid saved geometry is omitted whole and never trimmed into a route', async ({ page }) => {
+  await blockOutside(page);
+  const trip = {
+    id: 'bad-geometry', name: 'Bad geometry', createdAt: '2026-01-01T00:00:00.000Z',
+    source: 'live', status: 'ok',
+    origin: { label: 'Origin', lat: 28, lon: 77 },
+    destination: { label: 'Destination', lat: 26, lon: 75 },
+    geometry: [[28, 77], [null, 78], [26, 75]],
+    stations: [{
+      stationId: 0, name: 'Invalid id stop', lat: 27, lon: 76,
+      chainageKm: 280, legKm: 282, detourKm: 2,
+      arriveSocPct: 20, leaveSocPct: 80, chargeKwh: 42.7, pricePerKwh: 20,
+      estPriceInr: 854, chargeTimeMin: 42,
+    }],
+    totals: {
+      distanceKm: 600, driveTimeMin: 400, chargeTimeMin: 42, totalTimeMin: 442,
+      chargeKwh: 42.7, estPriceInr: 854, finalSocPct: 12,
+    },
+  };
+  await page.route('**/api/trips', (route) => route.fulfill({ json: { trips: [trip] } }));
+  await page.goto('/');
+  await page.evaluate(async () => {
+    const module = await import('/src/trips.ts');
+    module.renderTripsDrawer(document.getElementById('trips-drawer'), null, () => true);
+  });
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+  await expect(page.locator('.plan-results')).toContainText('no map route was drawn');
+  await expect(page.locator('.plan-results')).not.toContainText('Charging stops 0');
+  await expect(page.locator('.saved-stop')).toHaveCount(1);
+  await expect(page.locator('.saved-stop')).toHaveAttribute('data-station-id', 'Unknown');
+  await expect(page.locator('.saved-stop [data-revalidate]')).toBeDisabled();
+  await expect(page.locator('[data-journey-briefing]')).toBeVisible();
+});
+
 test('stop-card component omits Directions for malformed coordinates and preserves valid links', async ({ page }, info) => {
   await blockOutside(page);
   const response = await page.request.post('/api/plan', { data: places }); const { plan } = await response.json();

@@ -209,4 +209,14 @@ describe('station evidence boundary', () => {
     const wrong = normalizeFetchedStationResponse(fetchedBody({ stationId: 99 }));
     expect(stationMatchesId(wrong as StationEvidence, 42)).toBe(false);
   });
+
+  it('accepts only positive safe integer station IDs in the shared model contract', () => {
+    for (const stationId of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, '42']) {
+      const evidence = normalizeFetchedStationResponse(fetchedBody({ stationId }));
+      expect(evidence?.stationId).toBeNull();
+    }
+    const valid = normalizeFetchedStationResponse(fetchedBody({ stationId: 42 }));
+    expect(valid?.stationId).toBe(42);
+    expect(stationMatchesId(valid as StationEvidence, 42)).toBe(true);
+  });
 });
