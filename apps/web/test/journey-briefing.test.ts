@@ -249,7 +249,8 @@ describe('journey briefing', () => {
     });
     expect(data.itinerary[2]?.stationId).toBe(42);
     const markup = renderJourneyBriefingMarkup(broken);
-    expect(markup.match(/<tr>/g)).toHaveLength(3);
+    const tbody = markup.match(/<tbody>[\s\S]*?<\/tbody>/)?.[0] ?? '';
+    expect(tbody.match(/<tr>/g)).toHaveLength(3);
     expect(markup).toContain('1. Unknown station');
     expect(markup).toContain('2. Unknown station');
     expect(markup).not.toContain('No charging stops are needed');
