@@ -328,6 +328,9 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     const aiBtn = aiBox.querySelector<HTMLButtonElement>('[data-ai-plan]');
     if (aiBtn) aiBtn.disabled = busy;
   };
+  const setFormBusy = (busy: boolean): void => {
+    form.setAttribute('aria-busy', String(busy));
+  };
 
   section.appendChild(errorBox);
 
@@ -398,6 +401,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     // backstop for any submit that fires anyway.
     if (!gate.tryBegin()) return;
     planInFlight = true;
+    setFormBusy(true);
     setActionsBusy(true);
     const aiButton = aiBox.querySelector('[data-ai-plan]') as HTMLButtonElement | null;
     hideError(errorBox);
@@ -426,6 +430,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
       focusOnSettle = aiButton;
     } finally {
       stopBusy();
+      setFormBusy(false);
       setActionsBusy(false);
       gate.end();
       planInFlight = false;
@@ -460,6 +465,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     // One planning run at a time - see the gate declaration above.
     if (!gate.tryBegin()) return;
     planInFlight = true;
+    setFormBusy(true);
     setLoading(true, serverIsMock === null ? 'Planning route…' : serverIsMock ? 'Planning synthetic route…' : 'Planning live route…');
     setActionsBusy(true);
     hideError(errorBox);
@@ -483,6 +489,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
       focusOnSettle = planButton;
     } finally {
       stopBusy();
+      setFormBusy(false);
       setLoading(false, 'Plan route');
       setActionsBusy(false);
       gate.end();
