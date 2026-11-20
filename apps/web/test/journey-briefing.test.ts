@@ -69,6 +69,7 @@ describe('journey briefing', () => {
     expect(markup).toContain('42.7 kWh');
     expect(markup).toContain('42 min');
     expect(markup).toContain('role="meter"');
+    expect(markup).toContain('aria-label="Arrive charge at Stop &amp; Co"');
     expect(markup).toContain('role="region"');
     expect(markup).toContain('tabindex="0"');
     expect(markup).not.toContain('gradient');

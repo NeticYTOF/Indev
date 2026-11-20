@@ -214,8 +214,9 @@ function batteryMeter(point: JourneyBatteryPoint): string {
   ];
   return bars.map(({ label, value }) => {
     const meter = value == null
-      ? `<span class="briefing-meter empty" aria-label="${label} charge not stored"></span>`
-      : `<span class="briefing-meter" role="meter" aria-valuemin="0" aria-valuemax="100" ` +
+      ? `<span class="briefing-meter empty" aria-label="${html(label)} charge at ${html(point.label)} not stored"></span>`
+      : `<span class="briefing-meter" role="meter" aria-label="${html(label)} charge at ${html(point.label)}" ` +
+        `aria-valuemin="0" aria-valuemax="100" ` +
         `aria-valuenow="${Math.round(value)}" aria-valuetext="${label} ${Math.round(value)} percent">` +
         `<span class="briefing-meter-fill" style="width:${Math.max(0, Math.min(100, value))}%"></span></span>`;
     return `<div class="briefing-battery-value"><span class="briefing-battery-label">${label}</span>` +
