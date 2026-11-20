@@ -119,6 +119,27 @@ test('comparison controls return focus and preserve only the remaining selection
   await expect(page.locator('[data-compare-toggle]').first()).toBeFocused();
 });
 
+test('Escape returns to saved trips and keeps the comparison ready to reopen', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await blockOutside(page);
+  await page.route('**/api/trips', (route) => route.fulfill({ json: { trips: savedTrips } }));
+  await page.goto('/');
+  await page.locator('#trips-button').click();
+  await page.locator('[data-compare-toggle]').nth(0).click();
+  await page.locator('[data-compare-toggle]').nth(1).click();
+  await page.locator('[data-compare-selected]').click();
+  await expect(page.locator('.compare-context')).toContainText('Units: km, minutes, kWh, INR and %');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#trips-drawer')).toBeVisible();
+  await expect(page.locator('[data-compare-selected]')).toHaveText('Compare selected (2/2)');
+  await expect(page.locator('[data-compare-selected]')).toBeEnabled();
+  await expect(page.locator('#planner-panel')).toHaveClass(/open/);
+  await expect(page.locator('#sheet-open')).toBeHidden();
+  await expect(page.locator('[data-compare-selected]')).toBeFocused();
+  await page.locator('[data-compare-selected]').click();
+  await expect(page.locator('[data-trip-compare]')).toBeVisible();
+});
+
 test('saved comparison stacks cards at mobile width without horizontal page overflow', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await blockOutside(page);
