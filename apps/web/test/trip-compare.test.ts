@@ -145,6 +145,12 @@ describe('saved trip comparison model', () => {
     expect(html).not.toContain('gradient');
   });
 
+  const cssRulesFor = (css: string): Array<{ selector: string; body: string }> =>
+    [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((match) => ({
+      selector: match[1]!.trim(),
+      body: match[2]!,
+    }));
+
   it('prints two route cards with a full-width differences block in both app and export', async () => {
     const appCss = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
     const exportHtml = buildTripComparisonHtml(buildTripComparison([trip(), trip({ name: 'Alternative' })]));
@@ -153,9 +159,17 @@ describe('saved trip comparison model', () => {
       expect(css).toMatch(/compare-difference\{grid-area:2\/1\/3\/3|\.compare-difference \{ grid-area: 2 \/ 1 \/ 3 \/ 3; \}/);
       expect(css).toMatch(/compare-toolbar h2\{display:block!important|body\.comparing-trips \.compare-toolbar h2 \{\s*display: block !important/);
       expect(css).toMatch(/table-layout:fixed;\s*width:100%;\s*font-size:12px|table-layout: fixed;\s*width: 100%;\s*font-size: 12px/);
-      expect(css).toMatch(/\.compare-table thead th[^{}]*color:\s*#111|body\.comparing-trips \.compare-table thead th/);
-      expect(css).toMatch(/\.compare-delta[^{}]*color:\s*#111|body\.comparing-trips \.compare-delta \{\s*color:\s*#111/);
-      expect(css).toMatch(/white-space:\s*normal/);
+      const rules = cssRulesFor(css);
+      const tableCells = rules.find((rule) =>
+        rule.selector.includes('.compare-table thead th') && rule.selector.includes('.compare-delta'));
+      expect(tableCells?.selector).toContain('.compare-table th');
+      expect(tableCells?.selector).toContain('.compare-table td');
+      const tableRule = rules.find((rule) =>
+        (rule.selector === '.compare-table' || rule.selector.endsWith(' .compare-table')) &&
+        rule.body.includes('table-layout'));
+      expect(tableRule?.body).toMatch(/font-size:\s*12px/);
+      expect(tableCells?.body).toMatch(/color:\s*#111/);
+      expect(tableCells?.body).toMatch(/white-space:\s*normal/);
       expect(css).not.toMatch(/\.compare-card,\s*\.compare-difference[^}]*break-inside:\s*avoid/);
       expect(css).not.toMatch(/body\.comparing-trips \.compare-card,\s*body\.comparing-trips \.compare-difference[^}]*break-inside:\s*avoid/);
     }
