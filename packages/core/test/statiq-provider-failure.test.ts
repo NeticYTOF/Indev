@@ -338,4 +338,130 @@ describe('Statiq provider failure evidence', () => {
       gatewayFailureCode: 'upstream_http', gatewayUpstreamStatus: 429,
     }]);
   });
+
+  it('neutralizes failed marker header getter and invalid header object faults', async () => {
+    const firstCollector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    let calls = 0;
+    const first = clientWith(
+      async () => {
+        calls += 1;
+        return {
+          ok: false,
+          status: 400,
+          headers: {
+            get(name: string) {
+              if (name === 'x-evroute-failure-code') throw new Error('code header trap');
+              return null;
+            },
+          },
+          text: async () => '{"error":"wait"}',
+        } as unknown as Response;
+      },
+      firstCollector,
+      { retries: 0, budget: new UpstreamBudget(3) },
+    );
+    await expect(first.markers(0, 0)).rejects.toThrow();
+    expect(calls).toBe(1);
+    expect(firstCollector.snapshot().failures).toMatchObject([{
+      endpointClass: 'stations/markers', code: 'http_400', httpStatus: 400,
+      gatewayFailureCode: null, gatewayUpstreamStatus: null,
+    }]);
+
+    const secondCollector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    const second = clientWith(
+      async () => ({
+        ok: false,
+        status: 400,
+        headers: { get: 42 },
+        text: async () => '{"error":"wait"}',
+      } as unknown as Response),
+      secondCollector,
+      { retries: 0, budget: new UpstreamBudget(3) },
+    );
+    await expect(second.markers(0, 0)).rejects.toThrow();
+    expect(secondCollector.snapshot().failures).toMatchObject([{
+      endpointClass: 'stations/markers', code: 'http_400', httpStatus: 400,
+      gatewayFailureCode: null, gatewayUpstreamStatus: null,
+    }]);
+
+    const thirdCollector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    const thirdResponse = { ok: false, status: 400, text: async () => '{"error":"wait"}' } as Record<string, unknown>;
+    Object.defineProperty(thirdResponse, 'headers', {
+      get() { throw new Error('headers property trap'); },
+    });
+    const third = clientWith(async () => thirdResponse as unknown as Response, thirdCollector, {
+      retries: 0, budget: new UpstreamBudget(3),
+    });
+    await expect(third.markers(0, 0)).rejects.toThrow();
+    expect(thirdCollector.snapshot().failures).toMatchObject([{
+      endpointClass: 'stations/markers', code: 'http_400', httpStatus: 400,
+      gatewayFailureCode: null, gatewayUpstreamStatus: null,
+    }]);
+  });
+
+  it('keeps mixed concurrent gateway evidence isolated by response boundary', async () => {
+    const collector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    const validMarkers = '{"ok":true,"live":true,"retained":false,"source":"x","count":0,"stations":[]}';
+    const client = clientWith(
+      async (_url, init) => {
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        if (body.station_id != null) {
+          return response('bad', 400, {
+            'x-evroute-failure-code': 'upstream_http',
+            'x-evroute-upstream-status': '599',
+          });
+        }
+        if (body.latitude === 1) {
+          return response('bad', 500, {
+            'x-evroute-failure-code': 'upstream_http',
+            'x-evroute-upstream-status': '429',
+          });
+        }
+        if (body.latitude === 2) {
+          return response('bad', 500, {
+            'x-evroute-failure-code': 'upstream_timeout',
+            'x-evroute-upstream-status': '504',
+          });
+        }
+        return response(validMarkers, 200, {
+          'x-evroute-failure-code': 'upstream_http',
+          'x-evroute-upstream-status': '429',
+        });
+      },
+      collector,
+      { retries: 0, budget: new UpstreamBudget(8) },
+    );
+    const results = await Promise.allSettled([
+      client.markers(1, 1, undefined, { endpointClass: 'stations/markers', phase: 'scan', sampleOrdinal: 1 }),
+      client.markers(2, 2, undefined, { endpointClass: 'stations/markers', phase: 'scan', sampleOrdinal: 2 }),
+      client.detailsWithMeta(99, undefined, { endpointClass: 'stations/details', phase: 'details' }),
+      client.markers(3, 3, undefined, { endpointClass: 'stations/markers', phase: 'scan', sampleOrdinal: 4 }),
+    ]);
+    expect(results.some((result) => result.status === 'fulfilled')).toBe(true);
+    expect(results.some((result) => result.status === 'rejected')).toBe(true);
+
+    const records = collector.snapshot().failures;
+    const sample = (ordinal: number) => records.find((record) => record.sampleOrdinal === ordinal);
+    expect(sample(1)).toMatchObject({
+      endpointClass: 'stations/markers', code: 'http_5xx', httpStatus: 500,
+      gatewayFailureCode: 'upstream_http', gatewayUpstreamStatus: 429,
+    });
+    expect(sample(2)).toMatchObject({
+      endpointClass: 'stations/markers', code: 'http_5xx', httpStatus: 500,
+      gatewayFailureCode: 'upstream_timeout', gatewayUpstreamStatus: 504,
+    });
+    expect(sample(4)).toBeUndefined();
+    const detailRecord = records.find((record) => record.endpointClass === 'stations/details');
+    expect(detailRecord).toMatchObject({
+      code: 'http_400', gatewayFailureCode: null, gatewayUpstreamStatus: null,
+    });
+  });
 });
