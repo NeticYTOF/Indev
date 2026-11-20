@@ -21,6 +21,7 @@ import { renderStationEvidencePanel, wireStationEvidence } from './station-evide
 import { safeStationId } from './station-evidence.js';
 import { storageWarningText, storageWarningElement } from './storage-warning.js';
 import { formatDuration } from './format.js';
+import { savedRouteGeometry } from './safe-url.js';
 
 /**
  * Hide the saved-trips drawer. Closing it leaves every in-drawer focus
@@ -89,16 +90,16 @@ interface SavedMapTrip {
  */
 function savedMapTrip(trip: unknown): SavedMapTrip | null {
   const raw = record(trip);
-  if (!raw || !Array.isArray(raw.geometry) || raw.geometry.length === 0) return null;
-  const geometry: Array<[number, number]> = [];
-  for (const point of raw.geometry) {
-    const pair = coordinate(point);
-    if (!pair) return null;
-    geometry.push([pair.lon, pair.lat]);
-  }
+  if (!raw) return null;
+  // SavedTrip.geometry is [lat, lon][]; the shared helper reverses the whole
+  // validated tuple array to MapLibre order. No vertex pruning or repair.
+  const geometry = savedRouteGeometry(raw.geometry);
+  if (!geometry) return null;
   const origin = coordinate(raw.origin);
   const destination = coordinate(raw.destination);
   if (!origin || !destination) return null;
+  // A missing list is not zero stops. The summary shows that the itinerary is
+  // incomplete; the known route geometry itself is still drawn unchanged.
   const stations = Array.isArray(raw.stations) ? raw.stations : [];
   const stops: SavedMapTrip['stops'] = [];
   for (const station of stations) {

@@ -37,11 +37,35 @@ export function safeHttpUrl(raw: unknown): string | null {
   return parsed.href;
 }
 
+function validLatitude(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= -90 && value <= 90;
+}
+
+function validLongitude(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= -180 && value <= 180;
+}
+
 /** A Directions link is meaningful only for a real numeric coordinate pair. */
 export function stationDirectionsUrl(lat: unknown, lon: unknown): string | null {
-  if (typeof lat !== 'number' || !Number.isFinite(lat) || lat < -90 || lat > 90 ||
-      typeof lon !== 'number' || !Number.isFinite(lon) || lon < -180 || lon > 180) return null;
+  if (!validLatitude(lat) || !validLongitude(lon)) return null;
   return `https://www.google.com/maps/dir/?api=1&destination=${lat}%2C${lon}`;
+}
+
+/**
+ * SavedTrip.geometry uses [lat, lon] tuples. Validate every vertex before
+ * returning MapLibre [lon, lat] coordinates; malformed input rejects the
+ * whole route and is NEVER filtered, reordered or stitched into a shorter one.
+ */
+export function savedRouteGeometry(value: unknown): Array<[number, number]> | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const coordinates: Array<[number, number]> = [];
+  for (const point of value) {
+    if (!Array.isArray(point) || point.length !== 2) return null;
+    const [lat, lon] = point as [unknown, unknown];
+    if (!validLatitude(lat) || !validLongitude(lon)) return null;
+    coordinates.push([lon, lat]);
+  }
+  return coordinates;
 }
 
 /** Preserve every waypoint or omit the entire route link. Never drop a stop. */
