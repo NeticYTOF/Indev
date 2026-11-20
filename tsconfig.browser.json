@@ -4,10 +4,12 @@
     "noEmit": true,
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
     "baseUrl": ".",
     "paths": {
       "/src/*": ["apps/web/src/*"]
     },
+    "types": ["node", "vite/client"],
     "lib": [
       "ES2023",
       "DOM",

@@ -55,8 +55,10 @@ test('a missing stop list stays Unknown and suppresses directions instead of a d
   plan.destination.label = 42;
   await page.goto('/');
   await page.evaluate(async (plan) => {
+    const panel = document.getElementById('planner-panel');
+    if (!(panel instanceof HTMLElement)) throw new Error('Planner panel missing');
     const module = await import('/src/plan-panel.ts');
-    module.renderPlanPanel(document.getElementById('planner-panel'), null, plan);
+    module.renderPlanPanel(panel, null, plan);
   }, plan);
   await expect(page.locator('.plan-results')).toContainText('Charging stop list is Unknown');
   await expect(page.locator('.no-stops')).toHaveCount(0);
@@ -71,8 +73,10 @@ test('a non-array saved trip payload is reported unavailable, not empty', async 
   await page.route('**/api/trips', (route) => route.fulfill({ json: { trips: { unexpected: true } } }));
   await page.goto('/');
   await page.evaluate(async () => {
+    const drawer = document.getElementById('trips-drawer');
+    if (!(drawer instanceof HTMLElement)) throw new Error('Trips drawer missing');
     const module = await import('/src/trips.ts');
-    module.renderTripsDrawer(document.getElementById('trips-drawer'), null, () => true);
+    module.renderTripsDrawer(drawer, null, () => true);
   });
   await expect(page.locator('.trip-list')).toContainText('Saved trip list is unavailable');
   await expect(page.locator('.trip-list')).not.toContainText('No saved trips yet');
@@ -100,8 +104,10 @@ test('invalid saved geometry is omitted whole and never trimmed into a route', a
   await page.route('**/api/trips', (route) => route.fulfill({ json: { trips: [trip] } }));
   await page.goto('/');
   await page.evaluate(async () => {
+    const drawer = document.getElementById('trips-drawer');
+    if (!(drawer instanceof HTMLElement)) throw new Error('Trips drawer missing');
     const module = await import('/src/trips.ts');
-    module.renderTripsDrawer(document.getElementById('trips-drawer'), null, () => true);
+    module.renderTripsDrawer(drawer, null, () => true);
   });
   await page.locator('#trips-button').click();
   await page.getByRole('button', { name: 'Open', exact: true }).click();
