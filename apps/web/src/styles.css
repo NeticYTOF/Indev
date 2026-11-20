@@ -2040,6 +2040,7 @@ body {
 
 .synthetic-note { color: var(--synthetic); font-weight: 700; }
 .degraded-note { color: var(--warn); font-weight: 700; }
+.unknown-note { color: var(--ink-2); font-weight: 700; }
 
 .trip-actions {
   display: grid;

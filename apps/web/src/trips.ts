@@ -24,7 +24,12 @@ import { formatDuration } from './format.js';
 import { savedRouteGeometry } from './safe-url.js';
 import { buildTripComparison } from './trip-compare.js';
 import { clearTripComparisonView, renderTripComparisonWorkspace } from './trip-compare-view.js';
-import { filterAndSortTrips, type TripListSort } from './trip-list.js';
+import {
+  filterAndSortTrips,
+  type TripListSort,
+  type TripSourceFilter,
+  type TripStatusFilter,
+} from './trip-list.js';
 
 /**
  * Hide the saved-trips drawer. Closing it leaves every in-drawer focus
@@ -49,7 +54,20 @@ type LoadSavedRoute = (draft: SavedRouteDraft) => boolean;
  * never written to storage: route labels stay private to the open tab and a
  * page reload returns to the default view.
  */
-const tripDrawerSession: { query: string; sort: TripListSort } = { query: '', sort: 'newest' };
+const tripDrawerSession: {
+  query: string;
+  sort: TripListSort;
+  source: TripSourceFilter;
+  status: TripStatusFilter;
+} = { query: '', sort: 'newest', source: 'all', status: 'all' };
+
+function sourceFilterValue(value: string): TripSourceFilter {
+  return value === 'live' || value === 'synthetic' || value === 'unknown' ? value : 'all';
+}
+
+function statusFilterValue(value: string): TripStatusFilter {
+  return value === 'ok' || value === 'degraded' || value === 'unknown' ? value : 'all';
+}
 
 function safeNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -140,6 +158,8 @@ export function renderTripsDrawer(
   let loadedTrips: SavedTrip[] = [];
   let searchQuery = tripDrawerSession.query;
   let sortOrder = tripDrawerSession.sort;
+  let sourceFilter = tripDrawerSession.source;
+  let statusFilter = tripDrawerSession.status;
   let loadState: 'loading' | 'ready' | 'unavailable' | 'error' = 'loading';
   let visibleIndices = new Set<number>();
   const head = el(`
@@ -170,6 +190,21 @@ export function renderTripsDrawer(
         <option value="oldest">Oldest first</option>
         <option value="name">Name A–Z</option>
       </select>
+      <label class="trip-sort-label" for="trip-source">Saved source</label>
+      <select id="trip-source" class="trip-sort" data-trip-source disabled>
+        <option value="all">All sources</option>
+        <option value="live">Live</option>
+        <option value="synthetic">Synthetic</option>
+        <option value="unknown">Unknown</option>
+      </select>
+      <label class="trip-sort-label" for="trip-status">Saved plan status</label>
+      <select id="trip-status" class="trip-sort" data-trip-status disabled>
+        <option value="all">All statuses</option>
+        <option value="ok">OK</option>
+        <option value="degraded">Degraded</option>
+        <option value="unknown">Unknown</option>
+      </select>
+      <button type="button" class="btn btn-compact btn-ghost" data-trip-filters-clear disabled>Clear all filters</button>
       <p class="trip-list-result-count" data-trip-result-count role="status" aria-live="polite"></p>
     </div>
   `);
@@ -183,29 +218,38 @@ export function renderTripsDrawer(
   const searchInput = controls.querySelector<HTMLInputElement>('[data-trip-search]');
   const clearSearch = controls.querySelector<HTMLButtonElement>('[data-trip-search-clear]');
   const sortSelect = controls.querySelector<HTMLSelectElement>('[data-trip-sort]');
+  const sourceSelect = controls.querySelector<HTMLSelectElement>('[data-trip-source]');
+  const statusSelect = controls.querySelector<HTMLSelectElement>('[data-trip-status]');
+  const clearFilters = controls.querySelector<HTMLButtonElement>('[data-trip-filters-clear]');
   const resultCount = controls.querySelector<HTMLElement>('[data-trip-result-count]');
   if (searchInput) searchInput.value = searchQuery;
   if (sortSelect) sortSelect.value = sortOrder;
+  if (sourceSelect) sourceSelect.value = sourceFilter;
+  if (statusSelect) statusSelect.value = statusFilter;
 
   const updateHiddenSelectionNotice = (): void => {
     const hidden = [...selected].filter((index) => !visibleIndices.has(index)).length;
     hiddenNotice.hidden = hidden === 0;
     if (hidden > 0) {
-      hiddenNotice.textContent = `${hidden} selected trip${hidden === 1 ? '' : 's'} hidden by the current search.`;
+      hiddenNotice.textContent = `${hidden} selected trip${hidden === 1 ? '' : 's'} hidden by the current filters.`;
     }
   };
 
   const renderList = (): void => {
     if (loadState !== 'ready') return;
     list.innerHTML = '';
-    const entries = filterAndSortTrips(loadedTrips, searchQuery, sortOrder);
+    const entries = filterAndSortTrips(loadedTrips, searchQuery, sortOrder, { source: sourceFilter, status: statusFilter });
     if (resultCount) resultCount.textContent = `Showing ${entries.length} of ${loadedTrips.length} saved trips.`;
     if (searchInput) searchInput.disabled = false;
     if (sortSelect) sortSelect.disabled = false;
+    if (sourceSelect) sourceSelect.disabled = false;
+    if (statusSelect) statusSelect.disabled = false;
     if (clearSearch) clearSearch.disabled = searchQuery.length === 0;
+    if (clearFilters) clearFilters.disabled = searchQuery.length === 0 && sourceFilter === 'all' && statusFilter === 'all';
     if (entries.length === 0) {
-      list.appendChild(el(searchQuery.trim().length > 0
-        ? '<p class="hint">No saved trips match this search.</p>'
+      const filtered = searchQuery.trim().length > 0 || sourceFilter !== 'all' || statusFilter !== 'all';
+      list.appendChild(el(filtered
+        ? '<p class="hint">No saved trips match the current filters.</p>'
         : '<p class="hint">No saved trips yet. Plan a route, then save it.</p>'));
     } else {
       entries.forEach(({ trip, sourceIndex }) => {
@@ -253,6 +297,29 @@ export function renderTripsDrawer(
     sortOrder = value === 'oldest' || value === 'name' ? value : 'newest';
     tripDrawerSession.sort = sortOrder;
     renderList();
+  });
+  sourceSelect?.addEventListener('change', () => {
+    sourceFilter = sourceFilterValue(sourceSelect.value);
+    tripDrawerSession.source = sourceFilter;
+    renderList();
+  });
+  statusSelect?.addEventListener('change', () => {
+    statusFilter = statusFilterValue(statusSelect.value);
+    tripDrawerSession.status = statusFilter;
+    renderList();
+  });
+  clearFilters?.addEventListener('click', () => {
+    searchQuery = '';
+    sourceFilter = 'all';
+    statusFilter = 'all';
+    tripDrawerSession.query = '';
+    tripDrawerSession.source = 'all';
+    tripDrawerSession.status = 'all';
+    if (searchInput) searchInput.value = '';
+    if (sourceSelect) sourceSelect.value = 'all';
+    if (statusSelect) statusSelect.value = 'all';
+    renderList();
+    searchInput?.focus({ preventScroll: true });
   });
 
   const toggleSelection = (index: number): void => {
@@ -333,6 +400,9 @@ export function renderTripsDrawer(
         loadState = 'unavailable';
         if (searchInput) searchInput.disabled = true;
         if (sortSelect) sortSelect.disabled = true;
+        if (sourceSelect) sourceSelect.disabled = true;
+        if (statusSelect) statusSelect.disabled = true;
+        if (clearFilters) clearFilters.disabled = true;
         if (resultCount) resultCount.textContent = 'Saved trip list is unavailable.';
         list.appendChild(el('<p class="hint">Saved trip list is unavailable.</p>'));
         updateSelection();
@@ -344,6 +414,9 @@ export function renderTripsDrawer(
       loadState = 'error';
       if (searchInput) searchInput.disabled = true;
       if (sortSelect) sortSelect.disabled = true;
+      if (sourceSelect) sourceSelect.disabled = true;
+      if (statusSelect) statusSelect.disabled = true;
+      if (clearFilters) clearFilters.disabled = true;
       list.innerHTML = '';
       if (resultCount) resultCount.textContent = 'Saved trips could not be loaded.';
       list.appendChild(el(`<p class="hint">Could not load trips: ${escapeHtml(err instanceof Error ? err.message : 'unknown error')}</p>`));
@@ -376,8 +449,8 @@ function renderTripRow(
           · ${safeInteger(raw.routeDistanceKm)} km
           · ${escapeHtml(countText)} ${escapeHtml(countLabel)}
           · ${escapeHtml(formatDuration(safeNumber(totals.totalTimeMin)))}
-          ${raw.source === 'synthetic' ? '· <span class="synthetic-note">synthetic</span>' : ''}
-          ${raw.status === 'degraded' ? '· <span class="degraded-note">degraded</span>' : ''}
+          ${raw.source === 'synthetic' ? '· <span class="synthetic-note">synthetic</span>' : raw.source !== 'live' ? '· <span class="unknown-note">source unknown</span>' : ''}
+          ${raw.status === 'degraded' ? '· <span class="degraded-note">degraded</span>' : raw.status !== 'ok' ? '· <span class="unknown-note">status unknown</span>' : ''}
         </span>
       </div>
       <div class="trip-actions">
