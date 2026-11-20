@@ -921,3 +921,29 @@ it.each([false, true])('keeps known valid power rather than fallback when missin
   expect(plan.warnings.join(' ')).toContain('known power only');
   expect(plan.warnings.join(' ')).not.toContain('50 kW estimate');
 });
+
+it('does not certify complete coverage when all marker records have malformed coordinates', async () => {
+  const base = fakeStatiq(numericSpecs);
+  const statiq = { ...base, markers: async () => ({ ok: true, stations: [{ stationId: 999, name: 'Malformed marker', lat: 'bad', lon: 0 }] }) } as unknown as StatiqClient;
+  await expect(planTrip({ router: fakeRouter(700), statiq }, O, D(700))).rejects.toMatchObject({ code: 'not_determined', cause: 'scan-coverage' });
+});
+
+it.each([false, true])('preserves every valid candidate and marks one malformed-marker sample degraded, invalid-first=%s', async invalidFirst => {
+  const base = fakeStatiq(numericSpecs); let markerCalls = 0; const details: number[] = [];
+  const statiq = { ...base,
+    markers: async (lat: number, lon: number) => {
+      const response = await base.markers(lat, lon); markerCalls++;
+      if (markerCalls === 1) {
+        const valid = numericSpecs.map(spec => ({ stationId: spec.id, name: spec.name, lat: spec.chainageKm / KM_PER_DEG, lon: 0, address: null, accessType: 1, isCommunityListed: false, stationUrl: '' }));
+        const malformed = { ...valid[0]!, lat: 'bad' };
+        return { ...response, stations: invalidFirst ? [malformed, ...valid] : [valid[0], malformed, valid[1]] };
+      }
+      return response;
+    },
+    detailsWithMeta: async (id: number) => { details.push(id); return base.detailsWithMeta(id); },
+  } as unknown as StatiqClient;
+  const plan = await planTrip({ router: fakeRouter(700), statiq }, O, D(700));
+  expect(plan.status).toBe('degraded'); expect(plan.stops).toHaveLength(2);
+  expect(details.sort()).toEqual([1, 2]); expect(plan.stationsSeen).toBe(2);
+  expect(plan.warnings.filter(w => w.includes('Charger scan could not read'))).toHaveLength(1);
+});

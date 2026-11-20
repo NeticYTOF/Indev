@@ -184,3 +184,28 @@ describe('incremental scan progress (onProgress)', () => {
     expect(last.planned).toBeGreaterThanOrEqual(16);
   });
 });
+
+it.each([
+  { lat: '28' }, { lat: 91 }, { lat: NaN }, { lon: '77' }, { lon: -181 }, { lon: Infinity },
+  { stationId: 0 }, { stationId: -1 }, { stationId: 1.5 }, { stationId: Number.MAX_SAFE_INTEGER + 1 }, { name: null },
+])('keeps malformed marker scalar evidence %j as failed coverage, not successful emptiness', async override => {
+  const invalid = { ...marker(1, 28, 77), ...override } as unknown as StatiqMarker;
+  const client = { markers: async () => markersResponse([invalid]) } as unknown as StatiqClient;
+  const progress: CorridorScanProgress[] = [];
+  const result = await scanCorridor(client, route, { stepKm: 100, onProgress: p => progress.push(p) });
+  expect(result.samples).toBe(0); expect(result.failedSamples).toHaveLength(result.samplesPlanned);
+  expect(result.candidates).toEqual([]); expect(result.stationsSeen).toBe(0);
+  expect(result.warnings).toHaveLength(result.samplesPlanned);
+  expect(progress.every(p => p.ok + p.failed === p.completed && p.completed <= p.planned)).toBe(true);
+});
+
+it.each([false, true])('retains valid candidates around malformed records without poisoning dedup, invalid-first=%s', async invalidFirst => {
+  const invalid = { ...marker(1, 28, 77), lat: 'bad' } as unknown as StatiqMarker;
+  const good = marker(1, 28, 77), other = marker(2, 28, 76.8);
+  const stations = invalidFirst ? [invalid, good, other] : [good, invalid, other];
+  const client = { markers: async () => markersResponse(stations) } as unknown as StatiqClient;
+  const result = await scanCorridor(client, route, { stepKm: 100 });
+  expect(result.samples).toBe(0); expect(result.failedSamples).toHaveLength(result.samplesPlanned);
+  expect(result.stationsSeen).toBe(2); expect(result.candidates.map(c => c.stationId).sort()).toEqual([1, 2]);
+  expect(result.candidates.every(c => Number.isFinite(c.lat) && Number.isFinite(c.lon))).toBe(true);
+});
