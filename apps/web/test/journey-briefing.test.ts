@@ -355,12 +355,63 @@ describe('journey briefing', () => {
     expect(nullEntry).toContain('Per-charger Directions unavailable');
   });
 
+  it('accepts coordinate zero and boundaries but rejects NaN, Infinity and strings', () => {
+    for (const pair of [[0, 0], [-90, 180], [90, -180]]) {
+      const handoff = renderJourneyHandoffMarkup({ ...plan(), stops: [], origin: { label: 'A', lat: pair[0], lon: pair[1] }, destination: { label: 'B', lat: 1, lon: 2 } });
+      expect(handoff).toContain('data-trip-maps');
+      expect(handoff).toContain('data-stop-maps');
+    }
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, '27']) {
+      const handoff = renderJourneyHandoffMarkup({ ...plan(), origin: { label: 'A', lat: bad, lon: 76 }, destination: { label: 'B', lat: 26, lon: 75 }, stops: [] });
+      expect(handoff).toContain('data-trip-maps-unavailable');
+    }
+    const sparse = renderJourneyHandoffMarkup({ ...plan(), stops: [undefined, { station: { lat: 27, lon: 76, name: 'Valid' } }, {}] as never });
+    expect(sparse).toContain('data-trip-maps-unavailable');
+    expect((sparse.match(/data-stop-maps=/g) ?? []).length).toBe(1);
+  });
+
   it('escapes hostile ampersands and quotes once in export route text', () => {
     const hostile = { ...plan(), origin: { label: 'A & <b>\"B\"', lat: 1, lon: 2 }, destination: { label: 'C & D', lat: 3, lon: 4 }, stops: [] };
     const html = buildJourneyBriefingHtml(hostile);
-    expect(html).toContain('A &amp; &lt;b&gt; &quot;B&quot; → C &amp; D');
+    expect(html).toContain('A &amp; &lt;b&gt;&quot;B&quot; → C &amp; D');
     expect(html).not.toContain('&amp;amp;');
     expect(html).not.toContain('<b>');
+  });
+
+  it('keeps missing, zero and invalid planned facts distinct in export tables', () => {
+    const withFacts = plan({
+      totals: { distanceKm: 400, driveTimeMin: 300, totalTimeMin: 380, chargeTimeMin: 80, chargeKwh: 60, estPriceInr: 0, finalSocPct: 0 },
+      stops: [{ ...(plan().stops[0] as TripPlan['stops'][number]), chargeKwh: 0, chargeTimeMin: 0, pricePerKwh: 0, estPriceInr: 0 }],
+    });
+    const html = buildJourneyBriefingHtml(withFacts);
+    expect(html).toContain('Rs. 0');
+    expect(html).toContain('0 kWh');
+    expect(html).toContain('0 min');
+    expect(html).toContain('0%');
+
+    const broken = plan({
+      totals: { distanceKm: Number.NaN, driveTimeMin: Number.POSITIVE_INFINITY, totalTimeMin: -1, chargeTimeMin: '80', chargeKwh: Number.MAX_VALUE, estPriceInr: Number.NEGATIVE_INFINITY, finalSocPct: 140 },
+      stops: [{ ...(plan().stops[0] as TripPlan['stops'][number]), chargeKwh: Number.NaN, chargeTimeMin: -4, pricePerKwh: Number.POSITIVE_INFINITY, estPriceInr: '12' }],
+    });
+    const data = buildJourneyBriefingData(broken);
+    expect(data.routeDistanceKm).toBeNull();
+    expect(data.totalTimeMin).toBeNull();
+    expect(data.chargeKwh).toBeNull();
+    expect(data.finalSocPct).toBeNull();
+    expect(data.itinerary[0]).toMatchObject({ chargeKwh: null, chargeTimeMin: null, pricePerKwh: null, estPriceInr: null });
+
+    const saved = journeySourceFromSavedTrip({
+      id: 'saved', name: 'Saved', createdAt: '2026-01-01T00:00:00Z',
+      origin: { label: 'A', lat: 28, lon: 77 }, destination: { label: 'B', lat: 26, lon: 75 },
+      status: 'ok', source: 'live', routeDistanceKm: 400, routeDurationMin: 400, geometry: [],
+      vehicle: { label: 'EV', catalogId: null, batteryKwh: 75, claimedRangeKm: null, realWorldRangeKm: 300 },
+      totals: { distanceKm: 400, driveTimeMin: 300, totalTimeMin: 400, chargeTimeMin: 50, chargeKwh: 50, estPriceInr: 1000, finalSocPct: 20 },
+      stations: [{ stationId: 42, name: 'Flat stop', lat: 27, lon: 76, chainageKm: 200, legKm: 202, detourKm: 2, arriveSocPct: 20, leaveSocPct: 80, chargeKwh: 42.7, pricePerKwh: 20, estPriceInr: 854, chargeTimeMin: 42 }],
+    } as unknown as SavedTrip);
+    const savedHtml = buildJourneyBriefingHtml(saved);
+    expect(savedHtml).toContain('data-stop-maps="1"');
+    expect(savedHtml).toContain('Flat stop');
+    expect(savedHtml).toContain('Arrival time not stored for this trip');
   });
 
   it('shows unknown costs as unknown and handles no-stop routes', () => {

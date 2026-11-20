@@ -167,7 +167,8 @@ function stopLabel(stop: unknown): string {
 }
 
 function finiteNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  return typeof value === 'number' && Number.isFinite(value) &&
+    Math.abs(value) <= Number.MAX_SAFE_INTEGER ? value : null;
 }
 
 function nonnegative(value: unknown): number | null {
@@ -453,7 +454,11 @@ export function renderJourneyHandoffMarkup(plan: JourneyBriefingSource): string 
     record(record(stop)?.station) ?? {}) : [];
   const stopPoints = stopSources.map((station) => ({ lat: station.lat, lon: station.lon }));
   const segments = stopsKnown
-    ? routeDirectionsLinks(origin, destination, stopPoints)
+    ? routeDirectionsLinks(
+      { lat: origin.lat, lon: origin.lon },
+      { lat: destination.lat, lon: destination.lon },
+      stopPoints,
+    )
     : null;
   const routeLinks = segments?.map((segment) => {
     const from = segment.startsAtOrigin ? labelText(origin.label) : `charger ${segment.firstStop}`;
