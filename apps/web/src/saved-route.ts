@@ -32,6 +32,11 @@ export interface SavedRouteDraft {
   reviewNotes: string[];
 }
 
+export const RETURN_ROUTE_REVIEW_NOTE =
+  'New return-direction plan: only the saved origin and destination were swapped. ' +
+  'Saved stops, geometry, totals and any previous results were not reversed or reused. ' +
+  'Review every option and start a new plan manually.';
+
 function finite(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
@@ -102,6 +107,21 @@ export function buildSavedRouteDraft(trip: SavedTrip): SavedRouteDraft {
       realWorldRangeKm,
     },
     reviewNotes,
+  };
+}
+
+/**
+ * Build a NEW forward-draft in the opposite direction. This copies only the
+ * validated composer facts; it never derives reverse stops, distance, time or
+ * saved results, and never touches the source record.
+ */
+export function buildReturnRouteDraft(trip: SavedTrip): SavedRouteDraft {
+  const forward = buildSavedRouteDraft(trip);
+  return {
+    origin: { ...forward.destination },
+    destination: { ...forward.origin },
+    vehicle: { ...forward.vehicle },
+    reviewNotes: [RETURN_ROUTE_REVIEW_NOTE, ...forward.reviewNotes],
   };
 }
 

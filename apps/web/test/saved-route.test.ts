@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { SavedTrip } from '@indeev/core';
-import { buildSavedRouteDraft, savedRouteDraftReady } from '../src/saved-route.js';
+import {
+  buildReturnRouteDraft,
+  buildSavedRouteDraft,
+  RETURN_ROUTE_REVIEW_NOTE,
+  savedRouteDraftReady,
+} from '../src/saved-route.js';
 
 function savedTrip(overrides: Partial<SavedTrip> = {}): SavedTrip {
   return {
@@ -62,5 +67,32 @@ describe('saved route composer adapter', () => {
     }));
     expect(savedRouteDraftReady(draft)).toBe(false);
     expect(draft.reviewNotes.join(' ')).toContain('Saved origin coordinates were not stored validly');
+  });
+});
+
+describe('return trip composer adapter', () => {
+  it('swaps only exact endpoints and keeps known vehicle facts without mutation', () => {
+    const source = savedTrip();
+    const before = JSON.stringify(source);
+    const draft = buildReturnRouteDraft(source);
+    expect(draft.origin).toEqual(source.destination);
+    expect(draft.destination).toEqual(source.origin);
+    expect(draft.vehicle).toEqual(buildSavedRouteDraft(source).vehicle);
+    expect(draft.reviewNotes[0]).toBe(RETURN_ROUTE_REVIEW_NOTE);
+    expect(draft.reviewNotes.join(' ')).toContain('Start charge, charging reserve');
+    expect(savedRouteDraftReady(draft)).toBe(true);
+    expect(JSON.stringify(source)).toBe(before);
+  });
+
+  it('refuses a return draft when either stored coordinate is invalid', () => {
+    const invalidOrigin = buildReturnRouteDraft(savedTrip({
+      origin: { label: 'Broken', lat: Number.NaN, lon: 77 },
+    }));
+    const invalidDestination = buildReturnRouteDraft(savedTrip({
+      destination: { label: 'Broken', lat: 26.9, lon: Number.POSITIVE_INFINITY },
+    }));
+    expect(savedRouteDraftReady(invalidOrigin)).toBe(false);
+    expect(savedRouteDraftReady(invalidDestination)).toBe(false);
+    expect(invalidDestination.reviewNotes[0]).toBe(RETURN_ROUTE_REVIEW_NOTE);
   });
 });
