@@ -306,8 +306,8 @@ export function createApp(deps: AppDeps): Hono {
       runBudget,
       ...(startSocPct === undefined ? {} : { startSocPct }),
     };
-    // Mirror the planner's user-range cap so AI validation enforces the
-    // same safe running range the base plan used.
+    // Mirror the planner's tightened leg ceiling so AI validation reports
+    // the same maximum; SoC/reserve/energy checks still decide feasibility.
     if (resolved.realWorldRangeKm != null && Number.isFinite(resolved.realWorldRangeKm)) {
       planOptions.maxLegKm = Math.min(
         planOptions.maxLegKm ?? DEFAULT_PLAN_OPTIONS.maxLegKm,
@@ -338,7 +338,7 @@ export function createApp(deps: AppDeps): Hono {
     const system =
       'You are an EV trip-planning assistant for India. You receive a computed base plan ' +
       'and its candidate charging stations. Choose the best stop sequence respecting: ' +
-      'legs no longer than the maxLegKm limit below, fewest stops, brands preferred in order Statiq > Tata > BPCL > HP > others. ' +
+      'legs no longer than the maxLegKm limit below, with charge/reserve feasibility preserved, fewest stops, brands preferred in order Statiq > Tata > BPCL > HP > others. ' +
       'You may keep the base sequence if it is already best. Respond with STRICT JSON only: ' +
       '{"chosenStationIds": number[], "notes": string}. chosenStationIds must be the station ids in ' +
       'route order, drawn only from the provided candidates. notes is one short sentence for the user.';

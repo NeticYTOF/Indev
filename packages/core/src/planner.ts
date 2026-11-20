@@ -163,12 +163,11 @@ export async function planTripDetailed(
   const baseOpts = mergePlanOptions(options);
   const vehicle = deps.vehicle ?? HARIER_EV_75;
   const resolvedVehicle: ResolvedVehicle = deps.resolvedVehicle ?? resolveVehicle();
-  // A USER-supplied real-world range is a SAFE range, not just a consumption
-  // input. The owner's 300 km cap stays in force for the default profile
-  // (realWorldRangeKm == null); any explicit user range can only TIGHTEN the
-  // hard leg cap, never widen it. Otherwise a failure for a shorter-range
-  // vehicle would still claim a 300 km safe running range that was never
-  // grounded in that vehicle's inputs.
+  // A user-supplied real-world range only TIGHTENS the configured maximum
+  // leg ceiling (the default 300 km remains when none is supplied); it never
+  // raises that ceiling and never replaces the SoC/reserve/energy feasibility
+  // gates. This keeps short-range evidence from reporting the default 300 km
+  // ceiling for a vehicle grounded to a shorter range.
   const userSafeRangeKm = resolvedVehicle.realWorldRangeKm;
   const opts: Required<PlanOptions> =
     userSafeRangeKm != null && Number.isFinite(userSafeRangeKm)
