@@ -106,7 +106,7 @@ describe('saved trip comparison model', () => {
         origin: { label: hostile, lat: 'bad', lon: 77 },
         source: 'synthetic',
         status: 'degraded',
-        stations: [null, { station: {}, pricePerKwh: -1, chargeKwh: 'bad' }],
+        stations: [null, { stationId: 42, name: 'DC stop', pricePerKwh: -1, chargeKwh: 'bad' }],
       }),
       trip(),
     ]);
@@ -114,6 +114,8 @@ describe('saved trip comparison model', () => {
     expect(a?.stops).toHaveLength(2);
     expect(a?.stops[0]?.name).toBe('Unknown station');
     expect(a?.stops[0]?.tariff.display).toBe('Unknown');
+    expect(a?.stops[1]?.name).toBe('DC stop');
+    expect(a?.stops[1]?.stationId).toBe(42);
     expect(a?.stops[1]?.tariff.display).toBe('Unknown');
     expect(a?.origin).toBeNull();
     expect(a?.synthetic).toBe(true);
@@ -123,8 +125,12 @@ describe('saved trip comparison model', () => {
     expect(markup).toContain('&lt;img src=x onerror=stationProof&gt;');
     expect(markup).toContain('Synthetic');
     expect(markup).toContain('Degraded');
-    expect(markup).toContain('1. Unknown station');
-    expect(markup).toContain('2. Unknown station');
+    const ordinals = [...markup.matchAll(/<span class="compare-stop-order">(\d+)<\/span>/g)]
+      .map((match) => match[1]);
+    expect(ordinals).toEqual(['1', '2']);
+    expect(markup).toContain('<strong>Unknown station</strong>');
+    expect(markup).toContain('<strong>DC stop</strong>');
+    expect(markup).toContain('Station 42');
   });
 
   it('builds a standalone gradient-free export from the same presentation data', () => {

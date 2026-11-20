@@ -163,7 +163,7 @@ export function renderTripsDrawer(
         (count === 2 ? 'Two trips selected. Compare them or remove one.' : `${count} of 2 trips selected.`);
     }
     list.querySelectorAll<HTMLButtonElement>('[data-compare-toggle]').forEach((button) => {
-      const index = Number(button.dataset.compareToggle);
+      const index = Number(button.dataset.compareIndex);
       const active = selected.has(index);
       button.setAttribute('aria-pressed', String(active));
       button.textContent = active ? 'Remove from comparison' : 'Select to compare';
@@ -191,7 +191,10 @@ export function renderTripsDrawer(
     const returnToDrawer = (): void => {
       clearTripComparisonView();
       drawer.classList.remove('hidden');
-      head.querySelector<HTMLElement>('[data-compare-selected]')?.focus();
+      const compare = head.querySelector<HTMLButtonElement>('[data-compare-selected]');
+      const fallback = list.querySelector<HTMLButtonElement>('[data-compare-toggle]')
+        ?? head.querySelector<HTMLButtonElement>('[data-close]');
+      (compare && !compare.disabled ? compare : fallback)?.focus();
     };
     const drawComparison = (focusSwap = false): void => {
       const pair = slots.map((index) => loadedTrips[index] as SavedTrip);

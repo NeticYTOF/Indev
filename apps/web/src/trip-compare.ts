@@ -160,11 +160,12 @@ function vehicleFrom(raw: RawRecord): ComparisonVehicle {
 }
 
 function stopFrom(value: unknown): ComparisonStop {
+  // SavedStationRef is flat in @indeev/core: name/stationId live on the ref,
+  // not under a nested station object.
   const raw = record(value) ?? {};
-  const station = record(read(raw, 'station')) ?? {};
-  const stationId = finite(read(station, 'stationId'), 1);
+  const stationId = finite(read(raw, 'stationId'), 1);
   return {
-    name: text(read(station, 'name'), 'Unknown station'),
+    name: text(read(raw, 'name'), 'Unknown station'),
     stationId: stationId != null && Number.isSafeInteger(stationId) ? stationId : null,
     legKm: metric(read(raw, 'legKm'), (n) => numberText(n, ' km')),
     arriveSocPct: metric(read(raw, 'arriveSocPct'), (n) => numberText(n, '%'), 0, 100),
@@ -413,6 +414,7 @@ export function buildTripComparisonHtml(comparison: TripComparison): string {
     `@media (max-width:900px){.compare-grid{grid-template-columns:1fr}}` +
     `@media print{body{background:#fff;color:#111;padding:0}.compare-card,.compare-difference,.compare-context{border-color:#888;background:#fff}.hint,.compare-facts dt,.compare-stop-facts{color:#444}` +
     `.badge,.compare-delta{color:#111;border-color:#888}.compare-grid{grid-template-columns:repeat(3,minmax(0,1fr))}` +
+    `.compare-toolbar h2,.compare-card h3,.compare-difference h3,.compare-slot,.compare-table caption,.compare-endpoints{color:#111}` +
     `.compare-card,.compare-difference,.compare-notes,.compare-stop,.compare-facts div{break-inside:avoid;page-break-inside:avoid}}` +
     `</style></head><body><main>${renderTripComparisonMarkup(comparison)}</main></body></html>`;
 }
