@@ -428,11 +428,14 @@ async function planCore(
       hooks.reserveCall?.();
       return deps.statiq.markers(lat, lon, hooks.signal, context);
     },
-    detailsWithMeta: (stationId: number, context?: ProviderCallContext) => {
+    detailsWithMeta: (
+      stationId: number,
+      onDispatch?: (dispatchSeq: number) => void,
+    ) => {
       hooks.reserveCall?.();
       return deps.statiq.detailsWithMeta(stationId, hooks.signal, {
         endpointClass: 'stations/details', phase: 'details', sampleOrdinal: null,
-        ...context,
+        onDispatch,
       });
     },
   };
@@ -538,9 +541,10 @@ async function planCore(
       }); } catch { /* diagnostics never alter planning */ }
     };
     try {
-      const { response, fetchedAt } = await guardedStatiq.detailsWithMeta(c.stationId, {
-        onDispatch: (seq) => { detailDispatchSeq = seq; },
-      });
+      const { response, fetchedAt } = await guardedStatiq.detailsWithMeta(
+        c.stationId,
+        (seq) => { detailDispatchSeq = seq; },
+      );
       // A details payload must describe the station actually requested.
       // Otherwise another station's plugs could inherit this candidate's
       // chainage and reachability. Treat that lookup as unknown, not usable.

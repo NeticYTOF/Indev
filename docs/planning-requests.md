@@ -186,3 +186,11 @@ native code) is warranted by them.
 - Per-run summary audit: outcome string (e.g. `ok`,
   `not_determined:throttled`, `not_determined:budget-exhausted`) plus the
   actual upstream call count.
+- Completion-only provider failure evidence is sanitized and bounded: the
+  first 20 distinct evidence records are retained and `omittedFailureCount`
+  counts distinct records dropped by that cap. It is NOT an attempt count.
+  One failed transport attempt may legitimately emit multiple distinct
+  payload-validation codes carrying the same `dispatchSeq`; repeated
+  emission of the SAME code and non-null `dispatchSeq` is deduplicated at
+  each emission site. Predispatch failures use `dispatchSeq: null` and are
+  never deduplicated against other failures.

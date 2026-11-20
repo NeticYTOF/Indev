@@ -69,7 +69,8 @@ export interface ProviderFailureEvidence {
 export interface ProviderFailureReport {
   /** First failures in emission order; each record is immutable. */
   failures: readonly ProviderFailureEvidence[];
-  /** Exact count not retained because the first-20 cap was reached. */
+  /** Exact count of DISTINCT evidence RECORDS dropped by the first-20 cap;
+   *  this is not an attempted-call, attempt, or upstream-failure count. */
   omittedFailureCount: number;
 }
 
