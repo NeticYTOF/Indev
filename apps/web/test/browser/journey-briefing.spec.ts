@@ -13,6 +13,7 @@ interface BriefingFixturePlan {
     chargeTimeMin: number;
     arriveSocPct: number;
     leaveSocPct: number;
+    pricePerKwh: number | null;
     estPriceInr: number | null;
   }>;
   warnings: string[];
@@ -24,6 +25,7 @@ async function planSyntheticTrip(page: import('@playwright/test').Page): Promise
   await page.route('**/api/plan', async (route) => {
     const response = await route.fetch();
     const body = (await response.json()) as { plan: BriefingFixturePlan };
+    if (body.plan.stops[0]) body.plan.stops[0].pricePerKwh = 22.75;
     fixture = body.plan;
     await route.fulfill({ response, json: body });
   });
@@ -71,6 +73,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await expect(firstRow).toContainText(`${Math.round(plan.stops[0]!.leaveSocPct)}%`);
     await expect(firstRow).toContainText(`${Math.round(plan.stops[0]!.chargeKwh * 10) / 10} kWh`);
     await expect(firstRow).toContainText(`${Math.round(plan.stops[0]!.chargeTimeMin)} min`);
+    await expect(firstRow).toContainText('Rs. 22.75/kWh');
     await expect(firstRow).toContainText(firstCost);
 
     // Existing planning, animated-export, save, and map controls remain intact.
