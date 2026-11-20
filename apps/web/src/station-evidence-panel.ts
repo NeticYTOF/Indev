@@ -104,7 +104,7 @@ function evidenceMarkup(evidence: StationEvidence): string {
     warnings +
     `<dl class="evidence-grid">` +
     `<div><dt>Fetched at</dt><dd${evidence.sourceKind === 'fetched' ? ' class="fetched"' : ''}>${named(evidence.fetchedAt == null ? null : formatDateTime(evidence.fetchedAt))}</dd></div>` +
-    `<div><dt>Rating</dt><dd>${concise(evidence.rating)} · ${concise(evidence.reviewCount)} reviews</dd></div>` +
+    `<div><dt>Rating</dt><dd>${concise(evidence.rating)} · ${evidence.reviewCount == null ? 'unknown' : evidence.reviewCount} reviews</dd></div>` +
     `<div><dt>CCS2 DC</dt><dd>${concise(c.total)} total · ${concise(c.usable)} usable</dd></div>` +
     `<div><dt>Availability</dt><dd>${concise(c.free)} free · ${concise(c.occupied)} occupied</dd></div>` +
     `<div><dt>Uncertain</dt><dd>${concise(c.uncertain)} · faulted ${concise(c.faulted)} · offline ${concise(c.offline)}</dd></div>` +
