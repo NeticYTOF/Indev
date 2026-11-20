@@ -109,7 +109,7 @@ export function planRequest(port, wallMs, body) {
     };
     const req = http.request(
       {
-        host: 'localhost',
+        host: '127.0.0.1',
         port,
         path: '/api/plan',
         method: 'POST',
@@ -404,7 +404,7 @@ async function main() {
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
       try {
-        const r = await fetch(`http://localhost:${PORT}/api/health`, { signal: AbortSignal.timeout(2000) });
+        const r = await fetch(`http://127.0.0.1:${PORT}/api/health`, { signal: AbortSignal.timeout(2000) });
         if (r.ok) {
           health = await r.json();
           break;

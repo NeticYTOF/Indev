@@ -89,7 +89,7 @@ async function main() {
 
   try {
     const health = await waitFor(
-      () => getJson(`http://localhost:${SRV_PORT}/api/health`),
+      () => getJson(`http://127.0.0.1:${SRV_PORT}/api/health`),
       30_000,
       'server health',
     );
@@ -102,7 +102,7 @@ async function main() {
       return;
     }
 
-    const plan = await getJson(`http://localhost:${SRV_PORT}/api/plan`, {
+    const plan = await getJson(`http://127.0.0.1:${SRV_PORT}/api/plan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -120,7 +120,7 @@ async function main() {
 
     web = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'serve', 'apps/web', '--port', String(WEB_PORT), '--strictPort'], {
       cwd: ROOT,
-      env: { ...sanitizedChildEnv() },
+      env: { ...sanitizedChildEnv(), API_PROXY_TARGET: `http://127.0.0.1:${SRV_PORT}` },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     web.stdout.on('data', (d) => process.stdout.write(`[web] ${d}`));

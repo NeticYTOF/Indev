@@ -71,8 +71,9 @@ const app = createApp({
     : {}),
 });
 
-const server = serve({ fetch: app.fetch, port: env.port }, (info) => {
-  console.log(`IndEV server on http://localhost:${info.port} (mock: ${env.mock}, ai: ${aiEnabled(env) ? 'on' : 'off'})`);
+const server = serve({ fetch: app.fetch, port: env.port, hostname: '127.0.0.1' }, (info) => {
+  console.log(`IndEV server on http://${info.address}:${info.port} (${info.family}; ` +
+    `mock: ${env.mock}, ai: ${aiEnabled(env) ? 'on' : 'off'})`);
 });
 
 // Bounded shutdown: stop accepting work, close keep-alive sockets.

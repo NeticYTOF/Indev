@@ -76,7 +76,8 @@ async function probeSyntheticPlan(baseUrl) {
 async function main() {
   // 0) fail fast if the ports are already serving something
   for (const [label, port] of [['server', SRV_PORT], ['web', WEB_PORT]]) {
-    const health = await probeHealth(`http://localhost:${port}`);
+    const host = label === 'server' ? '127.0.0.1' : 'localhost';
+    const health = await probeHealth(`http://${host}:${port}`);
     if (health) {
       console.error(`FAIL-CLOSED: port ${port} (${label}) is already serving. Stop it first.`);
       process.exit(1);
@@ -122,7 +123,7 @@ async function main() {
 
   try {
     // 2) wait for health and FAIL CLOSED unless mock is true
-    const health = await waitFor(() => probeHealth(`http://localhost:${SRV_PORT}`), {
+    const health = await waitFor(() => probeHealth(`http://127.0.0.1:${SRV_PORT}`), {
       label: 'mock server health',
     });
     if (health.mock !== true) {
@@ -136,7 +137,7 @@ async function main() {
     console.log('[gate] credential-free stack: live credentials/AI config stripped from children; .env skipped.');
 
     // 3) synthetic-plan probe
-    const syntheticOk = await probeSyntheticPlan(`http://localhost:${SRV_PORT}`);
+    const syntheticOk = await probeSyntheticPlan(`http://127.0.0.1:${SRV_PORT}`);
     if (!syntheticOk) {
       console.error('FAIL-CLOSED: plan response is not synthetic (source !== "synthetic").');
       shutdown(1);
@@ -147,7 +148,7 @@ async function main() {
     // 4) vite on an isolated port proxying to our verified server
     web = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'serve', 'apps/web', '--port', String(WEB_PORT), '--strictPort'], {
       cwd: ROOT,
-      env: { ...sanitizedChildEnv(), API_PROXY_TARGET: `http://localhost:${SRV_PORT}` },
+      env: { ...sanitizedChildEnv(), API_PROXY_TARGET: `http://127.0.0.1:${SRV_PORT}` },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     web.stdout.on('data', (d) => process.stdout.write(`[web] ${d}`));

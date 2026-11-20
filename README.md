@@ -67,6 +67,12 @@ present. State-changing POSTs also require `application/json`. Local nonbrowser
 clients that send neither `Origin` nor Fetch Metadata (for example the HTTP
 acceptance runner and MCP/Node tooling) keep working; POSTs still use JSON.
 
+The API process is configured to bind IPv4 loopback (`127.0.0.1`); launcher
+probes and Vite's API proxy target use the same numeric address, while browser
+web origins remain `localhost`. This is a bind-address fact, not proof of
+external reachability or firewall exposure; Linux listener evidence is required
+for the actual bound address.
+
 This is a **local development/workflow policy only**. No public hostname, TLS
 termination, forwarded-header trust chain, or hosted deployment authority has
 been established. Serving these endpoints from a public origin requires a
