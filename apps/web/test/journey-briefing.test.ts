@@ -179,7 +179,7 @@ describe('journey briefing', () => {
       status: 'degraded',
       source: 'live',
       totals: {},
-      stops: [{ station: { stationId: 1, name: 'Old stop' } }],
+      stations: [{ stationId: 1, name: 'Old stop' }],
     } as unknown as SavedTrip;
 
     const data = buildJourneyBriefingData(journeySourceFromSavedTrip(sparse));
