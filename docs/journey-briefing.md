@@ -9,10 +9,11 @@ facts already present in the returned `TripPlan` into a whole-trip overview:
   reachability math plus the last stop's one-way `detourKm`; provider
   `routeDistanceKm` metadata is not substituted for that final leg.
 - **Battery profile**: planned arrival/departure SoC at each stop and the
-  destination arrival SoC from `totals.finalSocPct`. Starting charge is not
-  stored in a returned plan, so the origin shows it as unknown. Accessible
-  meters report each known value with its stop name; absent values stay
-  visibly and semantically unknown.
+  planned destination arrival SoC from `totals.finalSocPct`. These are the
+  planner's simulated values, never measured live battery readings. Starting
+  charge is not stored in a returned plan, so the origin shows it as unknown.
+  Accessible meters report each known 0–100% value with its stop name; absent
+  or out-of-range values stay visibly and semantically unknown.
 - **Print-ready itinerary**: a keyboard-scrollable table with each stop's
   arrival/departure SoC, added kWh, charge time, known cost, relative arrival
   and departure offsets, and tariff. The summary repeats route distance, total
@@ -25,11 +26,13 @@ facts already present in the returned `TripPlan` into a whole-trip overview:
 
 Times in the briefing are always relative to departure. The planner does not
 return a wall-clock departure time, physical charger availability, or a
-guaranteed future tariff, and the briefing never invents one. Unknown tariffs
-and costs remain `Unknown`; a partial itinerary fact is reported as a briefing
-warning rather than silently rendered as a complete row. User-supplied
-real-world range remains a planning input only; the briefing does not restate
-it as a physical guarantee.
+guaranteed future tariff, and the briefing never invents one. Every declared
+charging stop keeps its itinerary row, even when a fact is missing or invalid:
+negative energy/time/distance and SoC outside 0–100% become `Unknown` cells
+with a warning, never zeros or invented values. Unknown tariffs and costs stay
+`Unknown`; known fractional tariffs use the existing two-decimal formatter.
+User-supplied real-world range remains a planning input only; the briefing
+does not restate it as a physical guarantee.
 
 Synthetic/degraded status, plan warnings, and briefing evidence warnings are
 carried into the on-screen briefing, the standalone HTML file, and print. A

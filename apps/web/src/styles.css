@@ -1881,6 +1881,11 @@ body {
     grid-template-columns: repeat(2, 1fr);
   }
 
+  /* One full-width card keeps Unknown labels and meter values readable. */
+  .journey-battery-profile {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .trip-row {
     flex-direction: column;
     align-items: stretch;
@@ -1970,6 +1975,17 @@ body {
     border-radius: 0;
     background: #fff;
     color: #111;
+  }
+
+  /* A4 cannot fit four battery cards without clipping Unknown labels. */
+  .journey-battery-profile {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .briefing-battery-value strong {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
 
   .journey-briefing h3,

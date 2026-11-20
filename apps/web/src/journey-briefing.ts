@@ -4,7 +4,7 @@
  * simulator values are introduced here.
  */
 import type { TripPlan } from '@indeev/core';
-import { formatDuration, formatInr, formatKwh } from './format.js';
+import { formatDuration, formatInr, formatKwh, formatTariff } from './format.js';
 
 export type JourneyLegKind = 'origin' | 'between' | 'final';
 
@@ -30,23 +30,24 @@ export interface JourneyBatteryPoint {
 export interface JourneyItineraryRow {
   index: number;
   stationName: string;
-  stationId: number;
-  legKm: number;
-  detourKm: number;
-  arriveSocPct: number;
-  leaveSocPct: number;
-  chargeKwh: number;
-  chargeTimeMin: number;
+  stationId: number | null;
+  legKm: number | null;
+  detourKm: number | null;
+  arriveSocPct: number | null;
+  leaveSocPct: number | null;
+  chargeKwh: number | null;
+  chargeTimeMin: number | null;
   pricePerKwh: number | null;
   estPriceInr: number | null;
-  arrivalEtaMin: number;
-  departureEtaMin: number;
+  arrivalEtaMin: number | null;
+  departureEtaMin: number | null;
 }
 
 export interface JourneyBriefingData {
   legs: JourneyLeg[];
   battery: JourneyBatteryPoint[];
   itinerary: JourneyItineraryRow[];
+  stopsAvailable: boolean;
   routeDistanceKm: number | null;
   totalTimeMin: number | null;
   chargeTimeMin: number | null;
@@ -65,6 +66,15 @@ function finiteNumber(value: unknown): number | null {
 function nonnegative(value: unknown): number | null {
   const number = finiteNumber(value);
   return number != null && number >= 0 ? number : null;
+}
+
+function socValue(value: unknown): number | null {
+  const number = finiteNumber(value);
+  return number != null && number >= 0 && number <= 100 ? number : null;
+}
+
+function stationIdValue(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
 function legDistance(totalKm: number | null, stop: TripPlan['stops'][number] | undefined): {
@@ -86,25 +96,31 @@ function legDistance(totalKm: number | null, stop: TripPlan['stops'][number] | u
  * into the derived final leg. Per-stop `legKm` values are already authoritative.
  */
 export function buildJourneyBriefingData(plan: TripPlan): JourneyBriefingData {
+  const stopsAvailable = Array.isArray(plan.stops);
+  const stops = stopsAvailable ? plan.stops : [];
+  // Evidence holes are local to this presentation; never mutate the plan's own warnings.
+  const warnings: string[] = Array.isArray(plan.warnings) ? [...plan.warnings] : [];
+  if (!stopsAvailable) {
+    warnings.push('Journey briefing cannot read the charging stop list from this plan.');
+  }
+
   const routeDistanceKm = nonnegative(plan.totals?.distanceKm);
   const totalTimeMin = nonnegative(plan.totals?.totalTimeMin);
   const chargeTimeMin = nonnegative(plan.totals?.chargeTimeMin);
   const chargeKwh = nonnegative(plan.totals?.chargeKwh);
   const knownCostInr = nonnegative(plan.totals?.estPriceInr);
-  const finalSocPct = nonnegative(plan.totals?.finalSocPct);
-  const stops = Array.isArray(plan.stops) ? plan.stops : [];
-  // Evidence holes are local to this presentation; never mutate the plan's own warnings.
-  const warnings: string[] = Array.isArray(plan.warnings) ? [...plan.warnings] : [];
+  const finalSocPct = socValue(plan.totals?.finalSocPct);
 
   const legs: JourneyLeg[] = [];
   let fromLabel = plan.origin.label;
   stops.forEach((stop, index) => {
+    const legKm = nonnegative(stop.legKm);
     legs.push({
       kind: index === 0 ? 'origin' : 'between',
       fromLabel,
       toLabel: stop.station.name,
-      distanceKm: nonnegative(stop.legKm),
-      distanceBasis: 'stop-leg',
+      distanceKm: legKm,
+      distanceBasis: legKm != null ? 'stop-leg' : 'unavailable',
       etaAtArrivalMin: nonnegative(stop.arrivalEtaMin),
     });
     fromLabel = stop.station.name;
@@ -131,9 +147,9 @@ export function buildJourneyBriefingData(plan: TripPlan): JourneyBriefingData {
     battery.push({
       kind: 'stop',
       label: stop.station.name,
-      arriveSocPct: nonnegative(stop.arriveSocPct),
-      departSocPct: nonnegative(stop.leaveSocPct),
-      note: 'Live charge at this charging stop.',
+      arriveSocPct: socValue(stop.arriveSocPct),
+      departSocPct: socValue(stop.leaveSocPct),
+      note: 'Planned arrival and departure charge at this charging stop.',
     });
   });
   battery.push({
@@ -141,39 +157,49 @@ export function buildJourneyBriefingData(plan: TripPlan): JourneyBriefingData {
     label: plan.destination.label,
     arriveSocPct: finalSocPct,
     departSocPct: null,
-    note: 'Destination arrival charge from plan totals.',
+    note: 'Planned destination arrival charge from plan totals.',
   });
 
   const itinerary: JourneyItineraryRow[] = [];
   stops.forEach((stop, index) => {
-    const values = [
-      stop.chainageKm, stop.legKm, stop.detourKm,
-      stop.arriveSocPct, stop.leaveSocPct, stop.chargeKwh,
-      stop.chargeTimeMin, stop.arrivalEtaMin, stop.departureEtaMin,
+    const legKm = nonnegative(stop.legKm);
+    const detourKm = nonnegative(stop.detourKm);
+    const arriveSocPct = socValue(stop.arriveSocPct);
+    const leaveSocPct = socValue(stop.leaveSocPct);
+    const chargeKwh = nonnegative(stop.chargeKwh);
+    const chargeTimeMin = nonnegative(stop.chargeTimeMin);
+    const arrivalEtaMin = nonnegative(stop.arrivalEtaMin);
+    const departureEtaMin = nonnegative(stop.departureEtaMin);
+    const required = [
+      nonnegative(stop.chainageKm), legKm, detourKm, arriveSocPct,
+      leaveSocPct, chargeKwh, chargeTimeMin, arrivalEtaMin, departureEtaMin,
     ];
-    if (values.some((value) => finiteNumber(value) == null)) {
-      // Preserve an evidence hole instead of emitting a partial row.
-      warnings.push(`Journey briefing cannot show complete charging facts for stop ${index + 1}.`);
-      return;
+    if (required.some((value) => value == null)) {
+      warnings.push(
+        `Journey briefing: some charging facts for stop ${index + 1} are unknown or invalid; missing values stay Unknown.`,
+      );
     }
+    // Keep every declared stop; an incomplete fact becomes an explicit Unknown cell,
+    // never a zero, an invented value, or a silently removed row.
     itinerary.push({
       index: index + 1,
       stationName: stop.station.name,
-      stationId: stop.station.stationId,
-      legKm: stop.legKm,
-      detourKm: stop.detourKm,
-      arriveSocPct: stop.arriveSocPct,
-      leaveSocPct: stop.leaveSocPct,
-      chargeKwh: stop.chargeKwh,
-      chargeTimeMin: stop.chargeTimeMin,
+      stationId: stationIdValue(stop.station.stationId),
+      legKm,
+      detourKm,
+      arriveSocPct,
+      leaveSocPct,
+      chargeKwh,
+      chargeTimeMin,
       pricePerKwh: nonnegative(stop.pricePerKwh),
       estPriceInr: nonnegative(stop.estPriceInr),
-      arrivalEtaMin: stop.arrivalEtaMin,
-      departureEtaMin: stop.departureEtaMin,
+      arrivalEtaMin,
+      departureEtaMin,
     });
   });
 
   return {
+    stopsAvailable,
     legs,
     battery,
     itinerary,
@@ -230,7 +256,7 @@ function statusBanners(data: JourneyBriefingData): string {
     banners.push('<div class="banner banner-synthetic">Synthetic data — mock plan, not live charger evidence.</div>');
   }
   if (data.status === 'degraded') {
-    banners.push('<div class="banner banner-warn">Degraded coverage — this trip was saved with evidence holes.</div>');
+    banners.push('<div class="banner banner-warn">Degraded coverage — station or route evidence is incomplete.</div>');
   }
   for (const warning of data.warnings) {
     banners.push(`<div class="banner banner-warn">${html(warning)}</div>`);
@@ -258,13 +284,18 @@ export function renderJourneyBriefingMarkup(plan: TripPlan): string {
     `<h4>${html(point.label)}</h4>${batteryMeter(point)}<p class="hint">${html(point.note)}</p></li>`).join('');
 
   const rows = data.itinerary.map((row) => `<tr>` +
-    `<th scope="row">${row.index}. ${html(row.stationName)}<span class="hint">Station ${row.stationId}</span></th>` +
+    `<th scope="row">${row.index}. ${html(row.stationName)}` +
+    `${row.stationId != null ? `<span class="hint">Station ${row.stationId}</span>` : ''}</th>` +
     `<td>${soc(row.arriveSocPct)}</td><td>${soc(row.leaveSocPct)}</td>` +
-    `<td>${formatKwh(row.chargeKwh)}</td><td>${minutes(row.chargeTimeMin)}</td>` +
+    `<td>${row.chargeKwh == null ? 'Unknown' : formatKwh(row.chargeKwh)}</td>` +
+    `<td>${minutes(row.chargeTimeMin)}</td>` +
     `<td>${row.estPriceInr == null ? 'Unknown' : formatInr(row.estPriceInr)}</td>` +
     `<td>${minutes(row.arrivalEtaMin)}</td><td>${minutes(row.departureEtaMin)}</td>` +
-    `<td>${row.pricePerKwh == null ? 'Unknown' : formatInr(row.pricePerKwh) + '/kWh'}</td>` +
+    `<td>${row.pricePerKwh == null ? 'Unknown' : formatTariff(row.pricePerKwh)}</td>` +
     `</tr>`).join('');
+  const emptyItinerary = data.stopsAvailable
+    ? '<tr><td colspan="9">No charging stops are needed for this trip.</td></tr>'
+    : '<tr><td colspan="9">Charging itinerary unavailable — the plan stop list is missing or malformed.</td></tr>';
 
   const summary = [
     ['Route distance', kilometres(data.routeDistanceKm)],
@@ -288,7 +319,7 @@ export function renderJourneyBriefingMarkup(plan: TripPlan): string {
     `<thead><tr><th scope="col">Stop</th><th scope="col">Arrive</th><th scope="col">Depart</th>` +
     `<th scope="col">Added</th><th scope="col">Charge time</th><th scope="col">Cost</th>` +
     `<th scope="col">Arrive at</th><th scope="col">Depart at</th><th scope="col">Tariff</th></tr></thead>` +
-    `<tbody>${rows || '<tr><td colspan="9">No charging stops are needed for this trip.</td></tr>'}</tbody></table></div>` +
+    `<tbody>${rows || emptyItinerary}</tbody></table></div>` +
     `</section>`;
 }
 
@@ -307,18 +338,21 @@ export function buildJourneyBriefingHtml(plan: TripPlan): string {
     `.briefing-summary div{border:1px solid #34322E;padding:10px}.briefing-summary dt{color:#B8B4AD;font-size:12px}` +
     `.briefing-summary dd{margin:4px 0 0;font-weight:700}` +
     `.journey-legs,.journey-battery-profile{list-style:none;padding:0}` +
-    `.journey-leg,.journey-battery-point{border-bottom:1px solid #34322E;padding:10px 0}` +
+    `.journey-leg,.journey-battery-point{border-bottom:1px solid #34322E;padding:10px 0;min-width:0;overflow-wrap:anywhere}` +
     `.journey-leg{display:grid;gap:4px}.journey-leg-place{font-weight:700}.journey-leg-distance,.journey-leg-eta{color:#F4B951}` +
-    `.briefing-battery-value{display:grid;grid-template-columns:70px 1fr 60px;gap:8px;align-items:center;margin-top:6px}` +
+    `.briefing-battery-value{display:grid;grid-template-columns:54px minmax(40px,1fr) 56px;gap:8px;align-items:center;margin-top:6px}` +
     `.briefing-meter{display:block;height:10px;background:#151517;border:1px solid #34322E}` +
     `.briefing-meter.empty{opacity:.4}.briefing-meter-fill{display:block;height:100%;background:#D87932}` +
     `.briefing-scroll{overflow:auto}.briefing-itinerary{width:100%;border-collapse:collapse;font-size:13px}` +
     `.briefing-itinerary caption{text-align:left;padding:8px 0;color:#B8B4AD}` +
-    `.briefing-itinerary th,.briefing-itinerary td{border:1px solid #34322E;padding:8px;text-align:left;vertical-align:top}` +
+    `.briefing-itinerary th,.briefing-itinerary td{border:1px solid #34322E;padding:8px;text-align:left;vertical-align:top;overflow-wrap:anywhere}` +
+    `.briefing-itinerary tbody th .hint{display:block;margin-top:3px;color:#B8B4AD;font-size:11px;font-weight:400}` +
     `.briefing-itinerary thead th{color:#F4B951}button{display:none}` +
     `@media print{body{background:#fff;color:#111;padding:0}.journey-briefing{border:0;background:#fff;color:#111;padding:0}` +
     `h3,h4,.briefing-summary dd{color:#111}.hint,.briefing-summary dt,.briefing-itinerary caption{color:#444}` +
     `.banner{color:#111;border-color:#111}.briefing-meter{background:#eee;border-color:#888}` +
+    `.journey-battery-profile{grid-template-columns:repeat(2,minmax(0,1fr))}` +
+    `.briefing-battery-value strong{white-space:normal;overflow-wrap:anywhere}` +
     `.briefing-meter-fill{background:#111}.briefing-itinerary th,.briefing-itinerary td{border-color:#888}` +
     `.briefing-itinerary thead th{color:#111}}` +
     `</style></head><body><main>${renderJourneyBriefingMarkup(plan)}</main></body></html>`;

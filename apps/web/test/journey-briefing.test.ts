@@ -79,14 +79,21 @@ describe('journey briefing', () => {
     expect(html).toContain('@media print');
     expect(html).toContain('Destination &quot;end&quot;');
     expect(html).toContain('42.7 kWh');
+    expect(html).toContain('.briefing-itinerary tbody th .hint{display:block');
     expect(html).not.toContain('gradient');
   });
 
-  it('does not mutate the plan when reporting a missing itinerary fact', () => {
+  it('keeps every declared stop with explicit Unknown cells and no plan mutation', () => {
     const source = plan();
     const incomplete = {
       ...source,
-      stops: [{ ...(source.stops[0] as TripPlan['stops'][number]), chargeKwh: Number.NaN }],
+      stops: [{
+        ...(source.stops[0] as TripPlan['stops'][number]),
+        chargeKwh: Number.NaN,
+        arriveSocPct: -3,
+        leaveSocPct: 140,
+        legKm: -20,
+      }],
     };
     const originalWarnings = [...incomplete.warnings];
 
@@ -94,9 +101,42 @@ describe('journey briefing', () => {
     const second = buildJourneyBriefingData(incomplete);
 
     expect(incomplete.warnings).toEqual(originalWarnings);
-    expect(first.warnings).toContain('Journey briefing cannot show complete charging facts for stop 1.');
+    expect(first.warnings).toContain(
+      'Journey briefing: some charging facts for stop 1 are unknown or invalid; missing values stay Unknown.',
+    );
     expect(second.warnings).toEqual(first.warnings);
-    expect(first.itinerary).toHaveLength(0);
+    expect(first.itinerary).toHaveLength(1);
+    expect(first.itinerary[0]).toMatchObject({
+      stationId: 42, chargeKwh: null, arriveSocPct: null, leaveSocPct: null, legKm: null,
+    });
+    const markup = renderJourneyBriefingMarkup(incomplete);
+    expect(markup).toContain('Stop &amp; Co');
+    expect(markup).toContain('Station 42');
+    expect(markup).not.toContain('No charging stops are needed');
+    expect(markup).not.toContain('aria-valuenow="140"');
+    expect(markup).not.toContain('aria-valuenow="-3"');
+    expect(markup.match(/Unknown/g)?.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('bounds totals and preserves fractional tariffs for planned costs only', () => {
+    const source = plan();
+    const invalid = plan({
+      totals: {
+        ...(source.totals as TripPlan['totals']),
+        chargeKwh: -5,
+        finalSocPct: 101,
+      },
+      stops: [{
+        ...(source.stops[0] as TripPlan['stops'][number]),
+        pricePerKwh: 22.75,
+      }],
+    });
+    const data = buildJourneyBriefingData(invalid);
+    expect(data.chargeKwh).toBeNull();
+    expect(data.finalSocPct).toBeNull();
+    expect(data.itinerary[0]?.pricePerKwh).toBe(22.75);
+    expect(renderJourneyBriefingMarkup(invalid)).toContain('Rs. 22.75/kWh');
+    expect(buildJourneyBriefingHtml(invalid)).toContain('Rs. 22.75/kWh');
   });
 
   it('shows unknown costs as unknown and handles no-stop routes', () => {
