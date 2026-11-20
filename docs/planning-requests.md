@@ -209,3 +209,16 @@ inferred from the outer HTTP 400 status. These fields add no retry, pacing,
 fatal-stop, or private 400-body-wait behavior, and no raw header or body value
 is retained. This schema is runtime evidence only: it does not establish the
 historical transport cause or a successful live route.
+
+When `gatewayFailureCode` is exactly `upstream_contract` on a failed marker
+record, two additional nullable labels may be retained. `gatewayContractReason`
+is one of `envelope_invalid`, `meta_missing`, `meta_invalid`, `success_missing`,
+`success_false`, or `success_invalid`. `gatewayContractData` is one of
+`data_missing`, `data_invalid`, `stations_missing`, `stations_invalid`,
+`stations_empty`, or `stations_nonempty`. Exact values only: no trimming,
+coercion, raw header strings, or inherited/accessor values are accepted. Each
+invalid or missing label is independently `null`. Other gateway codes, details,
+and success responses ignore both labels. `success_false` is a gateway contract
+label, not a business cause; `stations_nonempty` is a listing-count label, not
+proof that station records were valid. No success rule is relaxed and no new
+policy behavior is introduced.
