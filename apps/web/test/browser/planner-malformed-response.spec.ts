@@ -31,17 +31,27 @@ async function pickPlaces(page: import('@playwright/test').Page) {
   }
 }
 
+async function localMapStyle(page: import('@playwright/test').Page) {
+  await page.route('https://tiles.openfreemap.org/styles/dark', (route) => route.fulfill({
+    json: { version: 8, sources: {}, layers: [{ id: 'background', type: 'background' }] },
+  }));
+}
+
 for (const mode of ['plan', 'ai'] as const) {
   test(`${mode} response with malformed stop list renders honestly and recovers on retry`, async ({ page }) => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
     await page.route(/^https?:\/\//, async (route) => {
       const url = new URL(route.request().url());
       if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') await route.continue();
       else await route.abort();
     });
+    await localMapStyle(page);
     await page.route('**/api/health', (route) => route.fulfill({ json: { ok: true, mock: true, ai: true, chargersSeen: 0 } }));
     let call = 0;
     await page.route(mode === 'plan' ? '**/api/plan' : '**/api/ai/plan', async (route) => {
       call += 1;
+      if (call === 1) await held;
       if (call === 1) {
         const broken = { ...validPlan(), stops: { unexpected: true } };
         await route.fulfill({ json: mode === 'plan' ? { plan: broken } : { plan: broken, ai: { applied: false, reason: 'Synthetic malformed payload' } } });
@@ -55,6 +65,7 @@ for (const mode of ['plan', 'ai'] as const) {
     const button = page.locator(mode === 'plan' ? '.planner-go' : '[data-ai-plan]');
     await button.click();
     await expect(button).toBeDisabled();
+    release();
     await expect(page.locator('.plan-results')).toContainText('Charging stop list is Unknown');
     await expect(button).toBeEnabled();
     await expect(page.locator('.error-box')).toContainText('Map route unavailable');
@@ -65,12 +76,51 @@ for (const mode of ['plan', 'ai'] as const) {
   });
 }
 
+for (const mode of ['plan', 'ai'] as const) {
+  test(`${mode} whole-null response clears stale drawing and results`, async ({ page }) => {
+    await page.route(/^https?:\/\//, async (route) => {
+      const url = new URL(route.request().url());
+      if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') await route.continue();
+      else await route.abort();
+    });
+    await localMapStyle(page);
+    await page.route('**/api/health', (route) => route.fulfill({ json: { ok: true, mock: true, ai: true, chargersSeen: 0 } }));
+    let call = 0;
+    await page.route(mode === 'plan' ? '**/api/plan' : '**/api/ai/plan', async (route) => {
+      call += 1;
+      if (call === 2) await route.fulfill({ json: null });
+      else {
+        const plan = { ...validPlan(), id: `whole-null-${call}` };
+        await route.fulfill({ json: mode === 'plan' ? { plan } : { plan, ai: { applied: true, notes: 'local fixture' } } });
+      }
+    });
+    await page.goto('/');
+    await pickPlaces(page);
+    const button = page.locator(mode === 'plan' ? '.planner-go' : '[data-ai-plan]');
+    await button.click();
+    await expect(page.locator('.pin-origin')).toHaveCount(1);
+    await expect(page.locator('.plan-results')).toBeVisible();
+    await button.click();
+    await expect(page.locator('.pin-origin')).toHaveCount(0);
+    await expect(page.locator('.plan-results')).toHaveCount(0);
+    await expect(page.locator('.error-box')).toContainText('malformed');
+    await expect(button).toBeEnabled();
+    await expect(button).toBeFocused();
+    await button.click();
+    await expect(page.locator('.pin-origin')).toHaveCount(1);
+    await expect(page.locator('.plan-results')).toBeVisible();
+    await expect(page.locator('.error-box')).toBeHidden();
+    expect(call).toBe(3);
+  });
+}
+
 test('malformed geometry refuses partial drawing, clears stale route and recovers', async ({ page }) => {
   await page.route(/^https?:\/\//, async (route) => {
     const url = new URL(route.request().url());
     if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') await route.continue();
     else await route.abort();
   });
+  await localMapStyle(page);
   await page.route('**/api/health', (route) => route.fulfill({ json: { ok: true, mock: true, ai: false, chargersSeen: 0 } }));
   const variants = [
     { ...validPlan(), geometry: { lat: 28, lon: 77 } },
@@ -80,7 +130,7 @@ test('malformed geometry refuses partial drawing, clears stale route and recover
   ];
   let call = 0;
   await page.route('**/api/plan', async (route) => {
-    const plan = call < variants.length ? variants[call]! : validPlan();
+    const plan = call === 0 || call > variants.length ? validPlan() : variants[call - 1]!;
     call += 1;
     await route.fulfill({ json: { plan } });
   });
