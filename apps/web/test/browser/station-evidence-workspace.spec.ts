@@ -245,6 +245,8 @@ test('saved trip shows stored facts separately from its one manual evidence fetc
   await expect(details.locator('[data-station-evidence-status]')).toContainText('Response received');
   await expect(details.locator('[data-station-evidence-fetched] [data-station-evidence-result]')).toContainText('Working · free');
   await expect(details.locator('.evidence-station')).toContainText('This saved trip stores planned charging facts, not a charger snapshot');
+  // Browser-state proof is the unchanged evidence DOM plus zero write calls;
+  // the fixture snapshot is only a supplemental Node-side guard.
   expect(await details.locator('.evidence-station').innerText()).toBe(plannedBefore);
   expect(JSON.stringify(savedTrip)).toBe(originalSavedTrip);
   expect(storageWrites).toBe(0);
@@ -317,11 +319,13 @@ test('a late response cannot write into a disconnected evidence view', async ({ 
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
   let fetches = 0;
+  let completedFetches = 0;
   await stationResponse(page, async (route) => {
     fetches++;
     await held;
     const id = Number(new URL(route.request().url()).pathname.split('/').at(-1));
     await route.fulfill({ json: { station: normalStation(id) } });
+    completedFetches++;
   });
   await planFresh(page);
   const oldDetails = page.locator('.stop-card').first().locator('[data-station-evidence]');
@@ -333,6 +337,8 @@ test('a late response cannot write into a disconnected evidence view', async ({ 
   await page.getByRole('button', { name: 'Plan route', exact: true }).click();
   await expect(page.locator('[data-journey-briefing]')).toBeVisible();
   release();
+  await expect.poll(() => completedFetches).toBe(1);
+  await expect(page.locator('.stop-card').first().locator('[data-station-evidence-status]')).toContainText('No current status requested');
   await expect(page.locator('.stop-card').first().locator('[data-station-evidence-fetched] [data-station-evidence-result]')).toHaveCount(0);
   await expect(page.locator('[data-journey-briefing]')).toContainText('Journey briefing');
   expect(fetches).toBe(1);
@@ -343,11 +349,13 @@ test('one manual request survives repeated clicks while a response is pending', 
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
   let fetches = 0;
+  let completedFetches = 0;
   await stationResponse(page, async (route) => {
     fetches++;
     await held;
     const id = Number(new URL(route.request().url()).pathname.split('/').at(-1));
     await route.fulfill({ json: { station: normalStation(id) } });
+    completedFetches++;
   });
   await planFresh(page);
   const button = page.getByRole('button', { name: 'Revalidate', exact: true }).first();
@@ -359,6 +367,7 @@ test('one manual request survives repeated clicks while a response is pending', 
   await expect(button).toBeDisabled();
   expect(fetches).toBe(1);
   release();
+  await expect.poll(() => completedFetches).toBe(1);
   await expect(page.locator('[data-station-evidence-status]').first()).toContainText('Response received');
   await expect(button).toBeEnabled();
   expect(fetches).toBe(1);
@@ -369,11 +378,13 @@ test('keyboard opens details without fetching and a focused input keeps focus wh
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
   let fetches = 0;
+  let completedFetches = 0;
   await stationResponse(page, async (route) => {
     fetches++;
     await held;
     const id = Number(new URL(route.request().url()).pathname.split('/').at(-1));
     await route.fulfill({ json: { station: normalStation(id) } });
+    completedFetches++;
   });
   await planFresh(page);
   const details = page.locator('.stop-card').first().locator('[data-station-evidence]');
@@ -387,7 +398,9 @@ test('keyboard opens details without fetching and a focused input keeps focus wh
   const origin = page.getByRole('searchbox', { name: 'From', exact: true });
   await origin.focus();
   release();
+  await expect.poll(() => completedFetches).toBe(1);
   await expect(details.locator('[data-station-evidence-status]')).toContainText('Response received');
+  await expect(details.locator('[data-station-evidence-fetched] [data-station-evidence-result]')).toHaveCount(1);
   await expect(origin).toBeFocused();
   expect(fetches).toBe(1);
 });
@@ -399,6 +412,7 @@ for (const replacement of ['same', 'different'] as const) {
     const held = new Promise<void>((resolve) => { release = resolve; });
     let plans = 0;
     let fetches = 0;
+    let completedFetches = 0;
     await page.route('**/api/plan', async (route) => {
       plans++;
       const response = await route.fetch();
@@ -415,19 +429,23 @@ for (const replacement of ['same', 'different'] as const) {
       await held;
       const id = Number(new URL(route.request().url()).pathname.split('/').at(-1));
       await route.fulfill({ json: { station: normalStation(id) } });
+      completedFetches++;
     });
     await planFresh(page);
     await page.getByRole('button', { name: 'Revalidate', exact: true }).first().click();
     await expect.poll(() => fetches).toBe(1);
 
     await page.getByRole('button', { name: 'Plan route', exact: true }).click();
-    await expect(page.locator('[data-journey-briefing]')).toBeVisible();
+    await expect.poll(() => plans).toBe(2);
     const replacementId = replacement === 'same' ? STATION_ID : STATION_ID + 777;
+    await expect(page.locator('.stop-card').first().locator('[data-refresh]')).toHaveAttribute('data-refresh', String(replacementId));
+    await expect(page.locator('[data-journey-briefing]')).toBeVisible();
     const newCard = page.locator('.stop-card').first();
     const newDetails = newCard.locator('[data-station-evidence]');
     await expect(newCard.locator('[data-refresh]')).toHaveAttribute('data-refresh', String(replacementId));
     await expect(newDetails.locator('[data-station-evidence-status]')).toContainText('No current status requested');
     release();
+    await expect.poll(() => completedFetches).toBe(1);
     await expect(newDetails.locator('[data-station-evidence-status]')).toContainText('No current status requested');
     await expect(newDetails.locator('[data-station-evidence-fetched] [data-station-evidence-result]')).toHaveCount(0);
     expect(fetches).toBe(1);
