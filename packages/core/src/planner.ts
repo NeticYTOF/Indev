@@ -394,7 +394,7 @@ async function planCore(
   };
 
   // 1) Fastest route (free OSRM).
-  const route = await deps.router.route(origin, destination);
+  const route = await deps.router.route(origin, destination, hooks.signal);
   const cum = cumulativeKm(route.geometry);
   const totalKm = cum[cum.length - 1] as number;
 

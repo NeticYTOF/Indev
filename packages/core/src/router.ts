@@ -3,7 +3,7 @@
  * Returns the fastest driving route with full geometry for corridor sampling.
  */
 import type { Coords } from './geo.js';
-import { sleep } from './utils.js';
+import { setTimeout as wait } from 'node:timers/promises';
 
 export const DEFAULT_OSRM_BASE_URL = 'https://router.project-osrm.org';
 
@@ -56,12 +56,14 @@ export class OsrmRouter {
   }
 
   /** Fastest driving route between two points. */
-  async route(origin: Coords, destination: Coords): Promise<RouteResult> {
+  async route(origin: Coords, destination: Coords, signal?: AbortSignal): Promise<RouteResult> {
+    signal?.throwIfAborted();
     const coord = (c: Coords) => `${c.lon.toFixed(6)},${c.lat.toFixed(6)}`;
     const url =
       `${this.base}/route/v1/driving/${coord(origin)};${coord(destination)}` +
       `?overview=full&geometries=geojson`;
-    const json = await this.getJson<OsrmResponse>(url);
+    const json = await this.getJson<OsrmResponse>(url, signal);
+    signal?.throwIfAborted();
     if (json.code !== 'Ok' || !json.routes || json.routes.length === 0) {
       throw new RouterError(json.code ?? 'Unknown', `No route: ${json.message ?? json.code}`);
     }
@@ -86,28 +88,38 @@ export class OsrmRouter {
     };
   }
 
-  private async getJson<T>(url: string): Promise<T> {
+  private async getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
     let lastError: unknown;
     for (let attempt = 0; attempt <= this.retries; attempt++) {
+      signal?.throwIfAborted();
       if (attempt > 0) {
-        // exponential backoff with full jitter, capped
+        // The run deadline also cancels retry waits, not only active fetches.
         const base = 250 * 2 ** Math.min(attempt, 4);
-        await sleep(Math.min(Math.random() * base, 4_000) + 100);
+        await wait(Math.min(Math.random() * base, 4_000) + 100, undefined, { signal });
       }
+      signal?.throwIfAborted();
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+      const onAbort = () => controller.abort();
+      signal?.addEventListener('abort', onAbort, { once: true });
       try {
         const res = await this.fetchImpl(url, { signal: controller.signal });
+        signal?.throwIfAborted();
         if (!res.ok) {
           lastError = new RouterError(`HTTP ${res.status}`, `OSRM HTTP ${res.status}`);
           continue;
         }
-        return (await res.json()) as T;
+        const json = (await res.json()) as T;
+        signal?.throwIfAborted();
+        return json;
       } catch (err) {
+        // An expired per-request timeout can retry. An outer run abort cannot.
+        signal?.throwIfAborted();
         lastError = err;
         continue;
       } finally {
         clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
       }
     }
     throw lastError instanceof Error ? lastError : new RouterError('Network', 'routing failed');
