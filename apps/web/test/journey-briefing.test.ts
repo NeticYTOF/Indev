@@ -73,6 +73,10 @@ describe('journey briefing', () => {
     expect(markup).toContain('aria-label="Arrive charge at Stop &amp; Co"');
     expect(markup).toContain('role="region"');
     expect(markup).toContain('tabindex="0"');
+    expect(markup).toContain('class="briefing-itinerary-heading"');
+    expect(markup).toContain('class="briefing-itinerary-caption"');
+    expect(markup).toContain('class="briefing-col-charge-time"');
+    expect(markup).toContain('class="briefing-col-cost"');
     expect(markup).not.toContain('gradient');
 
     const html = buildJourneyBriefingHtml(plan());
