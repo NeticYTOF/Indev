@@ -126,7 +126,7 @@ test('hidden comparison selection recovers after clearing a filtered list', asyn
 
   await page.locator('[data-trip-search]').fill('nothing matches');
   await expect(page.locator('.trip-row')).toHaveCount(0);
-  await expect(page.locator('.trip-list')).toContainText('No saved trips match this search.');
+  await expect(page.locator('.trip-list')).toContainText('No saved trips match the current filters.');
   await expect(page.locator('[data-trip-result-count]')).toHaveText('Showing 0 of 3 saved trips.');
   await page.locator('[data-trip-search-clear]').click();
   await expect(page.locator('.trip-row .trip-name')).toHaveText(['Yankee', 'Zulu', 'Beta']);
@@ -340,7 +340,7 @@ test('successful deletion keeps the query and drops a deleted comparison selecti
   await expect.poll(() => deletePath).toBe('/api/trips/zulu');
   await expect(page.locator('[data-trip-search]')).toHaveValue('zulu');
   await expect(page.locator('[data-trip-result-count]')).toHaveText('Showing 0 of 2 saved trips.');
-  await expect(page.locator('.trip-list')).toContainText('No saved trips match this search.');
+  await expect(page.locator('.trip-list')).toContainText('No saved trips match the current filters.');
   await expect(compare).toHaveText('Compare selected (0/2)');
   await expect(compare).toBeDisabled();
   await expect(page.locator('.hidden-selection-notice')).toBeHidden();

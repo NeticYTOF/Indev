@@ -64,8 +64,8 @@ describe('saved trip local list', () => {
     expect(filterAndSortTrips(trips, '', 'newest', { source: 'unknown' }).map((e) => e.sourceIndex)).toEqual([0, 2]);
     expect(filterAndSortTrips(trips, '', 'newest', { status: 'unknown' }).map((e) => e.sourceIndex)).toEqual([1, 2]);
     expect(filterAndSortTrips(trips, '', 'newest', { source: 'unknown', status: 'unknown' }).map((e) => e.sourceIndex)).toEqual([2]);
-    expect(filterAndSortTrips(trips, '', 'newest', { source: 'live' }).map((e) => e.sourceIndex)).toEqual([]);
-    expect(filterAndSortTrips(trips, '', 'newest', { status: 'ok' }).map((e) => e.sourceIndex)).toEqual([]);
+    expect(filterAndSortTrips(trips, '', 'newest', { source: 'live' }).map((e) => e.sourceIndex)).toEqual([1]);
+    expect(filterAndSortTrips(trips, '', 'newest', { status: 'ok' }).map((e) => e.sourceIndex)).toEqual([0]);
   });
 
   it('places malformed dates last in either date direction and keeps ties in load order', () => {
