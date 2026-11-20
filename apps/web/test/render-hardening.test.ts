@@ -30,10 +30,9 @@ describe('last-used fallback: upstream strings are escaped at the render boundar
     // passes the literal datum through (data preserved, see
     // last-used-label.test.ts).
     expect(planPanelSrc).toContain(
-      '<span class="meta">Last used ${escapeHtml(lastUsedLabel(s.chargers))}</span>',
+      '<span class="meta">Last used ${inventoryKnown ? escapeHtml(lastUsedLabel(chargers)) : \'Unknown\'}</span>',
     );
-    expect(planPanelSrc).not.toContain(
-      '<span class="meta">Last used ${lastUsedLabel(s.chargers)}</span>',
-    );
+    expect(planPanelSrc).toMatch(/<span class="meta">Last used \$\{escapeHtml\(lastUsedLabel\(chargers\)\)\}/);
+    expect(planPanelSrc).not.toMatch(/<span class="meta">Last used \$\{lastUsedLabel\(/);
   });
 });
