@@ -2691,9 +2691,15 @@ body.comparing-trips .panel {
   }
   body.comparing-trips .compare-card h3,
   body.comparing-trips .compare-card h4,
-  body.comparing-trips .compare-difference h3 {
+  body.comparing-trips .compare-difference h3,
+  body.comparing-trips .compare-table caption,
+  body.comparing-trips .compare-table thead {
     break-after: avoid;
     page-break-after: avoid;
+  }
+  body.comparing-trips .compare-table tbody tr:first-child {
+    break-before: avoid;
+    page-break-before: avoid;
   }
   body.comparing-trips .compare-stop,
   body.comparing-trips .compare-facts > div {
