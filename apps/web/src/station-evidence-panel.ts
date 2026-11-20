@@ -6,7 +6,7 @@
  * guarded against duplicate clicks, late responses, mismatched station IDs,
  * and detached views. The underlying plan/saved-trip state is never mutated.
  */
-import type { PlanStop } from '@indeev/core';
+
 import { formatDateTime, formatDuration, formatTariff, lastUsedLabel } from './format.js';
 
 import { safeHttpUrl, stationDirectionsUrl } from './safe-url.js';
@@ -37,8 +37,8 @@ export interface PlannedStopFacts {
 }
 
 interface EvidencePanelOptions {
-  /** PlanStop station for a fresh plan; omitted for saved refs. */
-  plannedStation?: PlanStop['station'];
+  /** Raw PlanStop station for a fresh plan; validated inside this boundary. */
+  plannedStation?: unknown;
   /** Untrusted saved station ref; validated inside this rendering boundary. */
   savedStation?: unknown;
   plannedFacts: PlannedStopFacts;
@@ -201,14 +201,14 @@ function plannedFactsMarkup(facts: PlannedStopFacts): string {
 }
 
 function plannedEvidenceMarkup(options: EvidencePanelOptions): string {
-  const evidence = options.plannedStation
+  const evidence = options.plannedStation != null
     ? normalizePlannedStation(options.plannedStation)
     : options.savedStation != null
       ? normalizeSavedStationRef(options.savedStation)
       : null;
-  const external = safeHttpUrl(options.plannedStation?.stationUrl);
-  const directions = options.plannedStation
-    ? stationDirectionsUrl(options.plannedStation.lat, options.plannedStation.lon)
+  const external = safeHttpUrl(ownData(options.plannedStation, 'stationUrl'));
+  const directions = options.plannedStation != null
+    ? stationDirectionsUrl(ownData(options.plannedStation, 'lat'), ownData(options.plannedStation, 'lon'))
     : stationDirectionsUrl(ownData(options.savedStation, 'lat'), ownData(options.savedStation, 'lon'));
   const emptySnapshot = evidence?.chargersMissing
     ? '<p class="hint">Charger snapshot unavailable — the planned charger list is Unknown.</p>'
@@ -239,10 +239,12 @@ export function renderFetchedStationEvidence(evidence: StationEvidence): string 
 }
 
 export function renderStationEvidencePanel(options: EvidencePanelOptions): string {
-  const savedId = safeStationId(ownData(options.savedStation, 'stationId'));
-  const stationId = options.plannedStation?.stationId ?? savedId;
+  const stationId = options.plannedStation != null
+    ? safeStationId(ownData(options.plannedStation, 'stationId'))
+    : safeStationId(ownData(options.savedStation, 'stationId'));
+  const plannedName = ownData(options.plannedStation, 'name');
   const savedName = ownData(options.savedStation, 'name');
-  const rawLabel = options.label ?? (typeof options.plannedStation?.name === 'string' ? options.plannedStation.name : undefined)
+  const rawLabel = options.label ?? (typeof plannedName === 'string' ? plannedName : undefined)
     ?? (typeof savedName === 'string' ? savedName : undefined);
   const label = typeof rawLabel === 'string' && rawLabel.trim().length > 0 ? rawLabel : 'this station';
   return `<details class="station-evidence" data-station-evidence data-station-id="${escapeHtml(String(stationId ?? ''))}">` +

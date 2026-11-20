@@ -6,7 +6,7 @@
  * freshness, Google Maps directions link.
  */
 import * as maplibregl from 'maplibre-gl';
-import type { TripPlan, PlanStop } from '@indeev/core';
+import type { TripPlan } from '@indeev/core';
 import { el, escapeHtml } from './planner.js';
 import { api } from './api.js';
 import { downloadAnimatedExport } from './export.js';
@@ -36,7 +36,7 @@ export function renderPlanPanel(
   const rawWarnings = raw.warnings;
   const warnings = Array.isArray(rawWarnings) ? rawWarnings : [];
   const warningsUnavailable = rawWarnings != null && !Array.isArray(rawWarnings);
-  const totals = (record(raw.totals) ?? {}) as TripPlan['totals'];
+  const totals = record(raw.totals) ?? {};
   // A missing list is NOT an empty route: it is an incomplete plan.
   const stopsKnown = Array.isArray(raw.stops);
   const stops: readonly unknown[] = stopsKnown ? raw.stops as unknown[] : [];
@@ -288,7 +288,7 @@ function renderStopCard(stop: unknown, index: number): HTMLElement {
           ${uncertaintyChips(s, inventoryKnown)}
           ${s.synthetic === true ? '<div class="synthetic-flag">Synthetic station (mock data)</div>' : ''}
           ${renderStationEvidencePanel({
-            plannedStation: s as PlanStop['station'],
+            plannedStation: s,
             plannedFacts: {
               tariffPerKwh: planned?.pricePerKwh as number | null,
               chargeKwh: planned?.chargeKwh as number | null,

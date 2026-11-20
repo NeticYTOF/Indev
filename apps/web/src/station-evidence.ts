@@ -8,7 +8,7 @@
  * separate from a manually fetched snapshot, and reports absent/malformed
  * evidence as Unknown rather than zero/available/reliable.
  */
-import type { PlanStop } from '@indeev/core';
+
 import { classifyPlugValues, connectorSlug } from '@indeev/core/plug-classifier';
 
 export type EvidenceNumber = number | null;
@@ -313,8 +313,8 @@ function normalizeStation(value: unknown, sourceKind: 'planned' | 'fetched'): St
   };
 }
 
-/** Normalize the planned station snapshot stored on a TripPlan/PlanStop. */
-export function normalizePlannedStation(station: PlanStop['station']): StationEvidence {
+/** Normalize an untrusted planned station snapshot from a TripPlan/PlanStop. */
+export function normalizePlannedStation(station: unknown): StationEvidence {
   return normalizeStation(station, 'planned');
 }
 

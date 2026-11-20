@@ -23,12 +23,22 @@ export interface JourneyBriefingStopSource {
   departureEtaMin?: number;
 }
 
+/** Presentation-only totals: every untrusted fact stays nullable. */
+export interface JourneyBriefingTotals {
+  readonly distanceKm?: unknown;
+  readonly totalTimeMin?: unknown;
+  readonly chargeTimeMin?: unknown;
+  readonly chargeKwh?: unknown;
+  readonly estPriceInr?: unknown;
+  readonly finalSocPct?: unknown;
+}
+
 export interface JourneyBriefingSource {
   origin: { label: string };
   destination: { label: string };
   status: TripPlan['status'];
   source: TripPlan['source'];
-  totals: TripPlan['totals'];
+  totals: JourneyBriefingTotals;
   /** null/undefined preserves an unreadable stop list; [] is a real no-stop route. */
   stops: readonly JourneyBriefingStopSource[] | null | undefined;
   warnings?: readonly string[];
@@ -41,12 +51,20 @@ export interface JourneyBriefingSource {
 export function journeySourceFromSavedTrip(trip: SavedTrip): JourneyBriefingSource {
   const raw = record(trip) ?? {};
   const stations = Array.isArray(raw.stations) ? raw.stations : null;
+  const totals = record(raw.totals);
   return {
     origin: { label: labelText(record(raw.origin)?.label) },
     destination: { label: labelText(record(raw.destination)?.label) },
     status: raw.status as TripPlan['status'],
     source: raw.source as TripPlan['source'],
-    totals: (record(raw.totals) ?? {}) as TripPlan['totals'],
+    totals: {
+      distanceKm: totals?.distanceKm,
+      totalTimeMin: totals?.totalTimeMin,
+      chargeTimeMin: totals?.chargeTimeMin,
+      chargeKwh: totals?.chargeKwh,
+      estPriceInr: totals?.estPriceInr,
+      finalSocPct: totals?.finalSocPct,
+    },
     // A missing or malformed list stays missing; [] alone means no stops.
     stops: stations?.map((station) => {
       const s = record(station) ?? {};
@@ -171,10 +189,11 @@ function legDistance(totalKm: number | null, stop: Record<string, unknown> | und
  * into the derived final leg. Per-stop `legKm` values are already authoritative.
  */
 export function buildJourneyBriefingData(plan: JourneyBriefingSource): JourneyBriefingData {
-  const stopsAvailable = Array.isArray(plan.stops);
+  const rawStops = plan.stops;
+  const stopsAvailable = Array.isArray(rawStops);
   // Normalize every declared entry once. A null/malformed stop remains a
   // placeholder row instead of crashing all other stops and the whole render.
-  const stops = stopsAvailable ? plan.stops.map((stop) => record(stop) ?? {}) : [];
+  const stops = stopsAvailable ? rawStops.map((stop) => record(stop) ?? {}) : [];
   // Evidence holes are local to this presentation; never mutate the plan's own warnings.
   const warnings: string[] = Array.isArray(plan.warnings) ? [...plan.warnings] : [];
   if (!stopsAvailable) {

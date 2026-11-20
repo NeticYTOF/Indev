@@ -4,7 +4,7 @@
 
 /** "3 h 42 min" or "42 min"; unavailable input renders an em dash. */
 export function formatDuration(totalMin: number | null | undefined): string {
-  if (!Number.isFinite(totalMin) || totalMin < 0) return '—';
+  if (typeof totalMin !== 'number' || !Number.isFinite(totalMin) || totalMin < 0) return '—';
   const m = Math.round(totalMin);
   const h = Math.floor(m / 60);
   const rem = m % 60;
