@@ -10,6 +10,8 @@ import { buildTripComparisonHtml, renderTripComparisonMarkup, type TripCompariso
 import { el } from './planner.js';
 import { toast } from './toast.js';
 
+const comparisonCleanup = new WeakMap<HTMLElement, () => void>();
+
 export interface ComparisonViewHandlers {
   onBack: () => void;
   onClear: () => void;
@@ -29,6 +31,7 @@ export function renderTripComparisonWorkspace(
     results = el('<section class="plan-results" aria-label="Saved trip comparison"></section>') as HTMLElement;
     panel.appendChild(results);
   }
+  comparisonCleanup.get(results)?.();
   results.setAttribute('tabindex', '-1');
   results.setAttribute('aria-label', 'Saved trip comparison');
   results.innerHTML = renderTripComparisonMarkup(comparison);
@@ -77,11 +80,22 @@ export function renderTripComparisonWorkspace(
       toast('Print is unavailable in this browser.', 'bad');
     }
   });
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape' || !root?.isConnected) return;
+    event.preventDefault();
+    event.stopPropagation();
+    handlers.onBack();
+  };
+  document.addEventListener('keydown', onKeyDown, true);
+  comparisonCleanup.set(results, () => document.removeEventListener('keydown', onKeyDown, true));
   return results;
 }
 
 export function clearTripComparisonView(): void {
   document.body.classList.remove('comparing-trips');
   const results = document.querySelector<HTMLElement>('#planner-panel .plan-results');
-  if (results?.querySelector('[data-trip-compare]')) results.innerHTML = '';
+  if (!results) return;
+  comparisonCleanup.get(results)?.();
+  comparisonCleanup.delete(results);
+  if (results.querySelector('[data-trip-compare]')) results.innerHTML = '';
 }
