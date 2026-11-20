@@ -15,6 +15,7 @@ import {
   normalizeFetchedStationResponse,
   normalizePlannedStation,
   plugHealthLabel,
+  safeStationId,
   stationMatchesId,
   type StationEvidence,
 } from './station-evidence.js';
@@ -150,15 +151,29 @@ function textOrEmpty(value: unknown): string {
   return typeof value === 'string' && value.trim().length > 0 ? value : '';
 }
 
+/**
+ * Read only own DATA properties. A proxy descriptor trap can still execute,
+ * so it is caught here; no accessor, inherited value or thrown result escapes.
+ */
+function ownData(value: unknown, key: string): unknown {
+  const source = record(value);
+  if (!source) return undefined;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    return descriptor != null && 'value' in descriptor ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Validate an untrusted saved ref without inventing charger facts. */
 function normalizeSavedStationRef(value: unknown): StationEvidence {
-  const raw = record(value) ?? {};
   return normalizePlannedStation({
-    stationId: finiteOrUnknown(raw.stationId),
-    name: textOrEmpty(raw.name),
+    stationId: finiteOrUnknown(ownData(value, 'stationId')),
+    name: textOrEmpty(ownData(value, 'name')),
     brand: 'other',
-    lat: finiteOrUnknown(raw.lat),
-    lon: finiteOrUnknown(raw.lon),
+    lat: finiteOrUnknown(ownData(value, 'lat')),
+    lon: finiteOrUnknown(ownData(value, 'lon')),
     address: null, city: null, hours: null, openText: null,
     rating: null, reviewCount: null, reliability: null,
     fetchedAt: '', synthetic: false,
@@ -191,9 +206,10 @@ function plannedEvidenceMarkup(options: EvidencePanelOptions): string {
     : options.savedStation != null
       ? normalizeSavedStationRef(options.savedStation)
       : null;
-  const station = record(options.plannedStation ?? options.savedStation);
   const external = safeHttpUrl(options.plannedStation?.stationUrl);
-  const directions = stationDirectionsUrl(station?.lat, station?.lon);
+  const directions = options.plannedStation
+    ? stationDirectionsUrl(options.plannedStation.lat, options.plannedStation.lon)
+    : stationDirectionsUrl(ownData(options.savedStation, 'lat'), ownData(options.savedStation, 'lon'));
   const emptySnapshot = evidence?.chargersMissing
     ? '<p class="hint">Charger snapshot unavailable — the planned charger list is Unknown.</p>'
     : options.savedStation != null
@@ -223,11 +239,12 @@ export function renderFetchedStationEvidence(evidence: StationEvidence): string 
 }
 
 export function renderStationEvidencePanel(options: EvidencePanelOptions): string {
-  const saved = record(options.savedStation);
-  const stationId = options.plannedStation?.stationId ?? (typeof saved?.stationId === 'number' ? saved.stationId : null);
+  const savedId = safeStationId(ownData(options.savedStation, 'stationId'));
+  const stationId = options.plannedStation?.stationId ?? savedId;
+  const savedName = ownData(options.savedStation, 'name');
   const rawLabel = options.label ?? (typeof options.plannedStation?.name === 'string' ? options.plannedStation.name : undefined)
-    ?? (typeof saved?.name === 'string' ? saved.name : undefined);
-  const label = rawLabel != null && `${rawLabel}`.trim().length > 0 ? `${rawLabel}` : 'this station';
+    ?? (typeof savedName === 'string' ? savedName : undefined);
+  const label = typeof rawLabel === 'string' && rawLabel.trim().length > 0 ? rawLabel : 'this station';
   return `<details class="station-evidence" data-station-evidence data-station-id="${escapeHtml(String(stationId ?? ''))}">` +
     `<summary><span class="evidence-summary-title">Charger evidence for ${escapeHtml(label)}</span>` +
     `<span class="hint">Open to inspect planned facts; fetching is a separate explicit action.</span></summary>` +
