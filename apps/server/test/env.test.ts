@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { aiEnabled, loadEnv } from '../src/env.js';
+import { aiEnabled, loadEnv, parseAllowedWebOrigins } from '../src/env.js';
 import { buildChildEnv } from '../../../scripts/live-acceptance.mjs';
 
 /** Isolated fixture dir with a deliberately CONTAMINATED .env. */
@@ -162,6 +162,22 @@ describe('explicit bounded planning-budget overrides (defaults preserved)', () =
       expect(child.INDEV_PLAN_MAX_CALLS).toBe('450');
       expect(child.INDEV_PLAN_DEADLINE_MS).toBe(String(20 * 60_000));
       expect(child.INDEV_PLAN_RETRIES).toBe('0');
+    }
+  });
+});
+
+describe('explicit browser origins (no public-host policy)', () => {
+  it('absent config keeps the grounded local Vite workflows', () => {
+    expect(parseAllowedWebOrigins(undefined)).toEqual(['http://localhost:5173', 'http://localhost:5174']);
+    expect(loadEnv(fixtureDir, {}).allowedWebOrigins).toEqual(['http://localhost:5173', 'http://localhost:5174']);
+  });
+
+  it('an explicit list accepts only exact local web origins', () => {
+    expect(parseAllowedWebOrigins('http://localhost:5174, http://127.0.0.1:4173')).toEqual([
+      'http://localhost:5174', 'http://127.0.0.1:4173',
+    ]);
+    for (const bad of ['*', 'https://indev.example', 'http://localhost', 'http://localhost:*', 'http://evil.localhost:5173']) {
+      expect(() => parseAllowedWebOrigins(bad)).toThrow();
     }
   });
 });

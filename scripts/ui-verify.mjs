@@ -98,6 +98,7 @@ async function main() {
         DATA_DIR: DATA_DIR,
         // never even load the repo .env: no live credentials in this process
         INDEV_SKIP_DOTENV: '1',
+        INDEV_ALLOWED_ORIGINS: `http://localhost:${WEB_PORT}`,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     },

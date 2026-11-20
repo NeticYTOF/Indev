@@ -47,6 +47,7 @@ const app = createApp({
   // Per-launch instance identity for the /api/health provenance echo
   // (launcher-generated UUID; absent = null, plain dev launches)
   ...(env.launchId !== undefined ? { launchId: env.launchId } : {}),
+  allowedWebOrigins: env.allowedWebOrigins,
   // Fresh client per planning run (single-run memo policy), wired with the
   // EFFECTIVE deadline so Retry-After waits that cannot fit fail as
   // throttled - matching the budget /api/health reports, never the source

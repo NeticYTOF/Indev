@@ -145,6 +145,114 @@ describe('GET /api/vehicles', () => {
   });
 });
 
+describe('browser origin and mutation boundary', () => {
+  const planBody = JSON.stringify({ origin: ORIGIN, destination: DEST });
+  const planHeaders = { 'Content-Type': 'application/json' };
+
+  async function counterAfter(res: Response, app: ReturnType<typeof createApp>): Promise<number | null> {
+    expect(res.status).toBe(200);
+    const health = await (await app.request('/api/health')).json() as { chargersSeen: number | null };
+    return health.chargersSeen;
+  }
+
+  it('Vite proxy browser JSON: allowed localhost origin + same-origin site persists one run', async () => {
+    const app = createApp(await makeDeps({ mock: true, createStatiq: () => { throw new Error('live call in mock mode!'); } }));
+    const res = await app.request('/api/plan', {
+      method: 'POST',
+      headers: { ...planHeaders, origin: 'http://localhost:5174', 'sec-fetch-site': 'same-origin' },
+      body: planBody,
+    });
+    expect(await counterAfter(res, app)).toBe(48);
+  });
+
+  it('direct browser backend JSON: same-site origin is denied before a run', async () => {
+    const statiq = { ...liveStatiqFake(), upstreamCallsMade: () => 7 } as unknown as StatiqClient;
+    const audit: string[] = [];
+    const app = createApp(await makeDeps({ mock: true, createStatiq: () => statiq,
+      onRunComplete: (outcome) => audit.push(outcome),
+    }));
+    const res = await app.request('/api/plan', {
+      method: 'POST',
+      headers: { ...planHeaders, origin: 'http://localhost:5174', 'sec-fetch-site': 'same-site' },
+      body: planBody,
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json() as { code: string }).code).toBe('origin_denied');
+    expect(audit).toEqual([]);
+    expect(((await (await app.request('/api/health')).json()) as { chargersSeen: number }).chargersSeen).toBe(0);
+  });
+
+  it('simple cross-origin text/plain cannot start a run', async () => {
+    const app = createApp(await makeDeps({ mock: true, createStatiq: () => { throw new Error('live call in mock mode!'); } }));
+    const res = await app.request('/api/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain', origin: 'http://localhost:5174', 'sec-fetch-site': 'same-site' },
+      body: planBody,
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json() as { code: string }).code).toBe('origin_denied');
+    expect(((await (await app.request('/api/health')).json()) as { chargersSeen: number }).chargersSeen).toBe(0);
+  });
+
+  it('allowed origin with text/plain is rejected as non-JSON before execution', async () => {
+    const app = createApp(await makeDeps({ mock: true }));
+    const res = await app.request('/api/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain', origin: 'http://localhost:5173', 'sec-fetch-site': 'same-origin' },
+      body: planBody,
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json() as { code: string }).code).toBe('bad_request');
+    expect(((await (await app.request('/api/health')).json()) as { chargersSeen: number }).chargersSeen).toBe(0);
+  });
+
+  it('direct Node JSON without Origin keeps the nonbrowser client contract', async () => {
+    const app = createApp(await makeDeps({ mock: true, createStatiq: () => { throw new Error('live call in mock mode!'); } }));
+    const res = await app.request('/api/plan', { method: 'POST', headers: planHeaders, body: planBody });
+    expect(await counterAfter(res, app)).toBe(48);
+  });
+
+  it('untrusted browser origin cannot save or delete trips', async () => {
+    const deps = await makeDeps({ mock: true });
+    const app = createApp(deps);
+    const planned = await app.request('/api/plan', { method: 'POST', headers: planHeaders, body: planBody });
+    const plan = ((await planned.json()) as { plan: unknown }).plan;
+    const forged = { origin: 'http://localhost:9999', 'sec-fetch-site': 'same-site' };
+
+    const save = await app.request('/api/trips', {
+      method: 'POST',
+      headers: { ...planHeaders, ...forged },
+      body: JSON.stringify({ plan }),
+    });
+    expect(save.status).toBe(403);
+    expect(((await save.json()) as { code: string }).code).toBe('origin_denied');
+    expect(((await (await app.request('/api/trips')).json()) as { trips: unknown[] }).trips).toHaveLength(0);
+
+    const allowedSave = await app.request('/api/trips', {
+      method: 'POST',
+      headers: { ...planHeaders, origin: 'http://localhost:5174', 'sec-fetch-site': 'same-origin' },
+      body: JSON.stringify({ plan, name: 'origin fixture' }),
+    });
+    expect(allowedSave.status).toBe(201);
+    const id = (((await allowedSave.json()) as { trip: { id: string } }).trip).id;
+    const del = await app.request(`/api/trips/${id}`, { method: 'DELETE', headers: forged });
+    expect(del.status).toBe(403);
+    expect(((await del.json()) as { code: string }).code).toBe('origin_denied');
+    expect(((await (await app.request('/api/trips')).json()) as { trips: unknown[] }).trips).toHaveLength(1);
+  });
+
+  it('untrusted browser origin cannot consume geocode or station providers', async () => {
+    const geocode = vi.fn(async () => []);
+    const createStatiq = vi.fn(() => ({}) as unknown as StatiqClient);
+    const app = createApp(await makeDeps({ mock: false, geocode: { search: geocode } as unknown as PhotonGeocoder, createStatiq }));
+    const headers = { origin: 'http://localhost:9999', 'sec-fetch-site': 'same-site' };
+    expect((await app.request('/api/geocode?q=delhi', { headers })).status).toBe(403);
+    expect((await app.request('/api/stations/9101', { headers })).status).toBe(403);
+    expect(geocode).not.toHaveBeenCalled();
+    expect(createStatiq).not.toHaveBeenCalled();
+  });
+});
+
 describe('malformed planning inputs', () => {
   const endpoints = ['/api/plan', '/api/ai/plan'];
 

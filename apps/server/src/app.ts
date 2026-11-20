@@ -12,7 +12,7 @@ import { hasFreshProvenance, StatiqProvenanceError } from '@indeev/core';
  * - The bearer token lives only in the Statiq clients; it is never logged
  *   and never appears in any response.
  */
-import { Hono } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import {
   CountersStore,
   StoreLockCleanupError,
@@ -39,6 +39,7 @@ import {
   type VehicleSelection,
 } from '@indeev/core';
 import { planTripDetailed, validateAiChoice, assembleAiPlan, type PlanBundle } from '@indeev/core';
+import { DEFAULT_ALLOWED_WEB_ORIGINS } from './env.js';
 import { validSavedPlanMetadata } from './saved-plan-validation.js';
 import { chatCompletion, parseChoiceJson, AiProviderError } from './ai-provider.js';
 
@@ -76,6 +77,8 @@ export interface AppDeps {
    * the unrelated-same-mode-server acceptance race.
    */
   launchId?: string;
+  /** Exact browser origins allowed to mutate/consume providers locally. */
+  allowedWebOrigins?: readonly string[];
 }
 
 /** Server-side bounds for a planning request. */
@@ -101,6 +104,34 @@ function auditOutcomeFor(err: unknown): string {
 
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
+  const allowedWebOrigins = new Set(deps.allowedWebOrigins ?? DEFAULT_ALLOWED_WEB_ORIGINS);
+
+  const browserGate = (requireJson: boolean) => async (c: Context, next: Next) => {
+    const origin = c.req.header('origin');
+    if (origin !== undefined) {
+      if (!allowedWebOrigins.has(origin)) {
+        return c.json({ error: 'browser origin is not allowed', code: 'origin_denied' }, 403);
+      }
+      const fetchSite = c.req.header('sec-fetch-site');
+      if (fetchSite && fetchSite !== 'same-origin') {
+        return c.json({ error: 'browser origin is not allowed', code: 'origin_denied' }, 403);
+      }
+    }
+    if (requireJson && c.req.method === 'POST') {
+      const contentType = c.req.header('content-type');
+      const mediaType = contentType?.split(';')[0]?.trim().toLowerCase();
+      if (mediaType !== 'application/json') {
+        return c.json({ error: 'Content-Type must be application/json', code: 'bad_request' }, 400);
+      }
+    }
+    await next();
+  };
+  for (const path of ['/api/plan', '/api/ai/plan', '/api/trips']) {
+    app.use(path, browserGate(true));
+  }
+  for (const path of ['/api/trips/:id', '/api/geocode', '/api/stations/:id']) {
+    app.use(path, browserGate(false));
+  }
   // The EFFECTIVE planning budget: the explicit bounded override when the
   // operator supplied one (validated at boot), else the server default.
   const runBudget = deps.planRunBudget ?? SERVER_RUN_BUDGET;

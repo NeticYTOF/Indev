@@ -22,6 +22,11 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+export const DEFAULT_ALLOWED_WEB_ORIGINS = [
+  'http://localhost:5173',
+  'http://localhost:5174',
+] as const;
+
 export interface ServerEnv {
   port: number;
   statiqToken: string | undefined;
@@ -50,6 +55,8 @@ export interface ServerEnv {
    * run dev` launches need no identity).
    */
   launchId: string | undefined;
+  /** Exact browser origins allowed to call stateful/provider routes. */
+  allowedWebOrigins: readonly string[];
 }
 
 /**
@@ -77,6 +84,24 @@ function parseIntOverride(
  * an explicit record. .env (at `root`) fills only keys missing from
  * `source` - existing values (including empty strings) always win.
  */
+export function parseAllowedWebOrigins(raw: string | undefined): readonly string[] {
+  if (raw === undefined) return DEFAULT_ALLOWED_WEB_ORIGINS;
+  const values = raw.split(',').map((v) => v.trim()).filter(Boolean);
+  const origins: string[] = [];
+  for (const value of values) {
+    const match = /^http:\/\/(localhost|127\.0\.0\.1):(\d{1,5})$/.exec(value);
+    if (!match) {
+      throw new Error('INDEV_ALLOWED_ORIGINS entries must be http://localhost:PORT or http://127.0.0.1:PORT');
+    }
+    const port = Number(match[2]);
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+      throw new Error(`INDEV_ALLOWED_ORIGINS has an invalid port: "${value}"`);
+    }
+    origins.push(value);
+  }
+  return [...new Set(origins)];
+}
+
 export function loadEnv(
   root: string,
   source: Record<string, string | undefined> = process.env,
@@ -111,6 +136,7 @@ export function loadEnv(
     // Per-launch instance identity: plain passthrough (a launcher-generated
     // UUID; never a credential, no validation semantics)
     launchId: merged.INDEV_LAUNCH_ID || undefined,
+    allowedWebOrigins: parseAllowedWebOrigins(merged.INDEV_ALLOWED_ORIGINS),
   };
 }
 
