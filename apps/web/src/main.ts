@@ -33,7 +33,7 @@ void (async () => {
 })();
 
 const planner = document.getElementById('planner-panel') as HTMLElement;
-renderPlanner(planner, map);
+const plannerController = renderPlanner(planner, map);
 
 const mobileViewport = window.matchMedia('(max-width: 720px)');
 const isMobile = (): boolean => mobileViewport.matches;
@@ -75,7 +75,7 @@ const drawer = document.getElementById('trips-drawer') as HTMLElement;
 const tripsButton = document.getElementById('trips-button') as HTMLButtonElement;
 tripsButton.addEventListener('click', () => {
   if (drawer.classList.contains('hidden')) {
-    renderTripsDrawer(drawer, map);
+    renderTripsDrawer(drawer, map, plannerController.loadSavedRoute);
     drawer.classList.remove('hidden');
   } else {
     // Canonical close: restore focus if the click path lost it to the

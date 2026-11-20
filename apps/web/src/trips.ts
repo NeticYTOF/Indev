@@ -15,6 +15,8 @@ import {
   renderJourneyBriefingMarkup,
 } from './journey-briefing.js';
 import { toast } from './toast.js';
+import { buildSavedRouteDraft } from './saved-route.js';
+import type { SavedRouteDraft } from './saved-route.js';
 import { storageWarningText, storageWarningElement } from './storage-warning.js';
 import { formatReviewCount, formatDuration, formatDateTime } from './format.js';
 
@@ -34,7 +36,13 @@ export function hideTripsDrawer(drawer: HTMLElement): void {
   }
 }
 
-export function renderTripsDrawer(drawer: HTMLElement, map: maplibregl.Map): void {
+type LoadSavedRoute = (draft: SavedRouteDraft) => boolean;
+
+export function renderTripsDrawer(
+  drawer: HTMLElement,
+  map: maplibregl.Map,
+  loadSavedRoute: LoadSavedRoute,
+): void {
   drawer.innerHTML = '';
   const head = el(`
     <div class="drawer-head">
@@ -60,7 +68,7 @@ export function renderTripsDrawer(drawer: HTMLElement, map: maplibregl.Map): voi
         return;
       }
       for (const trip of trips) {
-        list.appendChild(renderTripRow(trip, map, drawer));
+        list.appendChild(renderTripRow(trip, map, drawer, loadSavedRoute));
       }
     } catch (err) {
       list.innerHTML = '';
@@ -70,7 +78,12 @@ export function renderTripsDrawer(drawer: HTMLElement, map: maplibregl.Map): voi
   void load();
 }
 
-function renderTripRow(trip: SavedTrip, map: maplibregl.Map, drawer: HTMLElement): HTMLElement {
+function renderTripRow(
+  trip: SavedTrip,
+  map: maplibregl.Map,
+  drawer: HTMLElement,
+  loadSavedRoute: LoadSavedRoute,
+): HTMLElement {
   const row = el(`
     <div class="trip-row">
       <div class="trip-main">
@@ -86,6 +99,7 @@ function renderTripRow(trip: SavedTrip, map: maplibregl.Map, drawer: HTMLElement
       </div>
       <div class="trip-actions">
         <button type="button" class="btn btn-compact btn-ghost" data-open>Open</button>
+        <button type="button" class="btn btn-compact btn-ghost" data-edit>Edit route</button>
         <button type="button" class="btn btn-compact btn-danger-ghost" data-delete>Delete</button>
       </div>
     </div>
@@ -94,7 +108,15 @@ function renderTripRow(trip: SavedTrip, map: maplibregl.Map, drawer: HTMLElement
   row.querySelector('[data-open]')?.addEventListener('click', () => {
     drawer.classList.add('hidden'); // hide directly: focus lands on the
     // trip summary below, not on the drawer's owner control
-    openSavedTrip(trip, map);
+    openSavedTrip(trip, map, loadSavedRoute);
+  });
+
+  row.querySelector('[data-edit]')?.addEventListener('click', () => {
+    // Only copy into the composer. No plan, geocode, station or AI request
+    // starts here, and the saved trip itself is never modified.
+    if (!loadSavedRoute(buildSavedRouteDraft(trip))) return;
+    hideTripsDrawer(drawer);
+    toast('Saved route loaded for review — plan manually when ready.');
   });
 
   row.querySelector('[data-delete]')?.addEventListener('click', async () => {
@@ -115,7 +137,7 @@ function renderTripRow(trip: SavedTrip, map: maplibregl.Map, drawer: HTMLElement
         if (document.activeElement === document.body || drawer.contains(document.activeElement)) {
           document.getElementById('trips-button')?.focus();
         }
-        renderTripsDrawer(drawer, map); // refresh list
+        renderTripsDrawer(drawer, map, loadSavedRoute); // refresh list
         if (warning) drawer.querySelector('.drawer-head')?.after(storageWarningElement(`Trip deleted. ${warning}`));
         toast(warning ? `Trip deleted. ${warning}` : 'Trip deleted.', warning ? 'warn' : 'info', warning ? 12_000 : 4_200);
       } else {
@@ -135,7 +157,11 @@ function renderTripRow(trip: SavedTrip, map: maplibregl.Map, drawer: HTMLElement
 }
 
 /** Draw a saved trip on the map (refs only) and show a ref-based summary. */
-function openSavedTrip(trip: SavedTrip, map: maplibregl.Map): void {
+function openSavedTrip(
+  trip: SavedTrip,
+  map: maplibregl.Map,
+  loadSavedRoute: LoadSavedRoute,
+): void {
   drawTrip(map, {
     geometry: trip.geometry.map(([lat, lon]) => [lon, lat] as [number, number]),
     origin: trip.origin,
@@ -148,7 +174,7 @@ function openSavedTrip(trip: SavedTrip, map: maplibregl.Map): void {
     })),
   });
   const panel = document.getElementById('planner-panel') as HTMLElement;
-  renderSavedSummary(panel, trip);
+  renderSavedSummary(panel, trip, loadSavedRoute);
   if (window.innerWidth <= 720) {
     panel.classList.add('open');
     document.getElementById('sheet-open')?.setAttribute('aria-expanded', 'true');
@@ -162,7 +188,11 @@ function openSavedTrip(trip: SavedTrip, map: maplibregl.Map): void {
   toast('Saved trip loaded — station cards fetch current details on request.');
 }
 
-function renderSavedSummary(panel: HTMLElement, trip: SavedTrip): void {
+function renderSavedSummary(
+  panel: HTMLElement,
+  trip: SavedTrip,
+  loadSavedRoute: LoadSavedRoute,
+): void {
   let results = panel.querySelector<HTMLElement>('.plan-results');
   if (!results) {
     results = el('<section class="plan-results" aria-label="Saved trip"></section>') as HTMLElement;
@@ -200,6 +230,7 @@ function renderSavedSummary(panel: HTMLElement, trip: SavedTrip): void {
       <div class="strip-cell"><span class="strip-num">${escapeHtml(formatDuration(trip.totals.chargeTimeMin))}</span><span class="strip-label">Charging time</span></div>
     </div>
     <div class="plan-actions saved-briefing-actions">
+      <button type="button" class="btn btn-ghost" data-edit-saved>Edit route</button>
       <button type="button" class="btn btn-ghost" data-itinerary-export>Journey itinerary (HTML)</button>
       <button type="button" class="btn btn-ghost" data-print>Print itinerary</button>
     </div>
@@ -224,6 +255,11 @@ function renderSavedSummary(panel: HTMLElement, trip: SavedTrip): void {
         .join('')}
     </div>
   `;
+
+  results.querySelector('[data-edit-saved]')?.addEventListener('click', () => {
+    // The summary is replaced by the composer draft; storage is untouched.
+    loadSavedRoute(buildSavedRouteDraft(trip));
+  });
 
   const source = journeySourceFromSavedTrip(trip);
   const briefing = el(renderJourneyBriefingMarkup(source));

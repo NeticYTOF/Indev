@@ -1094,6 +1094,40 @@ body {
   font-weight: 500;
 }
 
+/* --- saved route edit/review --- */
+
+.saved-route-review {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 12px;
+  border: 1px solid var(--warn-border);
+  border-radius: var(--r-md);
+  background: var(--warn-soft);
+  color: var(--ink);
+  font-size: var(--text-sm);
+}
+
+.saved-route-review p,
+.saved-route-review ul {
+  margin: 0;
+}
+
+.saved-route-review ul {
+  padding-left: 18px;
+}
+
+.saved-route-review li {
+  margin: 3px 0;
+  color: var(--warn);
+}
+
+.review-title {
+  color: var(--warn);
+  font-weight: 700;
+}
+
 /* --- hero numbers strip (opt-in) --- */
 
 .trip-strip {
