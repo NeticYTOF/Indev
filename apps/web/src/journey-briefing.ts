@@ -387,7 +387,7 @@ export function buildJourneyBriefingHtml(plan: JourneyBriefingSource): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width,initial-scale=1">` +
     `<title>IndEV journey briefing — ${html(title)}</title><style>` +
-    `body{font-family:Inter,system-ui,sans-serif;background:#050506;color:#F4F2EE;margin:0;padding:24px}` +
+    `*{box-sizing:border-box}body{font-family:Inter,system-ui,sans-serif;background:#050506;color:#F4F2EE;margin:0;padding:24px;overflow-x:hidden}` +
     `.journey-briefing{max-width:960px;margin:auto;background:#0E0E10;border:1px solid #34322E;padding:24px}` +
     `.banner{padding:10px 12px;border:1px solid #F4B951;color:#F4B951;margin-bottom:10px}` +
     `.banner-synthetic{border-color:#E99455;color:#E99455}` +
@@ -398,21 +398,27 @@ export function buildJourneyBriefingHtml(plan: JourneyBriefingSource): string {
     `.journey-legs,.journey-battery-profile{list-style:none;padding:0;display:grid;gap:8px}` +
     `.journey-leg,.journey-battery-point{border-bottom:1px solid #34322E;padding:10px 0;min-width:0;overflow-wrap:anywhere}` +
     `.journey-leg{display:grid;gap:4px}.journey-leg-place{font-weight:700}.journey-leg-distance,.journey-leg-eta{color:#F4B951}` +
-    `.briefing-battery-value{display:grid;grid-template-columns:54px minmax(40px,1fr) 56px;gap:8px;align-items:center;margin-top:6px}` +
-    `.briefing-meter{display:block;height:10px;background:#151517;border:1px solid #34322E}` +
+    `.briefing-battery-value{display:grid;grid-template-columns:54px minmax(0,1fr) max-content;gap:8px;align-items:center;margin-top:6px}` +
+    `.briefing-battery-label{white-space:nowrap}.briefing-battery-value strong{white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums}` +
+    `.briefing-meter{display:block;min-width:0;height:10px;background:#151517;border:1px solid #34322E}` +
     `.briefing-meter.empty{opacity:.4}.briefing-meter-fill{display:block;height:100%;background:#D87932}` +
-    `.briefing-scroll{overflow:auto}.briefing-itinerary{width:100%;border-collapse:collapse;font-size:13px}` +
+    `.briefing-scroll{max-width:100%;overflow-x:auto}.briefing-itinerary{width:100%;min-width:720px;border-collapse:collapse;font-size:13px}` +
     `.briefing-itinerary caption{text-align:left;padding:8px 0;color:#B8B4AD}` +
-    `.briefing-itinerary th,.briefing-itinerary td{border:1px solid #34322E;padding:8px;text-align:left;vertical-align:top;overflow-wrap:anywhere}` +
+    `.briefing-itinerary th,.briefing-itinerary td{border:1px solid #34322E;padding:8px;text-align:left;vertical-align:top}` +
+    `.briefing-itinerary td{white-space:nowrap;font-variant-numeric:tabular-nums}` +
+    `.briefing-itinerary tbody th{min-width:170px;overflow-wrap:anywhere}` +
     `.briefing-itinerary tbody th .hint{display:block;margin-top:3px;color:#B8B4AD;font-size:11px;font-weight:400}` +
-    `.briefing-itinerary thead th{color:#F4B951}button{display:none}` +
-    `@media print{body{background:#fff;color:#111;padding:0}.journey-briefing{border:0;background:#fff;color:#111;padding:0}` +
+    `.briefing-itinerary thead th{color:#F4B951;white-space:nowrap}button{display:none}` +
+    `@media print{body{background:#fff;color:#111;padding:0;overflow:visible}.journey-briefing{border:0;background:#fff;color:#111;padding:0}` +
     `h3,h4,.briefing-summary dd{color:#111}.hint,.briefing-summary dt,.briefing-itinerary caption{color:#444}` +
     `.banner{color:#111;border-color:#111}.briefing-meter{background:#eee;border-color:#888}` +
     `.journey-battery-profile{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}` +
-    `.briefing-battery-value strong{white-space:normal;overflow-wrap:anywhere}` +
     `.briefing-meter-fill{background:#111}.briefing-itinerary th,.briefing-itinerary td{border-color:#888}` +
-    `.briefing-itinerary thead th{color:#111}}` +
+    `.briefing-itinerary{min-width:0;table-layout:fixed;font-size:10px}.briefing-itinerary td{white-space:nowrap}` +
+    `.briefing-itinerary tbody th{min-width:120px}` +
+    `.briefing-itinerary thead th{color:#111;white-space:nowrap}` +
+    `.briefing-summary>div,.journey-leg,.journey-battery-point,.briefing-itinerary tr{break-inside:avoid;page-break-inside:avoid}` +
+    `.journey-briefing h3,.journey-briefing h4{break-after:avoid;page-break-after:avoid}}` +
     `</style></head><body><main>${renderJourneyBriefingMarkup(plan)}</main></body></html>`;
 }
 

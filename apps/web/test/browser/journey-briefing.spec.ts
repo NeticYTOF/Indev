@@ -92,6 +92,8 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await expect(page.locator('.plan-actions')).toBeHidden();
     await expect(page.locator('.stops')).toBeHidden();
     await expect(briefing.locator('.briefing-itinerary')).toBeVisible();
+    await expect(briefing.locator('.briefing-battery-value strong').first()).toHaveCSS('white-space', 'nowrap');
+    await expect(briefing.locator('.journey-battery-point').first()).toHaveCSS('break-inside', 'avoid');
     await page.screenshot({
       path: test.info().outputPath(`journey-briefing-print-${viewport.width}.png`),
       fullPage: true,
@@ -167,11 +169,26 @@ test('downloadable itinerary is standalone, labelled, and complete', async ({ pa
   if (plan.warnings.length > 0) expect(html).toContain(escaped(plan.warnings[0]!));
   expect(html).not.toContain('gradient');
 
-  await page.setViewportSize({ width: 1280, height: 800 });
+  // Exercise the narrow standalone file where the single-character table regression appeared.
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(pathToFileURL(path).href);
   await expect(page.locator('[data-journey-briefing]')).toBeVisible();
   await expect(page.locator('.briefing-itinerary tbody tr')).toHaveCount(plan.stops.length);
   await expect(page.locator('.briefing-itinerary tbody th .hint').first()).toHaveCSS('display', 'block');
+  const screenTable = await page.evaluate(() => {
+    const scroller = document.querySelector('.briefing-scroll') as HTMLElement;
+    const table = document.querySelector('.briefing-itinerary') as HTMLElement;
+    return {
+      bodyFits: document.body.scrollWidth <= window.innerWidth,
+      contained: scroller.scrollWidth > scroller.clientWidth,
+      minWidth: Number.parseFloat(getComputedStyle(table).minWidth),
+    };
+  });
+  expect(screenTable.bodyFits).toBe(true);
+  expect(screenTable.contained).toBe(true);
+  expect(screenTable.minWidth).toBeGreaterThanOrEqual(700);
+  await expect(page.locator('.briefing-itinerary td').first()).toHaveCSS('white-space', 'nowrap');
+  await expect(page.locator('.briefing-battery-value strong').first()).toHaveCSS('white-space', 'nowrap');
   await page.screenshot({ path: test.info().outputPath('journey-briefing-export.png') });
   await page.emulateMedia({ media: 'print' });
   const batteryColumns = await page.locator('.journey-battery-profile').evaluate((element) => {
@@ -179,6 +196,8 @@ test('downloadable itinerary is standalone, labelled, and complete', async ({ pa
     return style.gridTemplateColumns.split(' ').filter(Boolean).length;
   });
   expect(batteryColumns).toBe(2);
+  await expect(page.locator('.briefing-itinerary tr').first()).toHaveCSS('break-inside', 'avoid');
+  await expect(page.locator('.journey-briefing h3')).toHaveCSS('break-after', 'avoid');
   await page.screenshot({
     path: test.info().outputPath('journey-briefing-export-print.png'),
     fullPage: true,

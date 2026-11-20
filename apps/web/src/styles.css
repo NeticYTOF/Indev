@@ -1287,7 +1287,7 @@ body {
 
 .briefing-battery-value {
   display: grid;
-  grid-template-columns: 54px minmax(40px, 1fr) 44px;
+  grid-template-columns: 54px minmax(0, 1fr) max-content;
   align-items: center;
   gap: 8px;
   margin-top: 6px;
@@ -1298,10 +1298,12 @@ body {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+  white-space: nowrap;
   color: var(--ink-3);
 }
 
 .briefing-battery-value strong {
+  white-space: nowrap;
   text-align: right;
   font-variant-numeric: tabular-nums;
   color: var(--ink);
@@ -1309,6 +1311,7 @@ body {
 
 .briefing-meter {
   display: block;
+  min-width: 0;
   height: 9px;
   border: 1px solid var(--line-2);
   border-radius: 999px;
@@ -1985,9 +1988,11 @@ body {
   }
 
   .briefing-battery-value strong {
-    min-width: 0;
-    overflow-wrap: anywhere;
-    white-space: normal;
+    white-space: nowrap;
+  }
+
+  .briefing-battery-label {
+    white-space: nowrap;
   }
 
   .journey-briefing h3,
@@ -2056,6 +2061,7 @@ body {
 
   .briefing-itinerary {
     min-width: 0;
+    table-layout: fixed;
     font-size: 10px;
   }
 
@@ -2076,9 +2082,17 @@ body {
     background: #eee;
   }
 
+  .briefing-summary > div,
   .journey-leg,
   .journey-battery-point,
   .briefing-itinerary tr {
     break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .journey-briefing h3,
+  .journey-briefing h4 {
+    break-after: avoid;
+    page-break-after: avoid;
   }
 }
