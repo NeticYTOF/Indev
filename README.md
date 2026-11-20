@@ -54,6 +54,9 @@ npm run dev            # LIVE mode: server :8787 + web :5173
 - `docs/journey-briefing.md` — the plan panel's whole-trip legs, battery
   profile, printable itinerary, and standalone HTML export; documents which
   values are plan facts and which remain explicitly unknown.
+- `docs/saved-route-editing.md` — manual replanning of saved trips: what exact
+  coordinates and vehicle facts are copied, which settings remain review-only,
+  and why editing never starts a provider or persistence request.
 
 ## Local request-origin policy
 
