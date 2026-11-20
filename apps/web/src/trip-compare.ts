@@ -418,7 +418,7 @@ export function buildTripComparisonHtml(comparison: TripComparison): string {
     `.compare-toolbar{display:block!important;border:0;padding:0 0 8px}.compare-toolbar-actions,.compare-toolbar .hint,.compare-card-actions{display:none!important}.compare-toolbar h2{display:block!important;font-size:18pt}` +
     `.compare-card h4,.compare-difference h4,.compare-stop-id,.compare-notes,.compare-toolbar h2{color:#111}` +
     `.compare-toolbar h2,.compare-card h3,.compare-difference h3,.compare-slot,.compare-table caption,.compare-endpoints{color:#111}` +
-    `.compare-table{table-layout:fixed;width:100%;font-size:10px}.compare-table th,.compare-table td,.compare-delta{white-space:normal;overflow-wrap:anywhere}` +
+    `.compare-table{table-layout:fixed;width:100%;font-size:12px}.compare-table th,.compare-table td,.compare-table thead th,.compare-delta{color:#111;background:#fff;white-space:normal;overflow-wrap:anywhere}` +
     `.compare-card h3,.compare-card h4,.compare-difference h3{break-after:avoid;page-break-after:avoid}` +
     `.compare-notes,.compare-stop,.compare-facts div{break-inside:avoid;page-break-inside:avoid}}` +
     `</style></head><body><main>${renderTripComparisonMarkup(comparison)}</main></body></html>`;
