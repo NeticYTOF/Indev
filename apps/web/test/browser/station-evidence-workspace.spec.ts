@@ -307,7 +307,7 @@ test('reopening saved trips with same and different IDs uses each own evidence c
   await expect.poll(() => completedFetches).toBe(2);
   await expect(second.locator('[data-station-evidence-fetched] [data-station-evidence-result]'))
     .toHaveAttribute('data-evidence-station-id', String(STATION_ID + 55));
-  expect(await firstCard.isDetached()).toBe(true);
+  expect(await firstCard.evaluate((el) => !el.isConnected)).toBe(true);
   expect(fetches).toBe(2);
 });
 
