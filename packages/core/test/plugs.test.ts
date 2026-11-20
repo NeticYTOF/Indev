@@ -56,19 +56,44 @@ describe('classifyPlug (observed Statiq vocabulary)', () => {
   });
 
   it('keeps the wrapper and browser-safe classifier identical across status/availability/note cases', () => {
-    const statuses = ['available', 'Available', 'charging', 'faulted', 'unavailable', 'preparing', 'finishing', 'offline', 'unknown', ''];
-    const availabilityCases: unknown[] = [true, false, null, 'yes', 0, { value: true }];
-    const notes: Array<string | null> = [null, '', 'Faulted', 'Disconnected', 'Charging', 'Offline', 'Finished'];
+    const statuses = [
+      'available', 'Available', 'charging', 'faulted', 'unavailable',
+      'preparing', 'finishing', 'offline', 'unknown', 'not available', '',
+    ];
+    const availabilityCases: unknown[] = [
+      true, false, null, undefined, 'yes', 'false', 0, 1, [], {}, { value: true },
+    ];
+    const notes: Array<string | null> = [
+      null, '', 'Faulted', 'Disconnected', 'Charging', 'Offline', 'Finished', 'Faulted but available',
+    ];
+    const positiveStatus = (status: string) =>
+      /^(available|charging|preparing|finishing)$/i.test(status);
+    const healthOutcomes = new Set<string>();
+    let compared = 0;
     for (const status of statuses) {
       for (const available of availabilityCases) {
         for (const note of notes) {
           const wire = conn(status, available as boolean | null, note);
-          expect(classifyPlug(wire)).toEqual(classifyPlugValues({
+          const wrapped = classifyPlug(wire);
+          const pure = classifyPlugValues({
             status: wire.status, available: wire.available, note: wire.note,
-          }));
+          });
+          expect(wrapped, `${JSON.stringify({ status, available, note })}`).toEqual(pure);
+          healthOutcomes.add(pure.health);
+          if (positiveStatus(status) && available != null && typeof available !== 'boolean') {
+            // Explicit fault text takes precedence before the availability
+            // branch, so only assert invalidAvailability without that conflict.
+            expect(pure.contradiction).toBe(true);
+            if (!/fault/i.test(note ?? '')) expect(pure.invalidAvailability).toBe(true);
+          }
+          compared++;
         }
       }
     }
+    expect(compared).toBe(statuses.length * availabilityCases.length * notes.length);
+    expect([...healthOutcomes].sort()).toEqual([
+      'faulted', 'finishing', 'offline', 'uncertain', 'working-free', 'working-occupied',
+    ]);
   });
 
   it('normalizes only exact CCS2 connector vocabulary', () => {
