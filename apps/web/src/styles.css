@@ -1960,6 +1960,8 @@ body {
     box-shadow: none;
     transform: none;
     visibility: visible;
+    animation: none !important;
+    transition: none !important;
   }
 
   .plan-results {

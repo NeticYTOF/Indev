@@ -172,6 +172,32 @@ describe('journey briefing', () => {
     expect(markup).not.toContain('No charging stops are needed');
   });
 
+  it('renders sparse saved facts as explicit unknowns without throwing', () => {
+    const sparse = {
+      origin: { label: 'Old origin' },
+      destination: { label: 'Old destination' },
+      status: 'degraded',
+      source: 'live',
+      totals: {},
+      stops: [{ station: { stationId: 1, name: 'Old stop' } }],
+    } as unknown as SavedTrip;
+
+    const data = buildJourneyBriefingData(journeySourceFromSavedTrip(sparse));
+    expect(data.stopsAvailable).toBe(true);
+    expect(data.itinerary).toHaveLength(1);
+    expect(data.itinerary[0]).toMatchObject({
+      stationId: 1,
+      arriveSocPct: null,
+      leaveSocPct: null,
+      chargeKwh: null,
+      arrivalEtaMin: null,
+    });
+    const markup = renderJourneyBriefingMarkup(journeySourceFromSavedTrip(sparse));
+    expect(markup).toContain('Old stop');
+    expect(markup).toContain('Arrival time not stored for this trip');
+    expect(markup).not.toContain('No charging stops are needed');
+  });
+
   it('shows unknown costs as unknown and handles no-stop routes', () => {
     const noStops = plan({
       stops: [],
