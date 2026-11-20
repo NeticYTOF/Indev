@@ -415,6 +415,8 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
         toast(`Computed plan shown — ${ai.reason}`, 'warn', 6000);
       }
     } catch (err) {
+      clearTrip(map);
+      document.getElementById('planner-panel')?.querySelector('.plan-results')?.remove();
       showPlanningError(errorBox, err, 'AI planning failed.');
       // Context restore: the disabled button lost focus to <body> during
       // the run - land back on the retry control once it re-enables.
@@ -470,6 +472,8 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
       const { plan } = await api.plan(req);
       onPlanAvailable(plan, map, errorBox);
     } catch (err) {
+      clearTrip(map);
+      document.getElementById('planner-panel')?.querySelector('.plan-results')?.remove();
       showPlanningError(errorBox, err, 'Planning failed.');
       // Context restore: the disabled button lost focus to <body> during
       // the wait - land back on the retry control once it re-enables.
@@ -553,7 +557,11 @@ function drawablePlan(value: unknown): DrawablePlan | null {
 
 export function onPlanAvailable(plan: TripPlan, map: maplibregl.Map, errorBox?: HTMLElement): void {
   const raw = planRecord(plan);
-  if (!raw) throw new Error('The route response was malformed. Please try again.');
+  if (!raw) {
+    clearTrip(map);
+    document.getElementById('planner-panel')?.querySelector('.plan-results')?.remove();
+    throw new Error('The route response was malformed. Please try again.');
+  }
   const drawable = drawablePlan(raw);
   if (drawable) drawTrip(map, drawable);
   else clearTrip(map);

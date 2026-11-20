@@ -91,13 +91,23 @@ export class ApiError extends Error {
   }
 }
 
+function requireEnvelope<T>(body: T | null, label: string): T {
+  if (body == null || typeof body !== 'object') {
+    throw new ApiError('The route response was malformed. Please try again.', 'malformed_plan', 200);
+  }
+  if (!('plan' in (body as Record<string, unknown>)) || (body as Record<string, unknown>).plan == null) {
+    throw new ApiError(`The ${label} response did not include a route. Please try again.`, 'malformed_plan', 200);
+  }
+  return body;
+}
+
 export const api = {
   health: () => get<HealthInfo>('/api/health'),
   vehicles: () =>
     get<{ default: string; catalog: VehicleCatalogEntry[]; note: string }>('/api/vehicles'),
   geocode: (q: string) => get<{ hits: GeocodeHit[] }>(`/api/geocode?q=${encodeURIComponent(q)}`),
-  plan: (req: PlanRequest) => post<{ plan: TripPlan }>('/api/plan', req),
-  aiPlan: (req: AiPlanRequest) => post<AiPlanResponse>('/api/ai/plan', req),
+  plan: async (req: PlanRequest) => requireEnvelope(await post<{ plan: TripPlan } | null>('/api/plan', req), 'planning'),
+  aiPlan: async (req: AiPlanRequest) => requireEnvelope(await post<AiPlanResponse | null>('/api/ai/plan', req), 'AI planning'),
   trips: () => get<{ trips: SavedTrip[] }>('/api/trips'),
   trip: (id: string) => get<{ trip: SavedTrip }>(`/api/trips/${encodeURIComponent(id)}`),
   saveTrip: (plan: TripPlan, name?: string) => post<{ trip: SavedTrip; warnings?: unknown }>('/api/trips', { plan, name }),
