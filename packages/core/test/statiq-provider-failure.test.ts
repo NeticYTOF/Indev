@@ -214,4 +214,128 @@ describe('Statiq provider failure evidence', () => {
       record.code === 'budget_exhausted' && record.dispatchSeq === null)).toBe(true);
     expect(client.dispatchedAttemptsMade()).toBe(0);
   });
+
+  it('reads gateway headers only from failed marker responses', async () => {
+    const collector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    const success = clientWith(
+      async () => response('{}', 200, {
+        'x-evroute-failure-code': 'upstream_http',
+        'x-evroute-upstream-status': '429',
+      }),
+      collector,
+      { budget: new UpstreamBudget(2) },
+    );
+    await success.markers(0, 0);
+    expect(collector.snapshot().failures).toHaveLength(0);
+
+    const detailCollector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    const detailClient = clientWith(
+      async () => response('bad', 400, {
+        'x-evroute-failure-code': 'upstream_http',
+        'x-evroute-upstream-status': '429',
+      }),
+      detailCollector,
+      { budget: new UpstreamBudget(2) },
+    );
+    await expect(detailClient.detailsWithMeta(1)).rejects.toThrow();
+    const detailRecords = detailCollector.snapshot().failures;
+    expect(detailRecords[0]).toMatchObject({
+      endpointClass: 'stations/details', code: 'http_400',
+      gatewayFailureCode: null, gatewayUpstreamStatus: null,
+    });
+
+    const failedCollector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    const failedClient = clientWith(
+      async () => response('bad', 500, {
+        'x-evroute-failure-code': 'upstream_http',
+        'x-evroute-upstream-status': '429',
+      }),
+      failedCollector,
+      { retries: 0, budget: new UpstreamBudget(2) },
+    );
+    await expect(failedClient.markers(0, 0)).rejects.toThrow();
+    expect(failedCollector.snapshot().failures[0]).toMatchObject({
+      endpointClass: 'stations/markers', code: 'http_5xx', httpStatus: 500,
+      gatewayFailureCode: 'upstream_http', gatewayUpstreamStatus: 429,
+    });
+  });
+
+  it('rejects invalid gateway headers without changing retry, fatal, or private classification', async () => {
+    const collector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    let calls = 0;
+    const client = clientWith(
+      async () => {
+        calls += 1;
+        return response('{"error":"wait"}', calls === 1 ? 400 : 500, {
+          'x-evroute-failure-code': ' UPSTREAM_HTTP',
+          'x-evroute-upstream-status': '+429',
+        });
+      },
+      collector,
+      { retries: 2, budget: new UpstreamBudget(8) },
+    );
+    await expect(client.markers(0, 0)).rejects.toThrow();
+    expect(calls).toBe(3);
+    const records = collector.snapshot().failures;
+    expect(records.every((record) =>
+      record.gatewayFailureCode === null && record.gatewayUpstreamStatus === null)).toBe(true);
+    expect(records.map((record) => record.dispatchSeq)).toEqual([1, 2, 3]);
+  });
+
+  it('keeps header-read anomalies and 429 fatal-header policy neutral', async () => {
+    const collector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    const hostileHeaders = new Proxy(new Headers(), {
+      get(target, prop, receiver) {
+        if (prop === 'get') {
+          return (name: string) => {
+            if (name === 'x-evroute-failure-code') throw new Error('header trap');
+            return target.get.call(target, name);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const res = {
+      ok: true,
+      status: 200,
+      headers: hostileHeaders,
+      text: async () => '{"ok":true,"live":true,"retained":false,"source":"x","count":0,"stations":[]}',
+    } as unknown as Response;
+    const client = clientWith(async () => res, collector, { budget: new UpstreamBudget(2) });
+    await expect(client.markers(0, 0)).resolves.toBeDefined();
+    expect(collector.snapshot().failures).toHaveLength(0);
+
+    const fatalCollector = createProviderFailureCollector({
+      now: () => ({ wallMs: 0, monotonicMs: 0 }),
+    });
+    let fatalCalls = 0;
+    const fatalClient = clientWith(
+      async () => {
+        fatalCalls += 1;
+        return response('{"error":"wait"}', 429, {
+          'Retry-After': '1',
+          'x-evroute-failure-code': 'upstream_http',
+          'x-evroute-upstream-status': '429',
+        });
+      },
+      fatalCollector,
+      { retries: 3, budget: new UpstreamBudget(8) },
+    );
+    await expect(fatalClient.markers(0, 0)).rejects.toThrow();
+    expect(fatalCalls).toBe(1);
+    expect(fatalCollector.snapshot().failures).toMatchObject([{
+      code: 'fatal_throttled', httpStatus: 429,
+      gatewayFailureCode: 'upstream_http', gatewayUpstreamStatus: 429,
+    }]);
+  });
 });
