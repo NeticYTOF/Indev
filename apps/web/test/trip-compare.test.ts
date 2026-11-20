@@ -125,7 +125,8 @@ describe('saved trip comparison model', () => {
     expect(markup).toContain('&lt;img src=x onerror=stationProof&gt;');
     expect(markup).toContain('Synthetic');
     expect(markup).toContain('Degraded');
-    const ordinals = [...markup.matchAll(/<span class="compare-stop-order">(\d+)<\/span>/g)]
+    const firstColumn = markup.split('<article class="compare-card" data-compare-card="b"')[0] ?? markup;
+    const ordinals = [...firstColumn.matchAll(/<span class="compare-stop-order">(\d+)<\/span>/g)]
       .map((match) => match[1]);
     expect(ordinals).toEqual(['1', '2']);
     expect(markup).toContain('<strong>Unknown station</strong>');
