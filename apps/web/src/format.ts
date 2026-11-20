@@ -45,8 +45,13 @@ export function formatKwh(kwh: number | null | undefined): string {
  * upstream strings are untrusted and one flowed into innerHTML).
  * Empty input yields 'unknown'.
  */
-export function lastUsedLabel(chargers: Array<{ lastUsedOn: string | null }>): string {
-  const dates = chargers.map((c) => c.lastUsedOn).filter((d): d is string => Boolean(d));
+export function lastUsedLabel(chargers: unknown): string {
+  const entries = Array.isArray(chargers) ? chargers : [];
+  const dates = entries
+    .map((entry) => entry != null && typeof entry === 'object' && typeof (entry as { lastUsedOn?: unknown }).lastUsedOn === 'string'
+      ? (entry as { lastUsedOn: string }).lastUsedOn
+      : null)
+    .filter((d): d is string => d != null && d.trim().length > 0);
   if (dates.length === 0) return 'unknown';
   // dd/mm/yyyy; pick the most recent
   const parsed = dates.map(parseChargerDate).filter((d): d is Date => d !== null);

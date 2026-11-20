@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatReviewCount } from '../src/format.js';
+import { formatReviewCount, lastUsedLabel } from '../src/format.js';
 import { stationDirectionsUrl, routeDirectionsUrl } from '../src/safe-url.js';
 
 describe('station scalar display boundaries', () => {
@@ -10,6 +10,12 @@ describe('station scalar display boundaries', () => {
   });
   it.each([null, undefined, NaN, Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '128', '<span data-proof>inert</span>', {}, []])('uses unknown rather than markup or an invented zero for %j', value => {
     expect(formatReviewCount(value)).toBe('unknown');
+  });
+  it('keeps malformed charger entries unknown instead of dereferencing them', () => {
+    expect(lastUsedLabel([{ lastUsedOn: '18/11/2026' }])).toBe('18/11/2026');
+    expect(lastUsedLabel(null)).toBe('unknown');
+    expect(lastUsedLabel([null, undefined, 7, ' charger ', { lastUsedOn: 42 }])).toBe('unknown');
+    expect(lastUsedLabel([null, { lastUsedOn: '02/11/2026' }])).toBe('2/11/2026');
   });
   it('preserves all waypoints or omits the whole route link without pruning', () => {
     const origin = { lat: 28, lon: 77 }, destination = { lat: 26, lon: 75 };
