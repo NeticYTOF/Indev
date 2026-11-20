@@ -53,6 +53,16 @@ export type ProviderFailureCode =
   | 'fatal_auth'
   | 'unknown';
 
+export type GatewayFailureCode =
+  | 'input_invalid'
+  | 'upstream_http'
+  | 'upstream_timeout'
+  | 'upstream_transport'
+  | 'upstream_json'
+  | 'upstream_contract'
+  | 'normalization_failed'
+  | 'gateway_unknown';
+
 export interface ProviderFailureEvidence {
   endpointClass: ProviderEndpointClass;
   phase: ProviderFailurePhase;
@@ -62,6 +72,10 @@ export interface ProviderFailureEvidence {
   dispatchSeq: number | null;
   httpStatus: number | null;
   code: ProviderFailureCode;
+  /** Deployed gateway diagnostic; null unless a failed marker reply supplied it. */
+  gatewayFailureCode: GatewayFailureCode | null;
+  /** Validated gateway upstream status; null when absent or malformed. */
+  gatewayUpstreamStatus: number | null;
   elapsedWallMs: number;
   elapsedMonotonicMs: number;
 }
@@ -86,6 +100,8 @@ export interface ProviderFailureInput extends ProviderCallContext {
   code: ProviderFailureCode;
   dispatchSeq?: number | null;
   httpStatus?: number | null;
+  gatewayFailureCode?: GatewayFailureCode | null;
+  gatewayUpstreamStatus?: number | null;
 }
 
 export interface ProviderFailureClock {
@@ -93,6 +109,23 @@ export interface ProviderFailureClock {
 }
 
 export const PROVIDER_FAILURE_LIMIT = 20;
+
+const GATEWAY_FAILURE_CODES: ReadonlySet<string> = new Set([
+  'input_invalid', 'upstream_http', 'upstream_timeout', 'upstream_transport',
+  'upstream_json', 'upstream_contract', 'normalization_failed', 'gateway_unknown',
+]);
+
+export function parseGatewayFailureCode(value: unknown): GatewayFailureCode | null {
+  return typeof value === 'string' && GATEWAY_FAILURE_CODES.has(value)
+    ? value as GatewayFailureCode
+    : null;
+}
+
+export function parseGatewayUpstreamStatus(value: unknown): number | null {
+  if (typeof value !== 'string' || !/^[1-5][0-9][0-9]$/.test(value)) return null;
+  const status = Number(value);
+  return status >= 100 && status <= 599 ? status : null;
+}
 
 const FAILURE_CODES: readonly ProviderFailureCode[] = [
   'http_400', 'http_401', 'http_403', 'http_404', 'http_409', 'http_429',
@@ -277,6 +310,8 @@ export function createProviderFailureCollector(
         const dispatchInput = ownDataValue(inputRecord, 'dispatchSeq');
         const statusInput = ownDataValue(inputRecord, 'httpStatus');
         const codeInput = ownDataValue(inputRecord, 'code');
+        const gatewayCodeInput = parseGatewayFailureCode(ownDataValue(inputRecord, 'gatewayFailureCode'));
+        const gatewayStatusInput = parseGatewayUpstreamStatus(ownDataValue(inputRecord, 'gatewayUpstreamStatus'));
         const record: ProviderFailureEvidence = Object.freeze({
           endpointClass: endpointInput === 'stations/markers' ||
             endpointInput === 'stations/details' ? endpointInput : 'none',
@@ -286,6 +321,9 @@ export function createProviderFailureCollector(
           dispatchSeq: safePositiveInteger(dispatchInput),
           httpStatus: safeHttpStatus(statusInput),
           code: isProviderFailureCode(codeInput) ? codeInput : 'unknown',
+          gatewayFailureCode: gatewayCodeInput,
+          // Gateway status is meaningful only with a valid gateway code.
+          gatewayUpstreamStatus: gatewayCodeInput != null ? gatewayStatusInput : null,
           elapsedWallMs: wallElapsed,
           elapsedMonotonicMs: monotonicElapsed,
         });

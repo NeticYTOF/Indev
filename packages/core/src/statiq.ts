@@ -40,6 +40,8 @@ import type {
 import { sleep as defaultSleep } from './utils.js';
 import { UpstreamBudget, UpstreamRunStoppedError } from './upstream-budget.js';
 import {
+  parseGatewayFailureCode,
+  parseGatewayUpstreamStatus,
   statusCodeForHttp,
   transportCodeForCause,
   type ProviderCallContext,
@@ -295,6 +297,8 @@ export class StatiqClient {
     code: Parameters<ProviderFailureCollector['record']>[0]['code'],
     dispatchSeq: number | null,
     httpStatus: number | null,
+    gatewayFailureCode: ReturnType<typeof parseGatewayFailureCode> = null,
+    gatewayUpstreamStatus: number | null = null,
   ): void {
     const collector = this.failureCollector;
     if (!collector) return;
@@ -310,6 +314,8 @@ export class StatiqClient {
         dispatchSeq,
         httpStatus,
         code,
+        gatewayFailureCode,
+        gatewayUpstreamStatus,
       });
     } catch {
       /* Diagnostics must never alter run behavior. */
@@ -482,9 +488,12 @@ export class StatiqClient {
       const dispatchSeq = ++this.dispatchAttempts;
       try { context?.onDispatch?.(dispatchSeq); } catch { /* evidence callbacks never alter policy */ }
       attemptEvidenceRecorded = false;
+      let gatewayFailureCode: ReturnType<typeof parseGatewayFailureCode> = null;
+      let gatewayUpstreamStatus: number | null = null;
       const recordAttempt = (code: Parameters<ProviderFailureCollector['record']>[0]['code'], status: number | null): void => {
         if (attemptEvidenceRecorded) return;
-        this.reportFailure(context, path, code, dispatchSeq, status);
+        this.reportFailure(context, path, code, dispatchSeq, status,
+          gatewayFailureCode, gatewayUpstreamStatus);
         attemptEvidenceRecorded = true;
       };
       // ONE AUDIT PER ATTEMPT: header-time audit marks the attempt as
@@ -519,6 +528,19 @@ export class StatiqClient {
         // that fatalCause truthiness implies the budget exists through the
         // ternary, so the guard checks the reference directly. No non-null
         // suppression anywhere.
+        // Gateway diagnostic headers are consumed ONLY from failed marker
+        // responses. No values are logged, inferred from a status, or applied
+        // to policy; header-read failures leave both fields null.
+        if (path === '/stations/markers' && !res.ok) {
+          try {
+            gatewayFailureCode = parseGatewayFailureCode(res.headers?.get('x-evroute-failure-code'));
+            if (gatewayFailureCode != null) {
+              gatewayUpstreamStatus = parseGatewayUpstreamStatus(
+                res.headers?.get('x-evroute-upstream-status'),
+              );
+            }
+          } catch { gatewayFailureCode = null; gatewayUpstreamStatus = null; }
+        }
         const budget = this.runBudget;
         const fatalCause =
           !res.ok &&

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   createProviderFailureCollector,
+  parseGatewayFailureCode,
+  parseGatewayUpstreamStatus,
   transportCodeForCause,
   PROVIDER_FAILURE_LIMIT,
   type ProviderFailureClock,
@@ -205,5 +207,46 @@ describe('provider failure diagnostics', () => {
     collector.record({ endpointClass: 'none', phase: 'run', code: 'unknown' });
     collector.record({ endpointClass: 'none', phase: 'run', code: 'unknown' });
     expect(collector.snapshot().failures.map((r) => r.elapsedMonotonicMs)).toEqual([0, 0, 0]);
+  });
+
+  it('parses gateway diagnostic fields with exact allowlists only', () => {
+    for (const code of [
+      'input_invalid', 'upstream_http', 'upstream_timeout', 'upstream_transport',
+      'upstream_json', 'upstream_contract', 'normalization_failed', 'gateway_unknown',
+    ]) {
+      expect(parseGatewayFailureCode(code)).toBe(code);
+    }
+    for (const bad of [
+      ' UPSTREAM_HTTP', 'upstream_http ', 'UPSTREAM_HTTP', 'upstream_http\n',
+      'upstream_http\u0000', 'x'.repeat(1000), '', null, 7,
+    ]) {
+      expect(parseGatewayFailureCode(bad)).toBeNull();
+    }
+    expect(parseGatewayUpstreamStatus('100')).toBe(100);
+    expect(parseGatewayUpstreamStatus('599')).toBe(599);
+    for (const bad of ['+429', '429x', '4e2', ' 429', '429 ', '099', '600', '', 429, null]) {
+      expect(parseGatewayUpstreamStatus(bad)).toBeNull();
+    }
+  });
+
+  it('sanitizes gateway metadata independently inside the collector', () => {
+    const collector = createProviderFailureCollector(clockSequence([
+      { wallMs: 0, monotonicMs: 0 }, { wallMs: 1, monotonicMs: 1 },
+    ]));
+    collector.record({
+      endpointClass: 'stations/markers', phase: 'scan', sampleOrdinal: 1,
+      code: 'http_400', httpStatus: 400,
+      gatewayFailureCode: 'upstream_http',
+      gatewayUpstreamStatus: '429' as never,
+    });
+    collector.record({
+      endpointClass: 'stations/markers', phase: 'scan', sampleOrdinal: 2,
+      code: 'http_400', httpStatus: 400,
+      gatewayFailureCode: 'not_allowed' as never,
+      gatewayUpstreamStatus: 500 as never,
+    });
+    const records = collector.snapshot().failures;
+    expect(records[0]).toMatchObject({ gatewayFailureCode: 'upstream_http', gatewayUpstreamStatus: 429 });
+    expect(records[1]).toMatchObject({ gatewayFailureCode: null, gatewayUpstreamStatus: null });
   });
 });
