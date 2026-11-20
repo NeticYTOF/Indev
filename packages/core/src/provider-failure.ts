@@ -40,7 +40,13 @@ export type ProviderFailureCode =
   | 'invalid_marker_list'
   | 'invalid_marker_record'
   | 'invalid_details_shape'
+  | 'invalid_connector_availability'
+  | 'invalid_charger_power'
+  | 'invalid_tariff'
+  | 'null_station'
+  | 'ok_false_response'
   | 'station_id_mismatch'
+  | 'route_failed'
   | 'budget_exhausted'
   | 'deadline'
   | 'fatal_throttled'
@@ -71,6 +77,8 @@ export interface ProviderCallContext {
   endpointClass: ProviderEndpointClass;
   phase: ProviderFailurePhase;
   sampleOrdinal?: number | null;
+  /** Local evidence callback; transport swallows callback failures. */
+  onDispatch?: (dispatchSeq: number) => void;
 }
 
 export interface ProviderFailureInput extends ProviderCallContext {
@@ -93,7 +101,8 @@ const FAILURE_CODES: readonly ProviderFailureCode[] = [
   'transport_network',
   'body_read_failure', 'invalid_json', 'nonfresh_provenance',
   'invalid_marker_list', 'invalid_marker_record', 'invalid_details_shape',
-  'station_id_mismatch',
+  'invalid_connector_availability', 'invalid_charger_power', 'invalid_tariff',
+  'null_station', 'ok_false_response', 'station_id_mismatch', 'route_failed',
   'budget_exhausted', 'deadline', 'fatal_throttled', 'fatal_auth',
   'unknown',
 ];

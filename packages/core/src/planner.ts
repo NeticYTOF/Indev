@@ -32,6 +32,7 @@ import type { StatiqStationDetail } from './types.js';
 import {
   createProviderFailureCollector,
   type ProviderCallContext,
+  type ProviderFailureCode,
   type ProviderFailureCollector,
 } from './provider-failure.js';
 import { resolveVehicle, type ResolvedVehicle } from './vehicle-catalog.js';
@@ -427,16 +428,25 @@ async function planCore(
       hooks.reserveCall?.();
       return deps.statiq.markers(lat, lon, hooks.signal, context);
     },
-    detailsWithMeta: (stationId: number) => {
+    detailsWithMeta: (stationId: number, context?: ProviderCallContext) => {
       hooks.reserveCall?.();
       return deps.statiq.detailsWithMeta(stationId, hooks.signal, {
         endpointClass: 'stations/details', phase: 'details', sampleOrdinal: null,
+        ...context,
       });
     },
   };
 
   // 1) Fastest route (free OSRM).
-  const route = await deps.router.route(origin, destination, hooks.signal);
+  let route: Awaited<ReturnType<OsrmRouter['route']>>;
+  try {
+    route = await deps.router.route(origin, destination, hooks.signal);
+  } catch (err) {
+    try { hooks.failureCollector.record({
+      endpointClass: 'none', phase: 'route', code: 'route_failed',
+    }); } catch { /* diagnostics never alter policy */ }
+    throw err;
+  }
   const cum = cumulativeKm(route.geometry);
   const totalKm = cum[cum.length - 1] as number;
 
@@ -445,6 +455,7 @@ async function planCore(
   const corridor = await scanCorridor(guardedStatiq, route.geometry, {
     maxOffRouteKm: opts.fallbackDetourKm,
     signal: hooks.signal,
+    failureCollector: hooks.failureCollector,
     // INCREMENTAL SCAN PROGRESS: counters flow in per completed sample,
     // so a fatal stop MID-SCAN (first 429/auth, cap exhaustion, deadline)
     // still reports the actual samples completed/ok/failed in the
@@ -519,35 +530,47 @@ async function planCore(
   const unknownCandidates = new Set<number>();
   const fetchCandidate = async (c: CorridorCandidate): Promise<void> => {
     if (detailCache.has(c.stationId)) return;
+    let detailDispatchSeq: number | null = null;
+    const recordDetail = (code: ProviderFailureCode): void => {
+      try { hooks.failureCollector.record({
+        endpointClass: 'stations/details', phase: 'details',
+        dispatchSeq: detailDispatchSeq, httpStatus: 200, code,
+      }); } catch { /* diagnostics never alter planning */ }
+    };
     try {
-      const { response, fetchedAt } = await guardedStatiq.detailsWithMeta(c.stationId);
+      const { response, fetchedAt } = await guardedStatiq.detailsWithMeta(c.stationId, {
+        onDispatch: (seq) => { detailDispatchSeq = seq; },
+      });
       // A details payload must describe the station actually requested.
       // Otherwise another station's plugs could inherit this candidate's
       // chainage and reachability. Treat that lookup as unknown, not usable.
-      if (!hasFreshProvenance(response) || !response || response.ok !== true ||
-          (response.station && response.station.stationId !== c.stationId)) {
-        try { hooks.failureCollector.record({
-          endpointClass: 'stations/details', phase: 'details',
-          code: 'station_id_mismatch',
-        }); } catch { /* diagnostics never alter planning */ }
+      if (!hasFreshProvenance(response)) {
+        recordDetail('nonfresh_provenance');
+        throw new Error('Station details response does not match the request');
+      }
+      if (!response || response.ok !== true) {
+        recordDetail('ok_false_response');
+        throw new Error('Station details response does not match the request');
+      }
+      if (response.station && response.station.stationId !== c.stationId) {
+        recordDetail('station_id_mismatch');
         throw new Error('Station details response does not match the request');
       }
       // Absent charger/connector lists are missing evidence, not proof
       // there are no usable plugs. Explicit empty lists remain valid.
       if (response.station && (!Array.isArray(response.station.chargers) ||
           response.station.chargers.some((charger) => !charger || !Array.isArray(charger.connectors)))) {
-        try { hooks.failureCollector.record({
-          endpointClass: 'stations/details', phase: 'details',
-          code: 'invalid_details_shape',
-        }); } catch { /* diagnostics never alter planning */ }
+        recordDetail('invalid_details_shape');
         throw new Error('Station details are missing charger or connector lists');
       }
       if (response.station) {
         const summary = summarizeCcs2(response.station);
         if (summary.hasInvalidUsableAvailability) {
+          recordDetail('invalid_connector_availability');
           if (!summary.isUsable) throw new Error('Usable connector availability is malformed');
           warnings.push(`Station "${c.name}" (${c.stationId}) has invalid connector availability; only independently usable plugs support this plan.`);
         }
+        if (summary.hasInvalidUsablePower) recordDetail('invalid_charger_power');
         if (summary.isUsable && summary.hasInvalidUsablePower && summary.maxKw == null) {
           // Connector health is known, but there is no supported power for
           // timing this candidate. Preserve a hole, not a known-unusable
@@ -557,6 +580,7 @@ async function planCore(
         if (summary.isUsable && summary.maxKw != null && (summary.hasInvalidUsablePower || summary.hasMissingUsablePower)) {
           warnings.push(`Station "${c.name}" (${c.stationId}) has incomplete charger power data; planning uses a charger with known power only.`);
         }
+        if (summary.hasInvalidSelectedTariff) recordDetail('invalid_tariff');
         if (summary.hasInvalidSelectedTariff) {
           warnings.push(`Station "${c.name}" (${c.stationId}) has an invalid tariff; its charging cost is unknown.`);
         }
@@ -569,6 +593,7 @@ async function planCore(
       } else {
         // 200 with a null station: data inconsistency - an unknown, not a
         // verdict; leave a visible hole instead of passing silently
+        recordDetail('null_station');
         unknownCandidates.add(c.stationId);
         warnings.push(`Skipping "${c.name}" (${c.stationId}): the station returned no data.`);
       }

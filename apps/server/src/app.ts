@@ -407,7 +407,12 @@ export function createApp(deps: AppDeps): Hono {
       completeRun(deps, auditOutcomeFor(err), safeUpstreamCalls(statiq), providerFailures.snapshot());
       throw err;
     }
-    await recordPlanCounter(deps.counters, bundle.plan);
+    try {
+      await recordPlanCounter(deps.counters, bundle.plan);
+    } catch (err) {
+      completeRun(deps, auditOutcomeFor(err), safeUpstreamCalls(statiq), providerFailures.snapshot());
+      throw err;
+    }
 
     // 2) ask the model to pick the stop sequence from the candidates
     const system =

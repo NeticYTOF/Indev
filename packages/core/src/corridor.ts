@@ -21,7 +21,10 @@ import { pMap } from './utils.js';
 import { isAbortLike, StatiqApiError, StatiqRunFatalError } from './statiq.js';
 import { UpstreamRunStoppedError } from './upstream-budget.js';
 import type { StatiqMarker, StatiqMarkersResponse } from './types.js';
-import type { ProviderCallContext } from './provider-failure.js';
+import type {
+  ProviderCallContext,
+  ProviderFailureCollector,
+} from './provider-failure.js';
 
 /** The marker-fetching surface the corridor needs (for guards in tests). */
 export interface MarkerSource {
@@ -64,6 +67,8 @@ export interface CorridorOptions {
    * actual-attempt counter (budget attemptsMade).
    */
   onProgress?: (progress: CorridorScanProgress) => void;
+  /** Per-run collector for sanitized shape-failure evidence. */
+  failureCollector?: ProviderFailureCollector;
 }
 
 export type SampleFailCause = 'throttled' | 'error';
@@ -112,6 +117,7 @@ interface ResolvedCorridorOptions {
   concurrency: number;
   signal?: AbortSignal;
   onProgress?: (progress: CorridorScanProgress) => void;
+  failureCollector?: ProviderFailureCollector;
 }
 
 const DEFAULTS: ResolvedCorridorOptions = {
@@ -129,7 +135,7 @@ export async function scanCorridor(
   routeGeometry: readonly Coords[],
   opts: CorridorOptions = {},
 ): Promise<CorridorResult> {
-  const { stepKm, maxOffRouteKm, concurrency, signal, onProgress } = {
+  const { stepKm, maxOffRouteKm, concurrency, signal, onProgress, failureCollector } = {
     ...DEFAULTS,
     ...opts,
   } as ResolvedCorridorOptions;
@@ -174,13 +180,19 @@ export async function scanCorridor(
 
   await pMap(samplePoints, concurrency, async (p, i) => {
     try {
+      let dispatchSeq: number | null = null;
       const res = await statiq.markers(p.lat, p.lon, signal, {
         endpointClass: 'stations/markers', phase: 'scan', sampleOrdinal: i + 1,
+        onDispatch: (seq) => { dispatchSeq = seq; },
       });
       // Missing/non-array marker lists are coverage holes, not proof that
       // a sample has no chargers. Check before success counting so a bad
       // list cannot be counted as both completed successfully and failed.
       if (!hasFreshProvenance(res) || !res || res.ok !== true || !Array.isArray(res.stations)) {
+        try { failureCollector?.record({
+          endpointClass: 'stations/markers', phase: 'scan', sampleOrdinal: i + 1,
+          dispatchSeq, httpStatus: 200, code: 'invalid_marker_list',
+        }); } catch { /* diagnostics never alter policy */ }
         throw new Error('Invalid marker response');
       }
       let malformedMarker = false;
@@ -197,7 +209,13 @@ export async function scanCorridor(
         }
         if (!seen.has(s.stationId)) seen.set(s.stationId, s);
       }
-      if (malformedMarker) throw new Error('Invalid station marker evidence');
+      if (malformedMarker) {
+        try { failureCollector?.record({
+          endpointClass: 'stations/markers', phase: 'scan', sampleOrdinal: i + 1,
+          dispatchSeq, httpStatus: 200, code: 'invalid_marker_record',
+        }); } catch { /* diagnostics never alter policy */ }
+        throw new Error('Invalid station marker evidence');
+      }
       // Consuming a malformed marker can fail too. Count success only
       // after consumption, so each completed sample has one outcome.
       okSamples++;
@@ -212,9 +230,13 @@ export async function scanCorridor(
       ) {
         throw err;
       }
-      // Status-only classification: raw body text is never inspected.
+      // Preserve the existing PRIVATE business classification; diagnostic
+      // records never copy this body text or infer a diagnostic code from it.
       const cause: SampleFailCause =
-        err instanceof StatiqApiError && err.status === 429 ? 'throttled' : 'error';
+        err instanceof StatiqApiError &&
+          (err.status === 429 || err.status === 400 && err.body.includes('wait'))
+          ? 'throttled'
+          : 'error';
       failedSamples.push({ chainageKm: sampleChainages[i] ?? 0, cause });
       report();
       // A failed sample leaves a partial blind spot (neighbouring samples

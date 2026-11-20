@@ -480,6 +480,7 @@ export class StatiqClient {
       // Dispatch seq is distinct from completion-order audit seq and exists
       // only after a successful reservation, immediately before fetch.
       const dispatchSeq = ++this.dispatchAttempts;
+      try { context?.onDispatch?.(dispatchSeq); } catch { /* evidence callbacks never alter policy */ }
       attemptEvidenceRecorded = false;
       const recordAttempt = (code: Parameters<ProviderFailureCollector['record']>[0]['code'], status: number | null): void => {
         if (attemptEvidenceRecorded) return;
