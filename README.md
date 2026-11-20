@@ -51,6 +51,9 @@ npm run dev            # LIVE mode: server :8787 + web :5173
   planning run costs, what the attempt budget counts (retries included),
   and the fail-closed stop semantics (first 429/401/403, exhaustion →
   honest not_determined).
+- `docs/journey-briefing.md` — the plan panel's whole-trip legs, battery
+  profile, printable itinerary, and standalone HTML export; documents which
+  values are plan facts and which remain explicitly unknown.
 
 ## Local request-origin policy
 
