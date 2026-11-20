@@ -198,12 +198,19 @@ function defaultNow(): { wallMs: number; monotonicMs: number } {
   return { wallMs, monotonicMs };
 }
 
+interface ClockReading {
+  wallMs: number;
+  monotonicMs: number | null;
+}
+
 function safeNow(
   clock: ProviderFailureClock,
-  previous: { wallMs: number; monotonicMs: number } | undefined,
-): { wallMs: number; monotonicMs: number } {
+  previous: ClockReading | undefined,
+): ClockReading {
   let wallMs = previous?.wallMs ?? safeElapsedClock(Date.now()) ?? 0;
-  let monotonicMs = previous?.monotonicMs ?? wallMs;
+  // A monotonic domain is never seeded from wall time. It starts null and is
+  // established only by the first valid monotonic sample.
+  let monotonicMs = previous?.monotonicMs ?? null;
   try {
     const now = clock.now();
     const nextWall = safeElapsedClock(ownDataValue(now, 'wallMs'));
@@ -237,6 +244,7 @@ export function createProviderFailureCollector(
 ): ProviderFailureCollector {
   const start = safeNow(clock, undefined);
   let previous = start;
+  let monotonicStart = start.monotonicMs;
   let wallElapsed = 0;
   let monotonicElapsed = 0;
   const failures: ProviderFailureEvidence[] = [];
@@ -248,7 +256,10 @@ export function createProviderFailureCollector(
         const now = safeNow(clock, previous);
         previous = now;
         wallElapsed = elapsed(start.wallMs, now.wallMs, wallElapsed);
-        monotonicElapsed = elapsed(start.monotonicMs, now.monotonicMs, monotonicElapsed);
+        if (now.monotonicMs != null) {
+          if (monotonicStart == null) monotonicStart = now.monotonicMs;
+          monotonicElapsed = elapsed(monotonicStart, now.monotonicMs, monotonicElapsed);
+        }
         const inputRecord = input as unknown;
         const endpointInput = ownDataValue(inputRecord, 'endpointClass');
         const phaseInput = ownDataValue(inputRecord, 'phase');

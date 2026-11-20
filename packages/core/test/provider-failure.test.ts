@@ -180,4 +180,30 @@ describe('provider failure diagnostics', () => {
     expect(trapRan).toBe(true);
     expect(collector.snapshot().failures[0]).toMatchObject({ code: 'unknown' });
   });
+
+  it('establishes a monotonic baseline from the first valid reading only', () => {
+    const collector = createProviderFailureCollector(clockSequence([
+      { wallMs: 100, monotonicMs: Number.NaN },
+      { wallMs: 110, monotonicMs: 500 },
+      { wallMs: 120, monotonicMs: 550 },
+    ]));
+    collector.record({ endpointClass: 'none', phase: 'run', code: 'unknown' });
+    collector.record({ endpointClass: 'none', phase: 'run', code: 'unknown' });
+    collector.record({ endpointClass: 'none', phase: 'run', code: 'unknown' });
+    const records = collector.snapshot().failures;
+    expect(records.map((r) => r.elapsedMonotonicMs)).toEqual([0, 50, 50]);
+    expect(records.map((r) => r.elapsedWallMs)).toEqual([10, 20, 20]);
+  });
+
+  it('keeps monotonic elapsed stable when the monotonic clock never becomes valid', () => {
+    const collector = createProviderFailureCollector(clockSequence([
+      { wallMs: 100, monotonicMs: Number.NaN },
+      { wallMs: 120, monotonicMs: -1 },
+      { wallMs: 130, monotonicMs: Number.POSITIVE_INFINITY },
+    ]));
+    collector.record({ endpointClass: 'none', phase: 'run', code: 'unknown' });
+    collector.record({ endpointClass: 'none', phase: 'run', code: 'unknown' });
+    collector.record({ endpointClass: 'none', phase: 'run', code: 'unknown' });
+    expect(collector.snapshot().failures.map((r) => r.elapsedMonotonicMs)).toEqual([0, 0, 0]);
+  });
 });
