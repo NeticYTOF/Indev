@@ -310,17 +310,17 @@ describe('provider failure diagnostics', () => {
   it('gates contract fields inside the collector to failed upstream_contract markers', () => {
     const collector = createProviderFailureCollector({ now: () => ({ wallMs: 0, monotonicMs: 0 }) });
     collector.record({
-      endpointClass: 'stations/markers', phase: 'scan', code: 'http_422', httpStatus: 422,
+      endpointClass: 'stations/markers', phase: 'scan', code: 'http_4xx_other', httpStatus: 422,
       gatewayFailureCode: 'upstream_contract', gatewayUpstreamStatus: 200,
       gatewayContractReason: 'success_false', gatewayContractData: 'stations_empty',
     });
     collector.record({
-      endpointClass: 'stations/markers', phase: 'scan', code: 'http_500', httpStatus: 500,
+      endpointClass: 'stations/markers', phase: 'scan', code: 'http_5xx', httpStatus: 500,
       gatewayFailureCode: 'upstream_http',
       gatewayContractReason: 'success_false', gatewayContractData: 'stations_empty',
     });
     collector.record({
-      endpointClass: 'stations/details', phase: 'details', code: 'http_422', httpStatus: 422,
+      endpointClass: 'stations/details', phase: 'details', code: 'http_4xx_other', httpStatus: 422,
       gatewayFailureCode: 'upstream_contract',
       gatewayContractReason: 'success_false', gatewayContractData: 'stations_empty',
     });
@@ -329,7 +329,7 @@ describe('provider failure diagnostics', () => {
     });
     inherited.endpointClass = 'stations/markers';
     inherited.phase = 'scan';
-    inherited.code = 'http_422';
+    inherited.code = 'http_4xx_other';
     inherited.httpStatus = 422;
     inherited.gatewayFailureCode = 'upstream_contract';
     collector.record(inherited);

@@ -568,7 +568,11 @@ describe('Statiq provider failure evidence', () => {
             'x-evroute-contract-data': 'stations_nonempty',
           });
         }
-        return response('{"ok":true,"live":true,"retained":false,"source":"x","count":0,"stations":[]}', 200, contractHeaders);
+        return response('{"ok":true,"live":true,"retained":false,"source":"x","count":0,"stations":[]}', 200, {
+          'x-evroute-failure-code': 'upstream_contract',
+          'x-evroute-contract-reason': 'success_false',
+          'x-evroute-contract-data': 'stations_empty',
+        });
       },
       collector,
       { retries: 0, budget: new UpstreamBudget(6) },
