@@ -57,6 +57,12 @@ describe('provider failure diagnostics', () => {
     expect(transportCodeForCause({ cause: { code: { toString() { throw new Error('must not run'); } } } })).toBe('transport_network');
   });
 
+  it('rejects inherited object keys as transport cause codes', () => {
+    expect(transportCodeForCause({ cause: { code: 'toString' } })).toBe('transport_network');
+    expect(transportCodeForCause({ cause: { code: 'constructor' } })).toBe('transport_network');
+    expect(transportCodeForCause({ cause: { code: '__proto__' } })).toBe('transport_network');
+  });
+
   it('maps only allowlisted primitive cause codes', () => {
     expect(transportCodeForCause(new TypeError('opaque'))).toBe('transport_type_error');
     expect(transportCodeForCause({ cause: { code: 'ECONNRESET' } })).toBe('transport_connection_reset');
@@ -96,5 +102,82 @@ describe('provider failure diagnostics', () => {
     const first = collector.snapshot().failures[0]!;
     expect(first.elapsedWallMs).toBe(0);
     expect(first.elapsedMonotonicMs).toBe(0);
+  });
+
+  it('rejects fractional and out-of-range status and identity numbers', () => {
+    const collector = createProviderFailureCollector(clockSequence([
+      { wallMs: 10, monotonicMs: 20 },
+      { wallMs: 12, monotonicMs: 24 },
+    ]));
+    collector.record({
+      endpointClass: 'stations/markers',
+      phase: 'scan',
+      sampleOrdinal: 1.5,
+      dispatchSeq: Number.MAX_SAFE_INTEGER + 1,
+      httpStatus: 200.5,
+      code: 'http_other',
+    });
+    collector.record({
+      endpointClass: 'none',
+      phase: 'run',
+      httpStatus: 600,
+      code: 'unknown',
+    });
+    const [first, second] = collector.snapshot().failures;
+    expect(first).toMatchObject({ sampleOrdinal: null, dispatchSeq: null, httpStatus: null });
+    expect(second).toMatchObject({ httpStatus: null });
+  });
+
+  it('keeps monotonic domain continuity across malformed later readings', () => {
+    const collector = createProviderFailureCollector(clockSequence([
+      { wallMs: 100, monotonicMs: 500 },
+      { wallMs: 200, monotonicMs: Number.NaN },
+      { wallMs: 210, monotonicMs: 600 },
+    ]));
+    collector.record({ endpointClass: 'none', phase: 'run', code: 'unknown' });
+    collector.record({ endpointClass: 'none', phase: 'run', code: 'unknown' });
+    const [first, second] = collector.snapshot().failures;
+    expect(first!.elapsedWallMs).toBe(100);
+    expect(first!.elapsedMonotonicMs).toBe(0);
+    expect(second!.elapsedWallMs).toBe(110);
+    expect(second!.elapsedMonotonicMs).toBe(100);
+  });
+
+  it('never evaluates accessor properties on a malicious input object', () => {
+    const collector = createProviderFailureCollector(clockSequence([
+      { wallMs: 0, monotonicMs: 0 },
+      { wallMs: 10, monotonicMs: 10 },
+    ]));
+    const input = Object.create(null) as Record<string, unknown>;
+    for (const key of ['endpointClass', 'phase', 'sampleOrdinal', 'dispatchSeq', 'httpStatus', 'code']) {
+      Object.defineProperty(input, key, {
+        get() { throw new Error(`must not read ${key}`); },
+        enumerable: true,
+      });
+    }
+    expect(() => collector.record(input as never)).not.toThrow();
+    const first = collector.snapshot().failures[0]!;
+    expect(first).toMatchObject({
+      endpointClass: 'none',
+      phase: 'run',
+      sampleOrdinal: null,
+      dispatchSeq: null,
+      httpStatus: null,
+      code: 'unknown',
+    });
+  });
+
+  it('survives proxy descriptor traps without policy impact', () => {
+    const collector = createProviderFailureCollector(clockSequence([
+      { wallMs: 0, monotonicMs: 0 },
+      { wallMs: 10, monotonicMs: 10 },
+    ]));
+    let trapRan = false;
+    const hostile = new Proxy({}, {
+      getOwnPropertyDescriptor() { trapRan = true; throw new Error('trap'); },
+    });
+    expect(() => collector.record(hostile as never)).not.toThrow();
+    expect(trapRan).toBe(true);
+    expect(collector.snapshot().failures[0]).toMatchObject({ code: 'unknown' });
   });
 });

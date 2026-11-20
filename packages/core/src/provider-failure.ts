@@ -98,7 +98,7 @@ const FAILURE_CODES: readonly ProviderFailureCode[] = [
   'unknown',
 ];
 
-const TRANSPORT_CAUSE_CODES: Readonly<Record<string, ProviderFailureCode>> = {
+const TRANSPORT_CAUSE_CODES: Readonly<Record<string, ProviderFailureCode>> = Object.freeze(Object.assign(Object.create(null), {
   ECONNRESET: 'transport_connection_reset',
   ETIMEDOUT: 'transport_timeout',
   ENOTFOUND: 'transport_dns',
@@ -111,27 +111,44 @@ const TRANSPORT_CAUSE_CODES: Readonly<Record<string, ProviderFailureCode>> = {
   UND_ERR_SOCKET: 'transport_network',
   UND_ERR_CLOSED: 'transport_network',
   UND_ERR_ABORTED: 'transport_abort',
-};
+}));
 
-function safeNonnegative(value: unknown): number | null {
+function safeElapsedClock(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
     ? Math.round(value)
     : null;
 }
 
 function safePositiveInteger(value: unknown): number | null {
-  const n = safeNonnegative(value);
-  return n != null && n > 0 ? n : null;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+    ? value
+    : null;
 }
 
-/** Own DATA properties only: accessors and proxy traps never run. */
+function safeHttpStatus(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 100 && value <= 599
+    ? value
+    : null;
+}
+
+/** Own DATA properties only; accessor results are never evaluated. */
 function ownDataValue(value: unknown, key: string): unknown {
   try {
     if (value === null || typeof value !== 'object') return undefined;
+    // A proxy can trap descriptor lookup. The trap may execute, but its
+    // result is discarded on failure and never affects policy or output.
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     return descriptor && 'value' in descriptor ? descriptor.value : undefined;
   } catch {
     return undefined;
+  }
+}
+
+function safeIsTypeError(value: unknown): boolean {
+  try {
+    return value instanceof TypeError;
+  } catch {
+    return false;
   }
 }
 
@@ -149,9 +166,9 @@ export function transportCodeForCause(error: unknown): ProviderFailureCode {
     const code = ownDataValue(cause, 'code');
     if (typeof code === 'string') {
       const mapped = TRANSPORT_CAUSE_CODES[code];
-      if (mapped) return mapped;
+      if (isProviderFailureCode(mapped)) return mapped;
     }
-    return error instanceof TypeError ? 'transport_type_error' : 'transport_network';
+    return safeIsTypeError(error) ? 'transport_type_error' : 'transport_network';
   } catch {
     return 'transport_network';
   }
@@ -169,31 +186,31 @@ export function statusCodeForHttp(status: number | null): ProviderFailureCode {
   return 'http_other';
 }
 
-function defaultNow(): { wallMs: number; monotonicMs: number } {
-  const wallMs = Date.now();
-  const monotonicMs =
-    typeof performance !== 'undefined' && typeof performance.now === 'function'
-      ? performance.now()
-      : wallMs;
-  return { wallMs, monotonicMs };
-}
 
-function safeNow(clock: ProviderFailureClock): { wallMs: number; monotonicMs: number } {
+function safeNow(
+  clock: ProviderFailureClock,
+  previous: { wallMs: number; monotonicMs: number } | undefined,
+): { wallMs: number; monotonicMs: number } {
+  let wallMs = previous?.wallMs ?? safeElapsedClock(Date.now()) ?? 0;
+  let monotonicMs = previous?.monotonicMs ?? wallMs;
   try {
     const now = clock.now();
-    return {
-      wallMs: safeNonnegative(now?.wallMs) ?? Date.now(),
-      monotonicMs: safeNonnegative(now?.monotonicMs) ?? Date.now(),
-    };
+    // Preserve clock domains: never replace a bad monotonic reading with the
+    // Date.now epoch after a valid performance.now baseline.
+    const nextWall = safeElapsedClock(ownDataValue(now, 'wallMs'));
+    const nextMonotonic = safeElapsedClock(ownDataValue(now, 'monotonicMs'));
+    if (nextWall != null) wallMs = nextWall;
+    if (nextMonotonic != null) monotonicMs = nextMonotonic;
   } catch {
-    const fallback = Date.now();
-    return { wallMs: fallback, monotonicMs: fallback };
+    /* Keep the last valid domain values. */
   }
+  return { wallMs, monotonicMs };
 }
 
 function elapsed(start: number, now: number): number {
   const delta = now - start;
-  return Number.isFinite(delta) && delta >= 0 ? Math.round(delta) : 0;
+  if (!Number.isFinite(delta) || delta < 0) return 0;
+  return Math.min(Math.round(delta), 2_147_483_647);
 }
 
 export interface ProviderFailureCollector {
@@ -209,9 +226,19 @@ export function emptyProviderFailureReport(): ProviderFailureReport {
 }
 
 export function createProviderFailureCollector(
-  clock: ProviderFailureClock = { now: defaultNow },
+  clock: ProviderFailureClock,
 ): ProviderFailureCollector {
-  const start = safeNow(clock);
+  const initial = { wallMs: safeElapsedClock(Date.now()) ?? 0, monotonicMs: 0 };
+  try {
+    initial.monotonicMs =
+      typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? safeElapsedClock(performance.now()) ?? initial.wallMs
+        : initial.wallMs;
+  } catch {
+    initial.monotonicMs = initial.wallMs;
+  }
+  let previous = initial;
+  const start = initial;
   const failures: ProviderFailureEvidence[] = [];
   let omittedFailureCount = 0;
 
@@ -219,25 +246,34 @@ export function createProviderFailureCollector(
     record(input: ProviderFailureInput): void {
       // Collection can never change budgets, retry decisions, or policy.
       try {
-        const now = safeNow(clock);
+        const now = safeNow(clock, previous);
+        previous = now;
+        // One own-data read per input field. Accessors are never evaluated.
+        const inputRecord = input as unknown;
+        const endpointInput = ownDataValue(inputRecord, 'endpointClass');
+        const phaseInput = ownDataValue(inputRecord, 'phase');
+        const sampleInput = ownDataValue(inputRecord, 'sampleOrdinal');
+        const dispatchInput = ownDataValue(inputRecord, 'dispatchSeq');
+        const statusInput = ownDataValue(inputRecord, 'httpStatus');
+        const codeInput = ownDataValue(inputRecord, 'code');
         const record: ProviderFailureEvidence = Object.freeze({
           endpointClass:
-            input.endpointClass === 'stations/markers' ||
-            input.endpointClass === 'stations/details'
-              ? input.endpointClass
+            endpointInput === 'stations/markers' ||
+            endpointInput === 'stations/details'
+              ? endpointInput
               : 'none',
           phase:
-            input.phase === 'scan' ||
-            input.phase === 'details' ||
-            input.phase === 'route' ||
-            input.phase === 'run'
-              ? input.phase
+            phaseInput === 'scan' ||
+            phaseInput === 'details' ||
+            phaseInput === 'route' ||
+            phaseInput === 'run'
+              ? phaseInput
               : 'run',
           sampleOrdinal:
-            input.phase === 'scan' ? safePositiveInteger(input.sampleOrdinal) : null,
-          dispatchSeq: safePositiveInteger(input.dispatchSeq),
-          httpStatus: safeNonnegative(input.httpStatus),
-          code: isProviderFailureCode(input.code) ? input.code : 'unknown',
+            phaseInput === 'scan' ? safePositiveInteger(sampleInput) : null,
+          dispatchSeq: safePositiveInteger(dispatchInput),
+          httpStatus: safeHttpStatus(statusInput),
+          code: isProviderFailureCode(codeInput) ? codeInput : 'unknown',
           elapsedWallMs: elapsed(start.wallMs, now.wallMs),
           elapsedMonotonicMs: elapsed(start.monotonicMs, now.monotonicMs),
         });
