@@ -149,13 +149,6 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
   let defaultVehicle = 'tata-harrier-ev-75';
   let catalogState: 'loading' | 'ready' | 'unavailable' = 'loading';
   let pendingSavedVehicle: SavedRouteDraft['vehicle'] | null = null;
-  let vehicleEditedWhileCatalogLoading = false;
-  vehicleRow.addEventListener('input', (event) => {
-    if (event.isTrusted) vehicleEditedWhileCatalogLoading = true;
-  });
-  vehicleRow.addEventListener('change', (event) => {
-    if (event.isTrusted) vehicleEditedWhileCatalogLoading = true;
-  });
   const addVehicleFallbackNote = (draft: SavedRouteDraft['vehicle'], reason: string): void => {
     const note = document.createElement('li');
     note.textContent = `${reason} Saved vehicle “${draft.label || 'unknown label'}” uses the custom inputs with its stored battery and real-world range; do not infer either from a claim.`;
@@ -173,8 +166,8 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     const catalogMatch = catalogState === 'ready' && draft.catalogId != null
       ? catalog.find((entry) => entry.id === draft.catalogId)
       : undefined;
-    const batteryMatchesCatalog = catalogMatch != null && draft.batteryKwh != null
-      && Math.abs(catalogMatch.batteryKwh - draft.batteryKwh) < 0.05;
+    const batteryMatchesCatalog = catalogMatch != null
+      && catalogMatch.batteryKwh === draft.batteryKwh;
     const useCatalog = catalogMatch != null && batteryMatchesCatalog
       && catalogMatch.id !== defaultVehicle && draft.realWorldRangeKm != null;
     selector.value = useCatalog ? catalogMatch!.id : 'custom';
@@ -207,11 +200,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     buildVehicleSelect(vehicleRow, catalog, defaultVehicle);
     const pending = pendingSavedVehicle;
     pendingSavedVehicle = null;
-    if (pending && !vehicleEditedWhileCatalogLoading) {
-      restoreVehicleDraft(pending);
-    } else if (pending) {
-      addVehicleFallbackNote(pending, 'You edited the vehicle fields before the catalog loaded; your edits were kept.');
-    }
+    if (pending) restoreVehicleDraft(pending);
   }).catch(() => {
     catalogState = 'unavailable';
     buildVehicleSelect(vehicleRow, [], defaultVehicle);
@@ -219,11 +208,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     vehicleRow.appendChild(note);
     const pending = pendingSavedVehicle;
     pendingSavedVehicle = null;
-    if (pending && !vehicleEditedWhileCatalogLoading) {
-      restoreVehicleDraft(pending);
-    } else if (pending) {
-      addVehicleFallbackNote(pending, 'You edited the vehicle fields before the catalog failed to load; your edits were kept.');
-    }
+    if (pending) restoreVehicleDraft(pending);
   });
 
   // ---- start charge stepper ----
@@ -357,7 +342,6 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
 
     // Clear the old saved summary; it must never appear to describe a new plan.
     root.querySelector('.plan-results')?.remove();
-    vehicleEditedWhileCatalogLoading = false;
     originField.setSavedPlace(draft.origin);
     destField.setSavedPlace(draft.destination);
     hideError(errorBox);
