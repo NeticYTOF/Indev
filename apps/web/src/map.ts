@@ -112,6 +112,69 @@ const tripSources = new WeakMap<maplibregl.Map, maplibregl.Marker[]>();
 const pendingTrips = new WeakMap<maplibregl.Map, TripDraw>();
 const readinessListeners = new WeakSet<maplibregl.Map>();
 
+interface ActiveRouteSource {
+  id: string;
+  geometry: Array<[number, number]>;
+}
+
+// setStyle removes style-owned sources/layers but leaves DOM markers alone.
+// Remember the active route so a style reload can reinstall ONLY the route
+// vector layers; markers and the user's camera must remain untouched.
+const activeRoutes = new WeakMap<maplibregl.Map, ActiveRouteSource>();
+const styleRecoveryListeners = new WeakSet<maplibregl.Map>();
+
+function addRouteLayers(
+  map: maplibregl.Map,
+  id: string,
+  geometry: Array<[number, number]>,
+): void {
+  if (!map.getSource(id)) {
+    map.addSource(id, {
+      type: 'geojson',
+      data: {
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'LineString', coordinates: geometry },
+      },
+    });
+  }
+  if (!map.getLayer(`${id}-casing`)) {
+    map.addLayer({
+      id: `${id}-casing`,
+      type: 'line',
+      source: id,
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-color': cssToken('--route-casing', FALLBACK_CASING),
+        'line-width': 9,
+      },
+    });
+  }
+  if (!map.getLayer(`${id}-line`)) {
+    map.addLayer({
+      id: `${id}-line`,
+      type: 'line',
+      source: id,
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-color': cssToken('--route', FALLBACK_ROUTE),
+        'line-width': 4.5,
+      },
+    });
+  }
+}
+
+function restoreActiveRoute(map: maplibregl.Map): void {
+  const active = activeRoutes.get(map);
+  if (active) addRouteLayers(map, active.id, active.geometry);
+}
+
+function installStyleRecovery(map: maplibregl.Map): void {
+  if (styleRecoveryListeners.has(map)) return;
+  styleRecoveryListeners.add(map);
+  map.on('style.load', () => restoreActiveRoute(map));
+}
+
 function flushPendingTrip(map: maplibregl.Map): void {
   const trip = pendingTrips.get(map);
   if (!trip || !map.isStyleLoaded()) return;
@@ -134,40 +197,10 @@ export function drawTrip(map: maplibregl.Map, trip: TripDraw): void {
   pendingTrips.delete(map);
   clearTrip(map);
   const id = `trip-${++tripLayerCounter}`;
-
-  map.addSource(id, {
-    type: 'geojson',
-    data: {
-      type: 'Feature',
-      properties: {},
-      geometry: {
-        type: 'LineString',
-        coordinates: trip.geometry,
-      },
-    },
-  });
-
   // Dark-map route: a light casing under the accent line for crisp clarity.
-  map.addLayer({
-    id: `${id}-casing`,
-    type: 'line',
-    source: id,
-    layout: { 'line-cap': 'round', 'line-join': 'round' },
-    paint: {
-      'line-color': cssToken('--route-casing', FALLBACK_CASING),
-      'line-width': 9,
-    },
-  });
-  map.addLayer({
-    id: `${id}-line`,
-    type: 'line',
-    source: id,
-    layout: { 'line-cap': 'round', 'line-join': 'round' },
-    paint: {
-      'line-color': cssToken('--route', FALLBACK_ROUTE),
-      'line-width': 4.5,
-    },
-  });
+  addRouteLayers(map, id, trip.geometry);
+  activeRoutes.set(map, { id, geometry: trip.geometry.slice() });
+  installStyleRecovery(map);
 
   const markers: maplibregl.Marker[] = [];
   tripSources.set(map, markers);
@@ -200,6 +233,7 @@ export function drawTrip(map: maplibregl.Map, trip: TripDraw): void {
 
 export function clearTrip(map: maplibregl.Map): void {
   pendingTrips.delete(map);
+  activeRoutes.delete(map);
   const markers = tripSources.get(map);
   if (markers) {
     markers.forEach((m) => m.remove());
@@ -209,6 +243,7 @@ export function clearTrip(map: maplibregl.Map): void {
   if (id && map.getLayer(`${id}-line`)) map.removeLayer(`${id}-line`);
   if (id && map.getLayer(`${id}-casing`)) map.removeLayer(`${id}-casing`);
   if (id && map.getSource(id)) map.removeSource(id);
+  delete (map as unknown as Record<string, unknown>)['__indeev_trip_id'];
 }
 
 function makePin(
