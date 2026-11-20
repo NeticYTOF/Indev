@@ -2134,6 +2134,271 @@ body {
 }
 
 /* ============================================================
+   Saved trip comparison — flat black/charcoal with burnt orange
+   ============================================================ */
+
+.drawer-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.compare-selection-status {
+  color: var(--ink-3);
+  font-size: var(--text-xs);
+  margin: 4px 0 0;
+}
+
+[data-compare-toggle][aria-pressed='true'] {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+body.comparing-trips .planner-head,
+body.comparing-trips .planner-form,
+body.comparing-trips .saved-route-review,
+body.comparing-trips .sheet-header,
+body.comparing-trips .sheet-dismiss {
+  display: none !important;
+}
+
+body.comparing-trips .panel {
+  width: min(1440px, calc(100% - 2 * var(--cluster-offset)));
+  max-height: calc(100% - 2 * var(--cluster-offset));
+}
+
+.compare-workspace {
+  display: grid;
+  gap: 14px;
+  padding: 4px;
+  min-width: 0;
+}
+
+.compare-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line-2);
+  padding-bottom: 12px;
+}
+
+.compare-toolbar h2 {
+  margin: 0 0 4px;
+  font-size: var(--text-xl);
+}
+
+.compare-toolbar-actions,
+.compare-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.compare-context {
+  border: 1px solid var(--line-2);
+  background: var(--surface-2);
+  padding: 10px 12px;
+}
+
+.compare-context .hint {
+  margin: 0;
+}
+
+.compare-notes {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--warn);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.compare-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.compare-card,
+.compare-difference {
+  min-width: 0;
+  border: 1px solid var(--line-2);
+  background: var(--surface);
+  padding: 16px;
+}
+
+.compare-card-head {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.compare-slot {
+  color: var(--accent);
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.compare-card h3,
+.compare-difference h3 {
+  margin: 0;
+  font-size: var(--text-lg);
+  overflow-wrap: anywhere;
+}
+
+.compare-endpoints {
+  color: var(--ink-2);
+  font-size: var(--text-sm);
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.compare-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.badge-synthetic {
+  color: var(--synthetic);
+  border-color: var(--synthetic-border);
+  background: var(--synthetic-soft);
+}
+
+.badge-warn {
+  color: var(--warn);
+  border-color: var(--warn-border);
+  background: var(--warn-soft);
+}
+
+.badge-soft {
+  color: var(--ink-2);
+  border-color: var(--line-2);
+  background: var(--surface-2);
+}
+
+.compare-card h4 {
+  margin: 16px 0 8px;
+  color: var(--ink-2);
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.compare-facts {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 14px;
+}
+
+.compare-facts > div {
+  display: grid;
+  grid-template-columns: minmax(86px, 40%) minmax(0, 1fr);
+  gap: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.compare-facts dt {
+  color: var(--ink-3);
+  font-size: var(--text-xs);
+}
+
+.compare-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.compare-stops {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.compare-stop {
+  display: flex;
+  gap: 9px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+
+.compare-stop-order {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.compare-stop-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.compare-stop-id,
+.compare-stop-facts {
+  color: var(--ink-2);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+
+.compare-table caption {
+  color: var(--ink-2);
+  text-align: left;
+  padding-bottom: 8px;
+}
+
+.compare-table th,
+.compare-table td {
+  border: 1px solid var(--line-2);
+  padding: 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.compare-table thead th {
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.compare-delta {
+  color: var(--accent);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.compare-card-actions {
+  margin-top: 16px;
+}
+
+@media (min-width: 1100px) {
+  .compare-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(270px, 0.8fr) minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compare-workspace * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ============================================================
    Print — journey itinerary only, flat black on white
    ============================================================ */
 
@@ -2336,5 +2601,52 @@ body {
   .journey-briefing h4 {
     break-after: avoid;
     page-break-after: avoid;
+  }
+
+  /* Comparison print is opt-in: normal journey printing is unchanged. */
+  body.comparing-trips .planner {
+    display: block !important;
+  }
+  body.comparing-trips .compare-toolbar {
+    display: none !important;
+  }
+  body.comparing-trips .compare-workspace {
+    display: block;
+    padding: 0;
+  }
+  body.comparing-trips .compare-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  body.comparing-trips .compare-card,
+  body.comparing-trips .compare-difference,
+  body.comparing-trips .compare-context {
+    background: #fff;
+    color: #111;
+    border-color: #888;
+  }
+  body.comparing-trips .compare-card h3,
+  body.comparing-trips .compare-difference h3,
+  body.comparing-trips .compare-facts dd,
+  body.comparing-trips .compare-delta {
+    color: #111;
+  }
+  body.comparing-trips .hint,
+  body.comparing-trips .compare-facts dt,
+  body.comparing-trips .compare-endpoints,
+  body.comparing-trips .compare-stop-facts {
+    color: #444;
+  }
+  body.comparing-trips .compare-table th,
+  body.comparing-trips .compare-table td {
+    border-color: #888;
+    padding: 4px;
+  }
+  body.comparing-trips .compare-card,
+  body.comparing-trips .compare-difference,
+  body.comparing-trips .compare-stop,
+  body.comparing-trips .compare-facts > div {
+    break-inside: avoid;
+    page-break-inside: avoid;
   }
 }
