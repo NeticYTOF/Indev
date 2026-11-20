@@ -14,6 +14,8 @@ export interface PlugClassification {
   health: PlugHealth;
   /** status and fault/availability signals disagree */
   contradiction: boolean;
+  /** Nominally usable status has present nonboolean availability evidence. */
+  invalidAvailability?: true;
 }
 
 const norm = (s: string | null | undefined): string =>
@@ -48,6 +50,13 @@ export function classifyPlug(c: StatiqConnector): PlugClassification {
   // Explicitly unavailable / disconnected without fault text -> offline.
   if (isUnavailable || status.includes('offline')) {
     return { health: 'offline', contradiction: false };
+  }
+
+  // Null/missing availability retains legacy semantics. Present malformed
+  // availability cannot substantiate a nominal usable status. Definite
+  // fault/offline and positive-status/fault-note rules above stay intact.
+  if (positiveStatus && available != null && typeof available !== 'boolean') {
+    return { health: 'uncertain', contradiction: true, invalidAvailability: true };
   }
 
   // Occupied but working.
@@ -118,6 +127,7 @@ export interface Ccs2Summary {
   pricePerKwh: number | null;
   /** Numeric evidence is independent of connector health/availability. */
   hasInvalidUsablePower: boolean;
+  hasInvalidUsableAvailability: boolean;
   hasMissingUsablePower: boolean;
   hasInvalidSelectedTariff: boolean;
   /** Any status/fault contradictions among CCS2 DC plugs (UI shows uncertainty). */
@@ -139,6 +149,7 @@ export function summarizeCcs2(station: StatiqStationDetail): Ccs2Summary {
     maxKw: null,
     pricePerKwh: null,
     hasInvalidUsablePower: false,
+    hasInvalidUsableAvailability: false,
     hasMissingUsablePower: false,
     hasInvalidSelectedTariff: false,
     hasContradiction: false,
@@ -148,7 +159,8 @@ export function summarizeCcs2(station: StatiqStationDetail): Ccs2Summary {
     for (const c of ch.connectors ?? []) {
       if (!isCcs2Dc(ch, c)) continue;
       s.total++;
-      const { health, contradiction } = classifyPlug(c);
+      const { health, contradiction, invalidAvailability } = classifyPlug(c);
+      if (invalidAvailability) s.hasInvalidUsableAvailability = true;
       if (contradiction) s.hasContradiction = true;
       switch (health) {
         case 'working-free':

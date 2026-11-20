@@ -494,6 +494,10 @@ async function planCore(
       }
       if (response.station) {
         const summary = summarizeCcs2(response.station);
+        if (summary.hasInvalidUsableAvailability) {
+          if (!summary.isUsable) throw new Error('Usable connector availability is malformed');
+          warnings.push(`Station "${c.name}" (${c.stationId}) has invalid connector availability; only independently usable plugs support this plan.`);
+        }
         if (summary.isUsable && summary.hasInvalidUsablePower && summary.maxKw == null) {
           // Connector health is known, but there is no supported power for
           // timing this candidate. Preserve a hole, not a known-unusable
@@ -529,7 +533,9 @@ async function planCore(
         throw err;
       }
       unknownCandidates.add(c.stationId);
-      warnings.push(err instanceof Error && err.message === 'Usable charger power is malformed'
+      warnings.push(err instanceof Error && err.message === 'Usable connector availability is malformed'
+        ? `Skipping "${c.name}" (${c.stationId}): connector availability is invalid; usable charger evidence is unknown.`
+        : err instanceof Error && err.message === 'Usable charger power is malformed'
         ? `Skipping "${c.name}" (${c.stationId}): usable charger power is invalid; charging time cannot be verified.`
         : `Skipping "${c.name}" (${c.stationId}): live details unavailable.`);
     }
