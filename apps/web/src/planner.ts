@@ -149,6 +149,18 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
   let defaultVehicle = 'tata-harrier-ev-75';
   let catalogState: 'loading' | 'ready' | 'unavailable' = 'loading';
   let pendingSavedVehicle: SavedRouteDraft['vehicle'] | null = null;
+  let vehicleEditedWhileCatalogLoading = false;
+  vehicleRow.addEventListener('input', (event) => {
+    if (event.isTrusted) vehicleEditedWhileCatalogLoading = true;
+  });
+  vehicleRow.addEventListener('change', (event) => {
+    if (event.isTrusted) vehicleEditedWhileCatalogLoading = true;
+  });
+  const addVehicleFallbackNote = (draft: SavedRouteDraft['vehicle'], reason: string): void => {
+    const note = document.createElement('li');
+    note.textContent = `${reason} Saved vehicle “${draft.label || 'unknown label'}” uses the custom inputs with its stored battery and real-world range; do not infer either from a claim.`;
+    savedReview.querySelector('ul')?.appendChild(note);
+  };
   const restoreVehicleDraft = (draft: SavedRouteDraft['vehicle']): void => {
     if (catalogState === 'loading') {
       // The catalog response owns vehicleRow until it settles; reapply after it.
@@ -161,9 +173,11 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     const catalogMatch = catalogState === 'ready' && draft.catalogId != null
       ? catalog.find((entry) => entry.id === draft.catalogId)
       : undefined;
-    const useCatalog = catalogMatch != null && catalogMatch.id !== defaultVehicle
-      && draft.realWorldRangeKm != null;
-    selector.value = useCatalog ? catalogMatch.id : 'custom';
+    const batteryMatchesCatalog = catalogMatch != null && draft.batteryKwh != null
+      && Math.abs(catalogMatch.batteryKwh - draft.batteryKwh) < 0.05;
+    const useCatalog = catalogMatch != null && batteryMatchesCatalog
+      && catalogMatch.id !== defaultVehicle && draft.realWorldRangeKm != null;
+    selector.value = useCatalog ? catalogMatch!.id : 'custom';
     selector.dispatchEvent(new Event('change'));
 
     if (useCatalog) {
@@ -174,8 +188,17 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
 
     const battery = vehicleRow.querySelector<HTMLInputElement>('input[data-custom-kwh]');
     const range = vehicleRow.querySelector<HTMLInputElement>('input[data-real-world]');
+    // Leave an unknown battery blank; never infer it from a stale/default catalog entry.
     if (battery && draft.batteryKwh != null) battery.value = String(draft.batteryKwh);
     if (range && draft.realWorldRangeKm != null) range.value = String(draft.realWorldRangeKm);
+    const reason = catalogState === 'unavailable'
+      ? 'Vehicle catalog could not be loaded.'
+      : catalogMatch == null
+        ? 'The saved catalog ID is not in the current catalog.'
+        : !batteryMatchesCatalog
+          ? 'The saved battery does not match the current catalog entry.'
+          : 'The saved vehicle is the default catalog entry and needs its own range review.';
+    addVehicleFallbackNote(draft, reason);
   };
   void api.vehicles().then((res) => {
     catalog = res.catalog;
@@ -184,7 +207,11 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     buildVehicleSelect(vehicleRow, catalog, defaultVehicle);
     const pending = pendingSavedVehicle;
     pendingSavedVehicle = null;
-    if (pending) restoreVehicleDraft(pending);
+    if (pending && !vehicleEditedWhileCatalogLoading) {
+      restoreVehicleDraft(pending);
+    } else if (pending) {
+      addVehicleFallbackNote(pending, 'You edited the vehicle fields before the catalog loaded; your edits were kept.');
+    }
   }).catch(() => {
     catalogState = 'unavailable';
     buildVehicleSelect(vehicleRow, [], defaultVehicle);
@@ -192,7 +219,11 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     vehicleRow.appendChild(note);
     const pending = pendingSavedVehicle;
     pendingSavedVehicle = null;
-    if (pending) restoreVehicleDraft(pending);
+    if (pending && !vehicleEditedWhileCatalogLoading) {
+      restoreVehicleDraft(pending);
+    } else if (pending) {
+      addVehicleFallbackNote(pending, 'You edited the vehicle fields before the catalog failed to load; your edits were kept.');
+    }
   });
 
   // ---- start charge stepper ----
@@ -305,6 +336,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
   // still-pending run (the shared-timer lifecycle defect from
   // independent review).
   const gate = new SubmitGate();
+  let planInFlight = false;
   const setActionsBusy = (busy: boolean): void => {
     planButton.disabled = busy;
     const aiBtn = aiBox.querySelector<HTMLButtonElement>('[data-ai-plan]');
@@ -314,6 +346,10 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
   section.appendChild(errorBox);
 
   const loadSavedRoute = (draft: SavedRouteDraft): boolean => {
+    if (planInFlight) {
+      showError(errorBox, 'A plan is already running. Wait for it to finish before editing this saved route.');
+      return false;
+    }
     if (!savedRouteDraftReady(draft)) {
       showError(errorBox, 'This saved route has invalid coordinates. Reopen it to inspect the record, then pick both places manually.');
       return false;
@@ -321,9 +357,9 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
 
     // Clear the old saved summary; it must never appear to describe a new plan.
     root.querySelector('.plan-results')?.remove();
+    vehicleEditedWhileCatalogLoading = false;
     originField.setSavedPlace(draft.origin);
     destField.setSavedPlace(draft.destination);
-    restoreVehicleDraft(draft.vehicle);
     hideError(errorBox);
 
     savedReview.replaceChildren();
@@ -338,6 +374,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     const submitNote = el('<p>Plan or Plan with AI starts a new manual run. Start charge remains at the value shown below and must be reviewed.</p>');
     savedReview.append(title, intro, list, submitNote);
     savedReview.classList.remove('hidden');
+    restoreVehicleDraft(draft.vehicle);
     if (window.innerWidth <= 720) {
       root.classList.add('open');
       document.getElementById('sheet-open')?.setAttribute('aria-expanded', 'true');
@@ -347,7 +384,15 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     return true;
   };
 
+  const savedVehicleStillPending = (): boolean => catalogState === 'loading' && pendingSavedVehicle != null;
+  const refusePendingSavedVehicle = (): boolean => {
+    if (!savedVehicleStillPending()) return false;
+    showError(errorBox, 'Waiting for the saved vehicle selection to finish loading — review it before planning.');
+    return true;
+  };
+
   form.addEventListener('ai-plan', async () => {
+    if (refusePendingSavedVehicle()) return;
     if (!origin.hit || !destination.hit) {
       showError(errorBox, 'Pick both a starting point and a destination from the suggestions first.');
       return;
@@ -364,6 +409,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     // busy readout. Buttons are already disabled; this is the fail-closed
     // backstop for any submit that fires anyway.
     if (!gate.tryBegin()) return;
+    planInFlight = true;
     setActionsBusy(true);
     const aiButton = aiBox.querySelector('[data-ai-plan]') as HTMLButtonElement | null;
     hideError(errorBox);
@@ -392,6 +438,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
       stopBusy();
       setActionsBusy(false);
       gate.end();
+      planInFlight = false;
       // Keyboard focus returns to the retry control WITHOUT scrolling:
       // the failure is already revealed in place (renderPlanFailure
       // aligned it to the top); a scrolling focus would push it back
@@ -407,6 +454,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (refusePendingSavedVehicle()) return;
     if (!origin.hit || !destination.hit) {
       showError(errorBox, 'Pick both a starting point and a destination from the suggestions.');
       return;
@@ -421,6 +469,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
 
     // One planning run at a time - see the gate declaration above.
     if (!gate.tryBegin()) return;
+    planInFlight = true;
     setLoading(true, serverIsMock === null ? 'Planning route…' : serverIsMock ? 'Planning synthetic route…' : 'Planning live route…');
     setActionsBusy(true);
     hideError(errorBox);
@@ -445,6 +494,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
       setLoading(false, 'Plan route');
       setActionsBusy(false);
       gate.end();
+      planInFlight = false;
       // Keyboard focus returns to the retry control WITHOUT scrolling:
       // the failure is already revealed in place (renderPlanFailure
       // aligned it to the top); a scrolling focus would push it back
