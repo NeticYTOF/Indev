@@ -4,6 +4,10 @@
     "noEmit": true,
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "baseUrl": ".",
+    "paths": {
+      "/src/*": ["apps/web/src/*"]
+    },
     "lib": [
       "ES2023",
       "DOM",
