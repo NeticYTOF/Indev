@@ -151,23 +151,27 @@ describe('planTrip', () => {
     expect(plan.routeDistanceKm - plan.stops[0]!.chainageKm).toBeLessThanOrEqual(300);
   });
 
-  it('treats a user-supplied real-world range as the hard leg cap, not the 300 km default', async () => {
+  it('reports the tightened ceiling in infeasible evidence with production vehicle wiring', async () => {
     const resolvedVehicle = resolveVehicle({
       custom: { label: 'Short-range test car', batteryKwh: 60, realWorldRangeKm: 150 },
     });
-    // 200 km exceeds the user's 150 km safe range, so the planner must refuse
-    // and report THAT cap - not the default Harrier's 300 km range.
-    await expect(
-      planTrip(
-        {
-          router: fakeRouter(200),
-          statiq: fakeStatiq([{ id: 1, name: 'Statiq 200', chainageKm: 200 }]),
-          resolvedVehicle,
-        },
-        O,
-        D(200),
-      ),
-    ).rejects.toThrow(/150 km safe running range/);
+    // Production HTTP/MCP pass both the derived config and its metadata.
+    // The matched 150 km config already makes 200 km energy-infeasible;
+    // this pins diagnostic provenance, not a new safety rejection.
+    const err = await planTrip(
+      {
+        router: fakeRouter(200),
+        statiq: fakeStatiq([{ id: 1, name: 'Statiq 200', chainageKm: 200 }]),
+        vehicle: resolvedVehicle.config,
+        resolvedVehicle,
+      },
+      O,
+      D(200),
+    ).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: 'infeasible' });
+    const message = err instanceof Error ? err.message : String(err);
+    expect(message).toMatch(/150 km safe running range/);
+    expect(message).not.toMatch(/300 km safe running range/);
   });
 
   it('adds a stop when an energy-reachable final hop still exceeds 300 km', async () => {
