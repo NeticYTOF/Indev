@@ -132,8 +132,9 @@ function labelText(value: unknown, fallback = 'Unknown'): string {
   return typeof value === 'string' && value.trim().length > 0 ? value : fallback;
 }
 
-function stopLabel(stop: JourneyBriefingStopSource): string {
-  return labelText(record((stop as { station?: unknown }).station)?.name, 'Unknown station');
+function stopLabel(stop: unknown): string {
+  const source = record(stop);
+  return labelText(record(source?.station)?.name, 'Unknown station');
 }
 
 function finiteNumber(value: unknown): number | null {
@@ -151,7 +152,7 @@ function socValue(value: unknown): number | null {
 }
 
 
-function legDistance(totalKm: number | null, stop: JourneyBriefingStopSource | undefined): {
+function legDistance(totalKm: number | null, stop: Record<string, unknown> | undefined): {
   km: number | null;
   basis: JourneyLeg['distanceBasis'];
 } {
@@ -171,7 +172,9 @@ function legDistance(totalKm: number | null, stop: JourneyBriefingStopSource | u
  */
 export function buildJourneyBriefingData(plan: JourneyBriefingSource): JourneyBriefingData {
   const stopsAvailable = Array.isArray(plan.stops);
-  const stops = stopsAvailable ? plan.stops : [];
+  // Normalize every declared entry once. A null/malformed stop remains a
+  // placeholder row instead of crashing all other stops and the whole render.
+  const stops = stopsAvailable ? plan.stops.map((stop) => record(stop) ?? {}) : [];
   // Evidence holes are local to this presentation; never mutate the plan's own warnings.
   const warnings: string[] = Array.isArray(plan.warnings) ? [...plan.warnings] : [];
   if (!stopsAvailable) {
@@ -258,7 +261,7 @@ export function buildJourneyBriefingData(plan: JourneyBriefingSource): JourneyBr
     itinerary.push({
       index: index + 1,
       stationName: stopLabel(stop),
-      stationId: safeStationId(record((stop as { station?: unknown }).station)?.stationId),
+      stationId: safeStationId(record(stop.station)?.stationId),
       legKm,
       detourKm,
       arriveSocPct,

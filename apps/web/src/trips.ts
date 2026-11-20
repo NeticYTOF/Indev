@@ -145,7 +145,12 @@ export function renderTripsDrawer(
     try {
       const { trips } = await api.trips();
       list.innerHTML = '';
-      const tripList = Array.isArray(trips) ? trips : [];
+      const tripsKnown = Array.isArray(trips);
+      const tripList = tripsKnown ? trips : [];
+      if (!tripsKnown) {
+        list.appendChild(el('<p class="hint">Saved trip list is unavailable.</p>'));
+        return;
+      }
       if (tripList.length === 0) {
         list.appendChild(el('<p class="hint">No saved trips yet. Plan a route, then save it.</p>'));
         return;

@@ -95,8 +95,9 @@ export function renderPlanPanel(
 
   // ---- actions ----
   // Waypoint links depend on coordinates only. A caller may label a real
-  // coordinate Unknown; that must not suppress a valid route URL.
-  const mapsUrl = routeDirectionsUrl(
+  // coordinate Unknown; that must not suppress a valid route URL. An unreadable
+  // stop list suppresses the whole link rather than implying zero waypoints.
+  const mapsUrl = !stopsKnown ? null : routeDirectionsUrl(
     coordinatePoint(raw.origin), coordinatePoint(raw.destination),
     stops.map((stop) => coordinatePoint(record(stop)?.station)),
   );
