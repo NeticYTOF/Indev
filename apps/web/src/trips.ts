@@ -22,6 +22,8 @@ import { safeStationId } from './station-evidence.js';
 import { storageWarningText, storageWarningElement } from './storage-warning.js';
 import { formatDuration } from './format.js';
 import { savedRouteGeometry } from './safe-url.js';
+import { buildTripComparison } from './trip-compare.js';
+import { clearTripComparisonView, renderTripComparisonWorkspace } from './trip-compare-view.js';
 
 /**
  * Hide the saved-trips drawer. Closing it leaves every in-drawer focus
@@ -126,10 +128,18 @@ export function renderTripsDrawer(
   loadSavedRoute: LoadSavedRoute,
 ): void {
   drawer.innerHTML = '';
+  const selected = new Set<number>();
+  let loadedTrips: SavedTrip[] = [];
   const head = el(`
     <div class="drawer-head">
-      <h2>Saved trips</h2>
-      <button type="button" class="btn btn-ghost btn-compact" data-close>Close</button>
+      <div>
+        <h2>Saved trips</h2>
+        <p id="compare-selection-status" class="compare-selection-status" role="status" aria-live="polite">Select two trips to compare.</p>
+      </div>
+      <div class="drawer-head-actions">
+        <button type="button" class="btn btn-ghost btn-compact" data-compare-selected aria-describedby="compare-selection-status" disabled>Compare selected (0/2)</button>
+        <button type="button" class="btn btn-ghost btn-compact" data-close>Close</button>
+      </div>
     </div>
   `);
   drawer.appendChild(head);
@@ -139,6 +149,89 @@ export function renderTripsDrawer(
 
   const list = el('<div class="trip-list"></div>');
   drawer.appendChild(list);
+  const status = head.querySelector<HTMLButtonElement>('[data-compare-selected]');
+  const selectionStatus = head.querySelector<HTMLElement>('#compare-selection-status');
+
+  const updateSelection = (announcement?: string): void => {
+    const count = selected.size;
+    if (status) {
+      status.textContent = `Compare selected (${count}/2)`;
+      status.disabled = count !== 2;
+    }
+    if (selectionStatus) {
+      selectionStatus.textContent = announcement ??
+        (count === 2 ? 'Two trips selected. Compare them or remove one.' : `${count} of 2 trips selected.`);
+    }
+    list.querySelectorAll<HTMLButtonElement>('[data-compare-toggle]').forEach((button) => {
+      const index = Number(button.dataset.compareToggle);
+      const active = selected.has(index);
+      button.setAttribute('aria-pressed', String(active));
+      button.textContent = active ? 'Remove from comparison' : 'Select to compare';
+    });
+  };
+
+  const toggleSelection = (index: number): void => {
+    if (selected.has(index)) {
+      selected.delete(index);
+      updateSelection();
+      return;
+    }
+    if (selected.size >= 2) {
+      updateSelection('Two trips already selected. Remove one before selecting another.');
+      return;
+    }
+    selected.add(index);
+    updateSelection();
+  };
+
+  status?.addEventListener('click', () => {
+    if (selected.size !== 2) return;
+    const slots = [...selected].sort((a, b) => a - b);
+    const panel = document.getElementById('planner-panel') as HTMLElement;
+    const returnToDrawer = (): void => {
+      clearTripComparisonView();
+      drawer.classList.remove('hidden');
+      head.querySelector<HTMLElement>('[data-compare-selected]')?.focus();
+    };
+    const drawComparison = (focusSwap = false): void => {
+      const pair = slots.map((index) => loadedTrips[index] as SavedTrip);
+      const comparison = buildTripComparison(pair);
+      const root = renderTripComparisonWorkspace(panel, comparison, {
+        onBack: returnToDrawer,
+        onClear: () => {
+          selected.clear();
+          updateSelection('Comparison selection cleared.');
+          returnToDrawer();
+        },
+        onSwap: () => {
+          const first = slots[0] as number;
+          slots[0] = slots[1] as number;
+          slots[1] = first;
+          drawComparison(true);
+        },
+        onRemove: (slot) => {
+          selected.delete(slots[slot === 'A' ? 0 : 1] as number);
+          updateSelection(`Removed route ${slot} from the comparison.`);
+          returnToDrawer();
+        },
+        onOpen: (slot) => {
+          clearTripComparisonView();
+          openSavedTrip(pair[slot === 'A' ? 0 : 1] as SavedTrip, map, loadSavedRoute);
+        },
+        onEdit: (slot) => {
+          clearTripComparisonView();
+          if (loadSavedRoute(buildSavedRouteDraft(pair[slot === 'A' ? 0 : 1] as SavedTrip))) {
+            hideTripsDrawer(drawer);
+            toast('Saved route loaded for review — plan manually when ready.');
+          }
+        },
+      });
+      if (focusSwap) root.querySelector<HTMLElement>('[data-compare-swap]')?.focus();
+      else root.focus();
+    };
+    drawer.classList.add('hidden');
+    drawComparison();
+  });
 
   const load = async (): Promise<void> => {
     list.innerHTML = '<p class="hint">Loading…</p>';
@@ -147,6 +240,9 @@ export function renderTripsDrawer(
       list.innerHTML = '';
       const tripsKnown = Array.isArray(trips);
       const tripList = tripsKnown ? trips : [];
+      loadedTrips = tripList;
+      selected.clear();
+      updateSelection();
       if (!tripsKnown) {
         list.appendChild(el('<p class="hint">Saved trip list is unavailable.</p>'));
         return;
@@ -155,9 +251,10 @@ export function renderTripsDrawer(
         list.appendChild(el('<p class="hint">No saved trips yet. Plan a route, then save it.</p>'));
         return;
       }
-      for (const trip of tripList) {
-        list.appendChild(renderTripRow(trip, map, drawer, loadSavedRoute));
-      }
+      tripList.forEach((trip, index) => {
+        list.appendChild(renderTripRow(trip, index, selected.has(index), toggleSelection, map, drawer, loadSavedRoute));
+      });
+      updateSelection();
     } catch (err) {
       list.innerHTML = '';
       list.appendChild(el(`<p class="hint">Could not load trips: ${escapeHtml(err instanceof Error ? err.message : 'unknown error')}</p>`));
@@ -168,6 +265,9 @@ export function renderTripsDrawer(
 
 function renderTripRow(
   trip: SavedTrip,
+  index: number,
+  selected: boolean,
+  onCompareToggle: (index: number) => void,
   map: maplibregl.Map,
   drawer: HTMLElement,
   loadSavedRoute: LoadSavedRoute,
@@ -192,6 +292,7 @@ function renderTripRow(
         </span>
       </div>
       <div class="trip-actions">
+        <button type="button" class="btn btn-compact btn-ghost" data-compare-toggle data-compare-index="${index}" aria-pressed="${selected}">${selected ? 'Remove from comparison' : 'Select to compare'}</button>
         <button type="button" class="btn btn-compact btn-ghost" data-open>Open</button>
         <button type="button" class="btn btn-compact btn-ghost" data-edit>Edit route</button>
         <button type="button" class="btn btn-compact btn-danger-ghost" data-delete>Delete</button>
@@ -199,13 +300,17 @@ function renderTripRow(
     </div>
   `);
 
+  row.querySelector('[data-compare-toggle]')?.addEventListener('click', () => onCompareToggle(index));
+
   row.querySelector('[data-open]')?.addEventListener('click', () => {
+    clearTripComparisonView();
     drawer.classList.add('hidden'); // hide directly: focus lands on the
     // trip summary below, not on the drawer's owner control
     openSavedTrip(trip, map, loadSavedRoute);
   });
 
   row.querySelector('[data-edit]')?.addEventListener('click', () => {
+    clearTripComparisonView();
     // Only copy into the composer. No plan, geocode, station or AI request
     // starts here, and the saved trip itself is never modified.
     if (!loadSavedRoute(buildSavedRouteDraft(trip))) return;
