@@ -122,7 +122,10 @@ export function parseGatewayFailureCode(value: unknown): GatewayFailureCode | nu
 }
 
 export function parseGatewayUpstreamStatus(value: unknown): number | null {
-  if (typeof value !== 'string' || !/^[1-5][0-9][0-9]$/.test(value)) return null;
+  // `$` in JS matches before a final line terminator. Require exact length
+  // so 429\n, 429\r, 429\r\n, U+2028 and U+2029 cannot be coerced.
+  if (typeof value !== 'string' || value.length !== 3) return null;
+  if (!/^[1-5][0-9][0-9]$/.test(value)) return null;
   const status = Number(value);
   return status >= 100 && status <= 599 ? status : null;
 }
@@ -310,8 +313,18 @@ export function createProviderFailureCollector(
         const dispatchInput = ownDataValue(inputRecord, 'dispatchSeq');
         const statusInput = ownDataValue(inputRecord, 'httpStatus');
         const codeInput = ownDataValue(inputRecord, 'code');
-        const gatewayCodeInput = parseGatewayFailureCode(ownDataValue(inputRecord, 'gatewayFailureCode'));
-        const gatewayStatusInput = parseGatewayUpstreamStatus(ownDataValue(inputRecord, 'gatewayUpstreamStatus'));
+        const recordHttpStatus = safeHttpStatus(statusInput);
+        // Gateway metadata is accepted only on failed marker HTTP records.
+        const gatewayEligible = endpointInput === 'stations/markers' &&
+          phaseInput === 'scan' && recordHttpStatus != null && recordHttpStatus >= 400;
+        const gatewayCodeInput = gatewayEligible
+          ? parseGatewayFailureCode(ownDataValue(inputRecord, 'gatewayFailureCode'))
+          : null;
+        // The transport parser supplies a validated NUMBER after reading the
+        // strict string header. Here, accept only numeric own-data status.
+        const gatewayStatusInput = gatewayCodeInput != null
+          ? safeHttpStatus(ownDataValue(inputRecord, 'gatewayUpstreamStatus'))
+          : null;
         const record: ProviderFailureEvidence = Object.freeze({
           endpointClass: endpointInput === 'stations/markers' ||
             endpointInput === 'stations/details' ? endpointInput : 'none',
@@ -319,7 +332,7 @@ export function createProviderFailureCollector(
             phaseInput === 'route' || phaseInput === 'run' ? phaseInput : 'run',
           sampleOrdinal: phaseInput === 'scan' ? safePositiveInteger(sampleInput) : null,
           dispatchSeq: safePositiveInteger(dispatchInput),
-          httpStatus: safeHttpStatus(statusInput),
+          httpStatus: recordHttpStatus,
           code: isProviderFailureCode(codeInput) ? codeInput : 'unknown',
           gatewayFailureCode: gatewayCodeInput,
           // Gateway status is meaningful only with a valid gateway code.
