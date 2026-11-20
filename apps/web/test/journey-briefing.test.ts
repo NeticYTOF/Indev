@@ -359,7 +359,8 @@ describe('journey briefing', () => {
     for (const pair of [[0, 0], [-90, 180], [90, -180]]) {
       const handoff = renderJourneyHandoffMarkup({ ...plan(), stops: [], origin: { label: 'A', lat: pair[0], lon: pair[1] }, destination: { label: 'B', lat: 1, lon: 2 } });
       expect(handoff).toContain('data-trip-maps');
-      expect(handoff).toContain('data-stop-maps');
+      expect(handoff).not.toContain('data-stop-maps');
+      expect(handoff).toContain('Per-charger Directions unavailable');
     }
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, '27']) {
       const handoff = renderJourneyHandoffMarkup({ ...plan(), origin: { label: 'A', lat: bad, lon: 76 }, destination: { label: 'B', lat: 26, lon: 75 }, stops: [] });

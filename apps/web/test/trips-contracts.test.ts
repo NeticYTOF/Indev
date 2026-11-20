@@ -68,6 +68,6 @@ describe('saved-trip delete: single flight + focus that survives both outcomes',
     // Deliberate focus outside the drawer must be left alone.
     expect(deleteSrc).toContain('document.activeElement === document.body || drawer.contains(document.activeElement)');
     expect(tripsSrc)
-      .toMatch(/document\.getElementById\('trips-button'\)\?\.focus\(\);\s+}\s+renderTripsDrawer\(drawer, map\); \/\/ refresh list/);
+      .toMatch(/document\.getElementById\('trips-button'\)\?\.focus\(\);\s+}\s+renderTripsDrawer\(drawer, map, loadSavedRoute\); \/\/ refresh list/);
   });
 });
