@@ -26,6 +26,7 @@ interface PlanBody {
 
 interface Counters {
   geocode: number;
+  geocodeDone?: number;
   plan: number;
   ai: number;
   station: number;
@@ -84,6 +85,7 @@ async function wiredPage(
     batteryKwh?: number | null;
     catalogId?: string | null;
     geocodeHits?: Array<{ label: string; lat: number; lon: number }>;
+    holdGeocode?: Promise<void>;
   } = {},
 ): Promise<void> {
   await page.route(/^https?:\/\//, async (route) => {
@@ -105,12 +107,15 @@ async function wiredPage(
     return route.fulfill({ json: { trips: [savedTrip(options.batteryKwh, options.catalogId)] } });
   });
   await page.route('**/api/trips/*', (route) => route.fulfill({ json: { ok: true } }));
-  await page.route('**/api/geocode*', (route) => {
+  await page.route('**/api/geocode*', async (route) => {
     counters.geocode++;
+    if (options.holdGeocode) await options.holdGeocode;
     const hits = (options.geocodeHits ?? []).map((hit) => ({
       ...hit, name: hit.label, city: null, state: null, country: null,
     }));
-    return hits.length > 0 ? route.fulfill({ json: { hits } }) : route.abort();
+    if (hits.length > 0) await route.fulfill({ json: { hits } });
+    else await route.abort();
+    counters.geocodeDone = (counters.geocodeDone ?? 0) + 1;
   });
   await page.route('**/api/stations/*', (route) => { counters.station++; return route.abort(); });
   await page.route('**/api/ai/plan', async (route) => {
@@ -266,7 +271,7 @@ test('a missing saved battery stays blank and requires user input', async ({ pag
   expect(counters.plan).toBe(0);
 });
 
-test('typing invalidates restored coordinates and late geocode results', async ({ page }) => {
+test('typing after restore invalidates the selected place', async ({ page }) => {
   const counters: Counters = { geocode: 0, plan: 0, ai: 0, station: 0, save: 0 };
   await wiredPage(page, counters, {
     geocodeHits: [{ label: 'Late geocoded Delhi', lat: 19.076, lon: 72.8777 }],
@@ -283,6 +288,38 @@ test('typing invalidates restored coordinates and late geocode results', async (
   expect(counters.geocode).toBeGreaterThan(0);
   expect(counters.plan).toBe(0);
   expect(counters.ai).toBe(0);
+  expect(counters.save).toBe(0);
+});
+
+test('a pending pre-edit geocode response cannot replace saved coordinates', async ({ page }) => {
+  let releaseGeocode!: () => void;
+  const geocode = new Promise<void>((resolve) => { releaseGeocode = resolve; });
+  const counters: Counters = { geocode: 0, plan: 0, ai: 0, station: 0, save: 0 };
+  await wiredPage(page, counters, {
+    holdGeocode: geocode,
+    geocodeHits: [{ label: 'Stale geocode result', lat: 19.076, lon: 72.8777 }],
+  });
+
+  await page.getByRole('searchbox', { name: 'From', exact: true }).fill('Stale query');
+  await expect.poll(() => counters.geocode).toBe(1);
+  await page.locator('#trips-button').click();
+  await page.getByRole('button', { name: 'Edit route', exact: true }).click();
+
+  releaseGeocode();
+  await expect.poll(() => counters.geocodeDone).toBe(1);
+  await expect(page.getByRole('searchbox', { name: 'From', exact: true })).toHaveValue(SAVED_ORIGIN.label);
+  await expect(page.getByRole('searchbox', { name: 'To', exact: true })).toHaveValue(SAVED_DESTINATION.label);
+  await expect(page.locator('.suggestions:not(.hidden) .suggestion-item')).toHaveCount(0);
+  await expect(page.locator('input[data-custom-kwh]')).toHaveValue('75');
+  expect(counters.plan).toBe(0);
+  expect(counters.ai).toBe(0);
+  expect(counters.save).toBe(0);
+  await page.getByRole('button', { name: 'Plan route', exact: true }).click();
+  await expect(page.locator('.plan-results')).toBeVisible();
+  expect(counters.lastPlanBody).toMatchObject({
+    origin: SAVED_ORIGIN,
+    destination: SAVED_DESTINATION,
+  });
   expect(counters.save).toBe(0);
 });
 
