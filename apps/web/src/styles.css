@@ -2637,6 +2637,11 @@ body.comparing-trips .panel {
   body.comparing-trips .compare-stop-facts {
     color: #444;
   }
+  body.comparing-trips .compare-toolbar h2,
+  body.comparing-trips .compare-slot,
+  body.comparing-trips .compare-table caption {
+    color: #111;
+  }
   body.comparing-trips .compare-table th,
   body.comparing-trips .compare-table td {
     border-color: #888;
