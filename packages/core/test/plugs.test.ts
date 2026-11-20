@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { classifyPlug, summarizeCcs2 } from '../src/plugs.js';
+import { classifyPlugValues, connectorSlug } from '../src/plug-classifier.js';
 import type { StatiqConnector, StatiqStationDetail } from '../src/types.js';
 
 function conn(status: string, available: boolean | null, note: string | null, type = 'CCS-2'): StatiqConnector {
@@ -52,6 +53,29 @@ describe('classifyPlug (observed Statiq vocabulary)', () => {
     const r = classifyPlug(c);
     expect(r.health).toBe(expected);
     expect(r.contradiction).toBe(contradiction);
+  });
+
+  it('keeps the wrapper and browser-safe classifier identical across status/availability/note cases', () => {
+    const statuses = ['available', 'Available', 'charging', 'faulted', 'unavailable', 'preparing', 'finishing', 'offline', 'unknown', ''];
+    const availabilityCases: unknown[] = [true, false, null, 'yes', 0, { value: true }];
+    const notes: Array<string | null> = [null, '', 'Faulted', 'Disconnected', 'Charging', 'Offline', 'Finished'];
+    for (const status of statuses) {
+      for (const available of availabilityCases) {
+        for (const note of notes) {
+          const wire = conn(status, available as boolean | null, note);
+          expect(classifyPlug(wire)).toEqual(classifyPlugValues({
+            status: wire.status, available: wire.available, note: wire.note,
+          }));
+        }
+      }
+    }
+  });
+
+  it('normalizes only exact CCS2 connector vocabulary', () => {
+    expect(connectorSlug('CCS-2')).toBe('ccs2');
+    expect(connectorSlug('CCS2')).toBe('ccs2');
+    expect(connectorSlug('ccs 2')).toBe('ccs2');
+    expect(connectorSlug('CCS20')).toBe('ccs20');
   });
 });
 

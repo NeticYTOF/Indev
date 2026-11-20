@@ -9,7 +9,7 @@
  * - Unknown vocabulary falls back to uncertain (never "working").
  */
 import type { PlugHealth, StatiqCharger, StatiqConnector, StatiqStationDetail } from './types.js';
-import { classifyPlugValues, connectorSlug as slug } from './plug-classifier.js';
+import { classifyPlugValues, connectorSlug as slug, type PlugClassification } from './plug-classifier.js';
 
 export type { PlugClassification } from './plug-classifier.js';
 

@@ -9,7 +9,7 @@
  * evidence as Unknown rather than zero/available/reliable.
  */
 import type { PlanStop } from '@indeev/core';
-import { classifyPlugValues } from '@indeev/core/plug-classifier';
+import { classifyPlugValues, connectorSlug } from '@indeev/core/plug-classifier';
 
 export type EvidenceNumber = number | null;
 export type EvidenceString = string | null;
@@ -104,6 +104,10 @@ function boolean(value: unknown): boolean | null {
 
 function strictTrue(value: unknown): boolean {
   return value === true;
+}
+
+function norm(value: string | null): string {
+  return (value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 function suppliedHealth(value: unknown): PlugHealthView {
@@ -209,9 +213,9 @@ function normalizeCharger(
 }
 
 function isCcs2DcEvidence(charger: StationChargerEvidence, connector: StationConnectorEvidence): boolean {
-  const chargerType = charger.type?.toLowerCase() ?? '';
-  const connectorType = connector.type?.toLowerCase() ?? '';
-  return chargerType === 'dc' && /ccs-?2/.test(connectorType);
+  // Match the planner's exact normalized vocabulary: 'CCS-2', 'CCS2' and
+  // 'ccs 2' are CCS2, but 'CCS20' is not.
+  return norm(charger.type) === 'dc' && connectorSlug(connector.type ?? '') === 'ccs2';
 }
 
 function normalizeCounts(value: unknown): StationCountEvidence {
