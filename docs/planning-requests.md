@@ -194,3 +194,18 @@ native code) is warranted by them.
   emission of the SAME code and non-null `dispatchSeq` is deduplicated at
   each emission site. Predispatch failures use `dispatchSeq: null` and are
   never deduplicated against other failures.
+
+Gateway marker diagnostics are additive, nullable fields on those same bounded
+records. The existing `code` and `httpStatus` remain the gateway-response truth.
+`gatewayFailureCode` is accepted only from the exact closed enum
+`input_invalid`, `upstream_http`, `upstream_timeout`, `upstream_transport`,
+`upstream_json`, `upstream_contract`, `normalization_failed`, or
+`gateway_unknown`; otherwise it is `null`. `gatewayUpstreamStatus` is captured
+only with a valid gateway code on a failed marker response, from a strict ASCII
+three-digit `100` through `599` value, and is `null` when absent or malformed.
+An unknown gateway code makes both fields `null`; a valid code with a bad status
+retains the code and leaves the status `null`. The gateway diagnostic is never
+inferred from the outer HTTP 400 status. These fields add no retry, pacing,
+fatal-stop, or private 400-body-wait behavior, and no raw header or body value
+is retained. This schema is runtime evidence only: it does not establish the
+historical transport cause or a successful live route.
