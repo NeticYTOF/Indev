@@ -343,6 +343,44 @@ test('switching from fresh plan to saved trip keeps separate evidence state', as
   expect(fetches).toBe(2);
 });
 
+test('one malformed planned stop does not suppress other cards or evidence panels', async ({ page }, info) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await outsideAborted(page);
+  await page.route('**/api/plan', async (route) => {
+    const response = await route.fetch();
+    const body = await response.json() as { plan: {
+      stops: Array<{ station: Record<string, unknown> }>;
+    } };
+    const first = body.plan.stops[0];
+    if (first) {
+      delete first.station.chargers;
+      first.station.brand = '';
+    }
+    const second = body.plan.stops[1];
+    const secondChargers = second?.station.chargers as Array<Record<string, unknown>> | undefined;
+    if (Array.isArray(secondChargers) && secondChargers[0]) delete secondChargers[0].plugs;
+    await route.fulfill({ response, json: body });
+  });
+  await planFresh(page);
+
+  const cards = page.locator('.stop-card');
+  await expect(cards).toHaveCount(2);
+  await expect(cards.first()).toContainText('Last used Unknown');
+  await expect(cards.first()).toContainText('Charger inventory Unknown');
+  await expect(cards.first()).toContainText('brand-Unknown');
+  await expect(cards.first().locator('[data-station-evidence]')).toBeVisible();
+  await expect(cards.first().locator('[data-station-evidence]')).toContainText(
+    'Charger snapshot unavailable — the planned charger list is Unknown.',
+  );
+  await expect(cards.nth(1).locator('[data-station-evidence]')).toBeVisible();
+  await expect(cards.nth(1)).toContainText('Plug inventory Unknown');
+  await expect(cards.nth(1)).not.toContainText('No CCS2 DC found for this car');
+  await expect(page.locator('[data-journey-briefing]')).toBeVisible();
+  await expect(page.locator('[data-review-proof]')).toHaveCount(0);
+  await cards.first().scrollIntoViewIfNeeded();
+  await page.screenshot({ path: info.outputPath('station-evidence-missing-inventory-mobile.png') });
+});
+
 test('manual fetch leaves fresh plan facts unchanged and writes no trip', async ({ page }) => {
   await outsideAborted(page);
   let storageWrites = 0;

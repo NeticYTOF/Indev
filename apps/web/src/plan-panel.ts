@@ -152,7 +152,13 @@ function wirePlanActions(actions: HTMLElement, plan: TripPlan): void {
 
 function renderStopCard(stop: PlanStop, index: number): HTMLElement {
   const s = stop.station;
-  const brandLabel = s.brand.charAt(0).toUpperCase() + s.brand.slice(1);
+  const inventoryKnown = Array.isArray(s.chargers);
+  const chargers = inventoryKnown ? s.chargers : [];
+  const brandKnown = typeof s.brand === 'string' && s.brand.length > 0;
+  const brandKey = brandKnown ? s.brand : 'Unknown';
+  const brandLabel = brandKnown
+    ? s.brand.charAt(0).toUpperCase() + s.brand.slice(1)
+    : 'Unknown';
   const directionsUrl = stationDirectionsUrl(s.lat, s.lon);
   // Station page link: the url arrives from upstream data and is untrusted.
   // Only absolute http/https urls survive the allowlist; anything else
@@ -169,7 +175,7 @@ function renderStopCard(stop: PlanStop, index: number): HTMLElement {
         <div class="stop-head">
           <div class="stop-title">
             <span class="stop-name">${escapeHtml(s.name)}</span>
-            <span class="stop-brand brand-${s.brand}">${brandLabel}</span>
+            <span class="stop-brand brand-${escapeHtml(brandKey)}">${brandLabel}</span>
           </div>
           <span class="stop-tariff">${stop.pricePerKwh != null ? escapeHtml(formatTariff(stop.pricePerKwh)) : 'Tariff unknown'}</span>
         </div>
@@ -187,11 +193,11 @@ function renderStopCard(stop: PlanStop, index: number): HTMLElement {
           </div>
           <div class="stop-meta">
             <span class="meta">${s.rating != null ? `★ ${Math.round(s.rating * 10) / 10} (${formatReviewCount(s.reviewCount)} reviews)` : 'No rating'}</span>
-            <span class="meta">Last used ${escapeHtml(lastUsedLabel(s.chargers))}</span>
+            <span class="meta">Last used ${inventoryKnown ? escapeHtml(lastUsedLabel(chargers)) : 'Unknown'}</span>
             <span class="meta">Reliability: unavailable</span>
             <span class="meta fetched">Status fetched ${escapeHtml(formatDateTime(s.fetchedAt))}</span>
           </div>
-          ${uncertaintyChips(s)}
+          ${uncertaintyChips(s, inventoryKnown)}
           ${s.synthetic ? '<div class="synthetic-flag">Synthetic station (mock data)</div>' : ''}
           ${renderStationEvidencePanel({
             plannedStation: s,
@@ -232,13 +238,24 @@ function socBar(labelText: string, soc: number): string {
     </div>`;
 }
 
-function uncertaintyChips(s: PlanStop['station']): string {
+function uncertaintyChips(s: PlanStop['station'], inventoryKnown = true): string {
+  if (!inventoryKnown) {
+    return '<div class="chips"><span class="chip chip-uncertain">Charger inventory Unknown</span></div>';
+  }
   const chips: string[] = [];
-  const anyContradiction = s.chargers.some((ch) => ch.plugs.some((p) => p.contradiction));
+  const chargers = Array.isArray(s.chargers) ? s.chargers : [];
+  const plugsKnown = chargers.every((charger) => Array.isArray(charger?.plugs));
+  const plugsOf = (charger: typeof chargers[number]) => Array.isArray(charger?.plugs) ? charger.plugs : [];
+  const anyContradiction = chargers.some((ch) => plugsOf(ch).some((p) => p?.contradiction === true));
   if (anyContradiction) chips.push('<span class="chip chip-uncertain">Status uncertain</span>');
-  const faulted = s.chargers.some((ch) => ch.plugs.some((p) => p.health === 'faulted'));
+  const faulted = chargers.some((ch) => plugsOf(ch).some((p) => p?.health === 'faulted'));
   if (faulted) chips.push('<span class="chip chip-bad">Some plugs faulted</span>');
-  const ccs2 = s.chargers.some((ch) => ch.type === 'DC' && ch.plugs.some((p) => p.type.toLowerCase().includes('ccs')));
-  if (!ccs2) chips.push('<span class="chip chip-warn">No CCS2 DC found for this car</span>');
+  if (!plugsKnown) {
+    chips.push('<span class="chip chip-uncertain">Plug inventory Unknown</span>');
+  } else {
+    const ccs2 = chargers.some((ch) => ch?.type === 'DC' && plugsOf(ch).some((p) =>
+      typeof p?.type === 'string' && p.type.toLowerCase().includes('ccs')));
+    if (!ccs2) chips.push('<span class="chip chip-warn">No CCS2 DC found for this car</span>');
+  }
   return chips.length > 0 ? `<div class="chips">${chips.join('')}</div>` : '';
 }
