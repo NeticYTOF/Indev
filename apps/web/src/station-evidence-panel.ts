@@ -94,6 +94,9 @@ function evidenceMarkup(evidence: StationEvidence): string {
   return `<div class="evidence-summary" data-station-evidence-result>` +
     `<div class="banners">` +
     `${evidence.synthetic ? '<div class="banner banner-synthetic">Synthetic station — fixed sample, not live charger data.</div>' : ''}` +
+    `${evidence.sourceKind === 'fetched' && evidence.provenance !== 'fresh'
+      ? '<div class="banner banner-warn">Provenance: this response is not verified as freshly fetched.</div>'
+      : ''}` +
     `${evidence.reliability != null ? '' : '<div class="banner banner-soft">Reliability: unavailable — no verified score is supplied.</div>'}` +
     `</div>` +
     warnings +
@@ -146,9 +149,16 @@ function plannedEvidenceMarkup(options: EvidencePanelOptions): string {
   const station = options.plannedStation ?? options.savedStation;
   const external = safeHttpUrl(options.plannedStation?.stationUrl);
   const directions = stationDirectionsUrl(station?.lat, station?.lon);
+  const emptySnapshot = evidence?.chargersMissing
+    ? '<p class="hint">Charger snapshot unavailable — the planned charger list is Unknown.</p>'
+    : options.savedStation
+      ? '<p class="hint">This saved trip stores planned charging facts, not a charger snapshot. Fetch current details below for station status.</p>'
+      : '<p class="hint">No charger connectors were returned in this planned snapshot. Fetch current details below for station status.</p>';
   const snapshot = evidence && evidence.connectorTotal > 0
     ? `<div class="evidence-station"><strong>Planned charger snapshot</strong>${evidenceMarkup(evidence)}</div>`
-    : '<p class="hint">This saved trip stores planned charging facts, not a charger snapshot. Fetch current details below for station status.</p>';
+    : `<div class="evidence-station">` +
+      `${evidence?.synthetic ? '<div class="banner banner-synthetic">Synthetic planned station — fixed sample, not live charger data.</div>' : ''}` +
+      `${emptySnapshot}</div>`;
   const links = options.includeLinks === false ? '' : `<div class="evidence-links">` +
     `${directions ? `<a class="btn btn-compact btn-ghost" href="${escapeHtml(directions)}" target="_blank" rel="noreferrer">Directions</a>` : '<span class="hint">Directions unavailable</span>'}` +
     `${external ? `<a class="btn btn-compact btn-ghost" href="${escapeHtml(external)}" target="_blank" rel="noreferrer">Station page</a>` : ''}` +
@@ -213,7 +223,10 @@ export function wireStationEvidence(
       }
       if (requestGeneration !== generation ||
           !button.isConnected || !panel.isConnected || !status.isConnected || !target.isConnected) return;
-      status.textContent = `Current status fetched ${formatDateTime(evidence.fetchedAt) === '—' ? 'at an unknown time' : formatDateTime(evidence.fetchedAt)}.`;
+      const when = evidence.fetchedAt == null ? 'at an unknown time' : formatDateTime(evidence.fetchedAt);
+      status.textContent = evidence.provenance === 'fresh'
+        ? `Current status fetched ${when}.`
+        : `Station status received ${when}; provenance is not verified as freshly fetched.`;
       target.innerHTML = evidenceMarkup(evidence);
       panel.open = true;
     } catch {

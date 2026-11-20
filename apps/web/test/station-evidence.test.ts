@@ -101,6 +101,61 @@ describe('station evidence boundary', () => {
     });
     expect(evidence?.warnings.length).toBeGreaterThan(0);
     expect(displayEvidence(evidence?.tariffPerKwh)).toBe('Unknown');
+    expect(evidence?.counts.total).toBeNull();
+  });
+
+  it.each(['yes', 0, { value: true }])('revokes plausible status when availability is malformed: %j', (available) => {
+    const body = fetchedBody();
+    const station = body.station as Record<string, unknown>;
+    station.chargers = [{
+      chargerId: 7, name: 'DC', type: 'DC', kw: 60, pricePerKwh: 22.75,
+      connectors: [{ connectorId: 1, type: 'CCS-2', status: 'available', available, note: null }],
+    }];
+    const evidence = normalizeFetchedStationResponse({ ...body, live: true, retained: false });
+    const connector = evidence?.chargers[0]?.connectors[0];
+    expect(connector?.health).toBe('uncertain');
+    expect(connector?.contradiction).toBe(true);
+    expect(connector?.invalidAvailability).toBe(true);
+    expect(connector?.available).toBeNull();
+  });
+
+  it('never trusts a supplied fetched health label over raw status', () => {
+    const body = fetchedBody();
+    const station = body.station as Record<string, unknown>;
+    station.chargers = [{
+      chargerId: 7, name: 'DC', type: 'DC', kw: 60, pricePerKwh: 22.75,
+      connectors: [{ connectorId: 1, type: 'CCS-2', status: 'faulted', available: false, note: null, health: 'working-free' }],
+    }];
+    const evidence = normalizeFetchedStationResponse({ ...body, live: true, retained: false });
+    expect(evidence?.chargers[0]?.connectors[0]?.health).toBe('faulted');
+    expect(evidence?.warnings.join(' ')).toContain('conflicts with its status');
+  });
+
+  it('requires safe integer counts and distinguishes a missing charger list from an empty one', () => {
+    const body = fetchedBody();
+    const station = body.station as Record<string, unknown>;
+    station.ccs2 = { total: 2.5, usable: 1, free: 1, occupied: 0 };
+    const fractional = normalizeFetchedStationResponse({ ...body, live: true, retained: false });
+    expect(fractional?.counts.total).toBeNull();
+    expect(fractional?.counts.usable).toBe(1);
+    expect(fractional?.chargersMissing).toBe(false);
+
+    const absent = normalizeFetchedStationResponse({ live: true, retained: false, station: { stationId: 42, name: 'No list' } });
+    expect(absent?.chargersMissing).toBe(true);
+    expect(absent?.warnings.join(' ')).toContain('Charger list is Unknown');
+  });
+
+  it('marks retained or non-live bodies as retained and rejects malformed fetch times', () => {
+    const retained = normalizeFetchedStationResponse({ ...fetchedBody(), live: false, retained: true });
+    expect(retained?.provenance).toBe('retained');
+    expect(retained?.warnings.join(' ')).toContain('retained');
+
+    const body = fetchedBody();
+    const station = body.station as Record<string, unknown>;
+    station.fetchedAt = 'not a date';
+    const badTime = normalizeFetchedStationResponse({ ...body, live: true, retained: false });
+    expect(badTime?.fetchedAt).toBeNull();
+    expect(badTime?.provenance).toBe('unknown');
   });
 
   it('treats absent list bodies and wrong station IDs as unavailable evidence', () => {
