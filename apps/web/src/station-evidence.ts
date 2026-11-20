@@ -13,7 +13,7 @@ import { classifyPlug, type PlanStop } from '@indeev/core';
 export type EvidenceNumber = number | null;
 export type EvidenceString = string | null;
 export type PlugHealthView = 'working-free' | 'working-occupied' | 'finishing' | 'faulted' | 'uncertain' | 'offline' | 'unknown';
-export type EvidenceProvenance = 'fresh' | 'retained' | 'unknown';
+export type EvidenceProvenance = 'received' | 'retained' | 'unknown';
 
 export interface StationConnectorEvidence {
   connectorId: EvidenceNumber;
@@ -96,6 +96,10 @@ function boolean(value: unknown): boolean | null {
   return typeof value === 'boolean' ? value : null;
 }
 
+function strictTrue(value: unknown): boolean {
+  return value === true;
+}
+
 function suppliedHealth(value: unknown): PlugHealthView {
   if (value === 'working-free' || value === 'working-occupied' || value === 'finishing' ||
       value === 'faulted' || value === 'uncertain' || value === 'offline') return value;
@@ -121,13 +125,18 @@ function normalizeConnector(
   const rawStatus = text(c?.status);
   const note = text(c?.note);
   const available = boolean(c?.available);
-  // Planned StationLiveView plugs already carry derived health. Fetched
-  // connectors MUST use the raw status/availability through the authoritative
-  // classifier; a supplied `health` label is untrusted metadata there.
-  const plannedHealth = sourceKind === 'planned' ? suppliedHealth(c?.health) : 'unknown';
   const rawAvailablePresent = c != null && Object.prototype.hasOwnProperty.call(c, 'available') && c.available != null;
+  const rawStatusPresent = rawStatus != null || rawAvailablePresent || text(c?.note) != null;
+  const candidateHealth = suppliedHealth(c?.health);
+  // Planned StationLiveView plugs AND the mock endpoint's derived plugs carry
+  // health without raw status; preserve that health only for this shape. A
+  // raw connector's supplied `health` is untrusted metadata and is ignored.
+  const derivedPlugShape = !rawStatusPresent && candidateHealth !== 'unknown';
+  const plannedHealth = sourceKind === 'planned' || (sourceKind === 'fetched' && derivedPlugShape)
+    ? candidateHealth
+    : 'unknown';
   const invalidAvailability = rawAvailablePresent && !Object.is(c?.available, available);
-  const derived = sourceKind === 'fetched' || plannedHealth === 'unknown'
+  const derived = !derivedPlugShape
     ? classifyPlug({
       displayId: typeof c?.displayId === 'number' ? c.displayId : (id ?? 0),
       connectorId: typeof c?.connectorId === 'number' ? c.connectorId : (id ?? 0),
@@ -145,11 +154,11 @@ function normalizeConnector(
       ? 'unknown'
       : (derived?.health ?? 'unknown');
   const contradiction = plannedHealth !== 'unknown'
-    ? c?.contradiction === true
+    ? strictTrue(c?.contradiction)
     : (derived?.contradiction ?? false);
   if (!c) warnings.push(`Connector ${index} had no usable record.`);
   else if (health === 'unknown') warnings.push(`Connector ${index} status is Unknown.`);
-  if (sourceKind === 'fetched' && c?.health != null && c.health !== health) {
+  if (sourceKind === 'fetched' && rawStatusPresent && c?.health != null && c.health !== health) {
     warnings.push(`Connector ${index} supplied a health label that conflicts with its status; status was used.`);
   }
   return {
@@ -240,7 +249,7 @@ function normalizeStation(value: unknown, sourceKind: 'planned' | 'fetched'): St
     provenance: 'unknown',
     synthetic: raw.synthetic === true,
     sourceKind,
-    hasContradiction: contradiction(ccs2?.hasContradiction) ||
+    hasContradiction: strictTrue(ccs2?.hasContradiction) ||
       chargers.some((charger) => charger.connectors.some((connector) => connector.contradiction)),
     maxKw: number(ccs2?.maxKw, 0.000001),
     tariffPerKwh: number(ccs2?.pricePerKwh, 0),
@@ -266,15 +275,18 @@ export function normalizeFetchedStationResponse(body: unknown): StationEvidence 
   const raw = record(body);
   if (!raw || !('station' in raw)) return null;
   const evidence = normalizeStation(raw.station, 'fetched');
-  const explicitlyStale = raw.live === false || raw.retained === true;
-  if (raw.live !== true && !explicitlyStale) {
-    evidence.warnings.push('Freshness flags were not returned; do not treat this as verified live status.');
-  } else if (!explicitlyStale && evidence.fetchedAt != null) {
-    evidence.provenance = 'fresh';
-  }
-  if (explicitlyStale) {
+  if (raw.retained === true || raw.live === false) {
+    // Only an explicit retained/non-live marker downgrades the response.
     evidence.provenance = 'retained';
     evidence.warnings.push('This station response is marked retained or non-live; it is not a fresh fetch.');
+  } else if (evidence.fetchedAt != null) {
+    // The current endpoint does not return a live flag. A valid fetch time
+    // proves only that station details were received for this manual call,
+    // never that charger availability is live/current.
+    evidence.provenance = 'received';
+  } else {
+    evidence.provenance = 'unknown';
+    evidence.warnings.push('Fetch time was not returned; snapshot time is Unknown.');
   }
   return evidence;
 }

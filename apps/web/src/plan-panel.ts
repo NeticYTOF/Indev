@@ -11,6 +11,7 @@ import { el, escapeHtml } from './planner.js';
 import { api } from './api.js';
 import { downloadAnimatedExport } from './export.js';
 import { downloadJourneyBriefing, renderJourneyBriefingMarkup } from './journey-briefing.js';
+import { renderStationEvidencePanel, wireStationEvidence } from './station-evidence-panel.js';
 import { toast } from './toast.js';
 import { storageWarningText, storageWarningElement } from './storage-warning.js';
 import { formatReviewCount, formatDuration, formatEta, formatInr, lastUsedLabel, formatDateTime, formatTariff } from './format.js';
@@ -96,9 +97,12 @@ export function renderPlanPanel(
     stopsWrap.appendChild(renderStopCard(stop, i));
   });
   results.appendChild(stopsWrap);
-  // Bind after the cards exist: before append, this query matched nothing.
+  // Bind after the cards exist: the shared controller checks ID ownership,
+  // guards duplicate clicks, discards detached views and stale responses.
   results.querySelectorAll<HTMLElement>('[data-refresh]').forEach((btn) => {
-    btn.addEventListener('click', () => void revalidateStop(btn, plan));
+    const card = btn.closest<HTMLElement>('.stop-card');
+    const stationId = Number(btn.dataset.refresh);
+    if (card) wireStationEvidence(card, { buttonSelector: '[data-refresh]', stationId });
   });
 }
 
@@ -145,61 +149,6 @@ function wirePlanActions(actions: HTMLElement, plan: TripPlan): void {
   });
 }
 
-async function revalidateStop(btn: HTMLElement, plan: TripPlan): Promise<void> {
-  if (btn.hasAttribute('disabled')) return;
-  const stationId = Number(btn.dataset.refresh);
-  const card = btn.closest('.stop-card') as HTMLElement | null;
-  if (!card) return;
-  const index = Number(card.dataset.stopIndex);
-  const stop = plan.stops[index];
-  if (!stop || stop.station.stationId !== stationId) return;
-  const box = card.querySelector<HTMLElement>('.revalidate-box') ?? document.createElement('div');
-  box.className = 'revalidate-box';
-  box.textContent = 'Fetching station status…';
-  if (!box.isConnected) card.querySelector('.stop-body')?.appendChild(box);
-  btn.setAttribute('disabled', 'true');
-  try {
-    const res = await fetch(`/api/stations/${stationId}`);
-    if (!res.ok) {
-      box.textContent = 'Station details unavailable right now.';
-      return;
-    }
-    const { station } = (await res.json()) as {
-      station: {
-        rating: number | null;
-        reviewCount: number | null;
-        reliability: null;
-        synthetic?: boolean;
-        fetchedAt?: string;
-        ccs2: { usable: number; free: number; occupied: number; faulted: number; uncertain: number; maxKw: number | null; pricePerKwh: number | null };
-        chargers: Array<{ lastUsedOn: string | null }>;
-      };
-    };
-    const lastUsed = lastUsedLabel(station.chargers);
-    box.innerHTML = `
-      ${station.synthetic ? '<div class="banner banner-synthetic">Synthetic station (mock mode) — a fixed sample, not live charger data.</div>' : ''}
-      <div class="stop-meta">
-        <span class="meta">${station.rating != null ? `★ ${Math.round(station.rating * 10) / 10} (${formatReviewCount(station.reviewCount)} reviews)` : 'No rating'}</span>
-        <span class="meta">Last used ${escapeHtml(String(lastUsed))}${station.synthetic ? ' (fixture)' : ''}</span>
-        <span class="meta">Reliability: unavailable</span>
-        <span class="meta fetched">Details fetched ${escapeHtml(formatDateTime(station.fetchedAt))}</span>
-      </div>
-      <div class="chips">
-        <span class="chip">${station.ccs2.usable} usable CCS2 plug${station.ccs2.usable === 1 ? '' : 's'}</span>
-        ${station.ccs2.free > 0 ? `<span class="chip">${station.ccs2.free} free</span>` : ''}
-        ${station.ccs2.faulted > 0 ? '<span class="chip chip-bad">Faulted plugs</span>' : ''}
-        ${station.ccs2.uncertain > 0 ? '<span class="chip chip-uncertain">Uncertain status</span>' : ''}
-        ${station.synthetic ? '<span class="chip chip-synthetic">Synthetic</span>' : ''}
-      </div>`;
-  } catch {
-    box.textContent = 'Station details unavailable right now.';
-  } finally {
-    // Manual refresh can be used again after either outcome, never retried
-    // automatically. Reuse one status box rather than accumulating panels.
-    btn.removeAttribute('disabled');
-    if (document.activeElement === document.body) btn.focus({ preventScroll: true });
-  }
-}
 
 function renderStopCard(stop: PlanStop, index: number): HTMLElement {
   const s = stop.station;
@@ -244,6 +193,19 @@ function renderStopCard(stop: PlanStop, index: number): HTMLElement {
           </div>
           ${uncertaintyChips(s)}
           ${s.synthetic ? '<div class="synthetic-flag">Synthetic station (mock data)</div>' : ''}
+          ${renderStationEvidencePanel({
+            plannedStation: s,
+            plannedFacts: {
+              tariffPerKwh: stop.pricePerKwh,
+              chargeKwh: stop.chargeKwh,
+              chargeTimeMin: stop.chargeTimeMin,
+              arrivalEtaMin: stop.arrivalEtaMin,
+              departureEtaMin: stop.departureEtaMin,
+              arriveSocPct: stop.arriveSocPct,
+              leaveSocPct: stop.leaveSocPct,
+            },
+            includeLinks: false,
+          })}
         </div>
       </div>
       <div class="stop-foot">

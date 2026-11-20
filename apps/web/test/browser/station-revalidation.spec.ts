@@ -14,6 +14,7 @@ test(`stop Revalidate recovers from ${failure} failure without duplicate request
     json: { version: 8, sources: {}, layers: [{ id: 'background', type: 'background' }] },
   }));
   await page.route('**/api/stations/*', async (route) => { lookups++; if (lookups === 1) { await held; if (failure === 'network') await route.abort('failed'); else await route.fulfill({ status: 503, json: { error: 'Synthetic temporary error' } }); return; } await route.fulfill({ json: { station: {
+    stationId: Number(new URL(route.request().url()).pathname.split('/').at(-1)),
     synthetic: true, rating: 4.3, reviewCount: 11, reliability: null,
     chargers: [{ lastUsedOn: '30/10/2026' }, { lastUsedOn: '02/11/2026' }],
     ccs2: { usable: 3, free: 2, faulted: 0, uncertain: 0 },

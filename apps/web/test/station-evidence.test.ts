@@ -111,12 +111,24 @@ describe('station evidence boundary', () => {
       chargerId: 7, name: 'DC', type: 'DC', kw: 60, pricePerKwh: 22.75,
       connectors: [{ connectorId: 1, type: 'CCS-2', status: 'available', available, note: null }],
     }];
-    const evidence = normalizeFetchedStationResponse({ ...body, live: true, retained: false });
+    const evidence = normalizeFetchedStationResponse(body);
     const connector = evidence?.chargers[0]?.connectors[0];
     expect(connector?.health).toBe('uncertain');
     expect(connector?.contradiction).toBe(true);
     expect(connector?.invalidAvailability).toBe(true);
     expect(connector?.available).toBeNull();
+  });
+
+  it('preserves derived plug health in a fetched mock shape without raw status', () => {
+    const body = fetchedBody();
+    const station = body.station as Record<string, unknown>;
+    station.chargers = [{
+      chargerId: 7, name: 'DC', type: 'DC', kw: 60, pricePerKwh: 22.75,
+      plugs: [{ connectorId: 1, type: 'CCS-2', health: 'working-free', contradiction: false }],
+    }];
+    const evidence = normalizeFetchedStationResponse(body);
+    expect(evidence?.chargers[0]?.connectors[0]?.health).toBe('working-free');
+    expect(evidence?.warnings.join(' ')).not.toContain('conflicts with its status');
   });
 
   it('never trusts a supplied fetched health label over raw status', () => {
@@ -126,7 +138,7 @@ describe('station evidence boundary', () => {
       chargerId: 7, name: 'DC', type: 'DC', kw: 60, pricePerKwh: 22.75,
       connectors: [{ connectorId: 1, type: 'CCS-2', status: 'faulted', available: false, note: null, health: 'working-free' }],
     }];
-    const evidence = normalizeFetchedStationResponse({ ...body, live: true, retained: false });
+    const evidence = normalizeFetchedStationResponse(body);
     expect(evidence?.chargers[0]?.connectors[0]?.health).toBe('faulted');
     expect(evidence?.warnings.join(' ')).toContain('conflicts with its status');
   });
@@ -135,25 +147,26 @@ describe('station evidence boundary', () => {
     const body = fetchedBody();
     const station = body.station as Record<string, unknown>;
     station.ccs2 = { total: 2.5, usable: 1, free: 1, occupied: 0 };
-    const fractional = normalizeFetchedStationResponse({ ...body, live: true, retained: false });
+    const fractional = normalizeFetchedStationResponse(body);
     expect(fractional?.counts.total).toBeNull();
     expect(fractional?.counts.usable).toBe(1);
     expect(fractional?.chargersMissing).toBe(false);
 
-    const absent = normalizeFetchedStationResponse({ live: true, retained: false, station: { stationId: 42, name: 'No list' } });
+    const absent = normalizeFetchedStationResponse({ station: { stationId: 42, name: 'No list', fetchedAt: '2026-11-20T11:00:00Z' } });
     expect(absent?.chargersMissing).toBe(true);
     expect(absent?.warnings.join(' ')).toContain('Charger list is Unknown');
   });
 
-  it('marks retained or non-live bodies as retained and rejects malformed fetch times', () => {
-    const retained = normalizeFetchedStationResponse({ ...fetchedBody(), live: false, retained: true });
-    expect(retained?.provenance).toBe('retained');
-    expect(retained?.warnings.join(' ')).toContain('retained');
+  it('distinguishes manual receipt from retained data and rejects malformed fetch times', () => {
+    const received = normalizeFetchedStationResponse(fetchedBody());
+    expect(received?.provenance).toBe('received');
+    expect(normalizeFetchedStationResponse({ ...fetchedBody(), retained: true })?.provenance).toBe('retained');
+    expect(normalizeFetchedStationResponse({ ...fetchedBody(), live: false })?.provenance).toBe('retained');
 
     const body = fetchedBody();
     const station = body.station as Record<string, unknown>;
     station.fetchedAt = 'not a date';
-    const badTime = normalizeFetchedStationResponse({ ...body, live: true, retained: false });
+    const badTime = normalizeFetchedStationResponse(body);
     expect(badTime?.fetchedAt).toBeNull();
     expect(badTime?.provenance).toBe('unknown');
   });

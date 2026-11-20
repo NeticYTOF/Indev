@@ -91,17 +91,19 @@ function evidenceMarkup(evidence: StationEvidence): string {
     ? `<ul class="evidence-warnings">${evidence.warnings.map((warning) =>
       `<li>${escapeHtml(warning)}</li>`).join('')}</ul>`
     : '';
-  return `<div class="evidence-summary" data-station-evidence-result>` +
+  return `<div class="evidence-summary" data-station-evidence-result data-evidence-station-id="${concise(evidence.stationId)}">` +
     `<div class="banners">` +
     `${evidence.synthetic ? '<div class="banner banner-synthetic">Synthetic station — fixed sample, not live charger data.</div>' : ''}` +
-    `${evidence.sourceKind === 'fetched' && evidence.provenance !== 'fresh'
-      ? '<div class="banner banner-warn">Provenance: this response is not verified as freshly fetched.</div>'
-      : ''}` +
+    `${evidence.sourceKind === 'fetched' && evidence.provenance === 'retained'
+      ? '<div class="banner banner-warn">Provenance: this response is marked retained or non-live.</div>'
+      : evidence.sourceKind === 'fetched' && evidence.provenance === 'unknown'
+        ? '<div class="banner banner-warn">Provenance: snapshot time is Unknown; availability is not verified.</div>'
+        : ''}` +
     `${evidence.reliability != null ? '' : '<div class="banner banner-soft">Reliability: unavailable — no verified score is supplied.</div>'}` +
     `</div>` +
     warnings +
     `<dl class="evidence-grid">` +
-    `<div><dt>Fetched</dt><dd>${named(evidence.fetchedAt == null ? null : formatDateTime(evidence.fetchedAt))}</dd></div>` +
+    `<div><dt>Fetched at</dt><dd${evidence.sourceKind === 'fetched' ? ' class="fetched"' : ''}>${named(evidence.fetchedAt == null ? null : formatDateTime(evidence.fetchedAt))}</dd></div>` +
     `<div><dt>Rating</dt><dd>${concise(evidence.rating)} · ${concise(evidence.reviewCount)} reviews</dd></div>` +
     `<div><dt>CCS2 DC</dt><dd>${concise(c.total)} total · ${concise(c.usable)} usable</dd></div>` +
     `<div><dt>Availability</dt><dd>${concise(c.free)} free · ${concise(c.occupied)} occupied</dd></div>` +
@@ -112,7 +114,19 @@ function evidenceMarkup(evidence: StationEvidence): string {
     `<div><dt>Address</dt><dd>${named(evidence.address)} · ${named(evidence.city)}</dd></div>` +
     `<div><dt>Hours</dt><dd>${named(evidence.hours)} ${evidence.openText == null ? '' : `· ${escapeHtml(evidence.openText)}`}</dd></div>` +
     `</dl>` +
-    `<ul class="evidence-chargers">${evidence.chargers.map(chargerMarkup).join('') || '<li class="hint">No chargers returned.</li>'}</ul>` +
+    `<div class="chips">` +
+    `<span class="chip">${concise(c.usable)} usable CCS2 plugs</span>` +
+    `<span class="chip">${concise(c.free)} free</span>` +
+    `<span class="chip">${concise(c.occupied)} occupied</span>` +
+    `${c.faulted != null && c.faulted > 0 ? '<span class="chip chip-bad">Faulted plugs</span>' : ''}` +
+    `${c.uncertain != null && c.uncertain > 0 ? '<span class="chip chip-uncertain">Uncertain status</span>' : ''}` +
+    `${evidence.hasContradiction ? '<span class="chip chip-uncertain">Contradictory status</span>' : ''}` +
+    `${evidence.synthetic ? '<span class="chip chip-synthetic">Synthetic</span>' : ''}` +
+    `</div>` +
+    `<ul class="evidence-chargers">${evidence.chargers.map(chargerMarkup).join('') ||
+      (evidence.chargersMissing
+        ? '<li class="hint">Charger list is Unknown.</li>'
+        : '<li class="hint">No chargers returned.</li>')}</ul>` +
     `</div>`;
 }
 
@@ -182,9 +196,10 @@ export function renderStationEvidencePanel(options: EvidencePanelOptions): strin
     `<section class="evidence-section" aria-label="Manual station status">` +
     `<h4>Manual station status</h4>` +
     `<p class="hint">No automatic lookup runs when this panel opens. One click calls the station endpoint once.</p>` +
+    `<div class="revalidate-box">` +
     `<div class="evidence-status" data-station-evidence-status role="status" aria-live="polite">No current status requested.</div>` +
     `<div class="evidence-fetched" data-station-evidence-fetched></div>` +
-    `</section></div></details>`;
+    `</div></section></div></details>`;
 }
 
 export interface StationRevalidationHandle {
@@ -224,9 +239,11 @@ export function wireStationEvidence(
       if (requestGeneration !== generation ||
           !button.isConnected || !panel.isConnected || !status.isConnected || !target.isConnected) return;
       const when = evidence.fetchedAt == null ? 'at an unknown time' : formatDateTime(evidence.fetchedAt);
-      status.textContent = evidence.provenance === 'fresh'
-        ? `Current status fetched ${when}.`
-        : `Station status received ${when}; provenance is not verified as freshly fetched.`;
+      status.textContent = evidence.provenance === 'received'
+        ? `Station details received ${when}. Charger availability is a snapshot, not guaranteed live.`
+        : evidence.provenance === 'retained'
+          ? `Retained station details received ${when}; not a fresh fetch.`
+          : `Station details received ${when}; snapshot time is not verified.`;
       target.innerHTML = evidenceMarkup(evidence);
       panel.open = true;
     } catch {
