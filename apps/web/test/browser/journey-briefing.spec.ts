@@ -41,6 +41,30 @@ async function planSyntheticTrip(page: import('@playwright/test').Page): Promise
   return captured;
 }
 
+test('itinerary export survives malformed labels and unreadable stop lists', async ({ page }) => {
+  await page.route(/^https?:\/\//, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') await route.continue();
+    else await route.abort();
+  });
+  const response = await page.request.post('/api/plan', { data: {
+    origin: { label: 'Delhi', lat: 28.6139, lon: 77.209 },
+    destination: { label: 'Jaipur', lat: 26.9124, lon: 75.7873 },
+  } });
+  const { plan } = await response.json();
+  plan.origin.label = null;
+  plan.destination.label = 42;
+  delete plan.stops;
+  await page.goto('/');
+  const downloadPromise = page.waitForEvent('download');
+  await page.evaluate(async (plan) => {
+    const module = await import('/src/journey-briefing.ts');
+    module.downloadJourneyBriefing(plan);
+  }, plan);
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe('indeev-journey-unknown-unknown.html');
+});
+
 for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
   test(`journey briefing presents plan facts and print view at ${viewport.width}px`, async ({ page }) => {
     await page.setViewportSize(viewport);
