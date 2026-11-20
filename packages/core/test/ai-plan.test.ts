@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { planTripDetailed, finalize } from '../src/planner.js';
 import { assembleAiPlan, validateAiChoice } from '../src/ai-plan.js';
-import { DEFAULT_PLAN_OPTIONS } from '../src/plan-types.js';
-import { HARIER_EV_75, socAfterDriving } from '../src/vehicle.js';
+import { DEFAULT_PLAN_OPTIONS, type TripPlan } from '../src/plan-types.js';
+import { HARIER_EV_75, kwhForSocDelta, socAfterDriving, socRequiredForArrival } from '../src/vehicle.js';
 import type { OsrmRouter, RouteResult } from '../src/router.js';
 import type { StatiqClient } from '../src/statiq.js';
 import type { StatiqDetailsResponse, StatiqMarkersResponse, StatiqStationDetail, StatiqCharger } from '../src/types.js';
@@ -346,11 +346,39 @@ function handBuiltBundle(chainages: number[], totalKm: number) {
       },
     };
   });
-  return {
-    plan: { routeDistanceKm: route.distanceKm },
-    usableCandidates,
-    route,
+  // Complete base plan: assembleAiPlan spreads the base and reads warnings,
+  // so a partial object would make this fixture unusable for rebuild tests.
+  const basePlan: TripPlan = {
+    id: `fixture-${totalKm}`,
+    createdAt: new Date().toISOString(),
+    origin: { label: 'Fixture origin', lat: 0, lon: 0 },
+    destination: { label: 'Fixture destination', lat: totalKm / KM_PER_DEG, lon: 0 },
+    vehicle: {
+      label: 'Fixture Harrier',
+      catalogId: null,
+      batteryKwh: HARIER_EV_75.batteryKwh,
+      claimedRangeKm: null,
+      realWorldRangeKm: null,
+    },
+    status: 'ok',
+    source: 'live',
+    routeDistanceKm: route.distanceKm,
+    routeDurationMin: route.durationMin,
+    geometry: route.geometry,
+    stops: [],
+    totals: {
+      distanceKm: route.distanceKm,
+      driveTimeMin: route.durationMin,
+      chargeTimeMin: 0,
+      totalTimeMin: route.durationMin,
+      chargeKwh: 0,
+      estPriceInr: 0,
+      finalSocPct: 100,
+    },
+    stationsSeen: chainages.length,
+    warnings: [],
   };
+  return { plan: basePlan, usableCandidates, route };
 }
 
 describe('AI-safe candidates', () => {
@@ -404,10 +432,10 @@ describe('AI-safe candidates', () => {
   });
 });
 
-it('AI rebuild uses geometry chainage, not OSRM metadata distance, for final-leg evidence', () => {
+it('AI rebuild charges the final stop from geometry chainage, not OSRM metadata', () => {
   const geometryKm = 700;
   const bundle = handBuiltBundle([300, 550], geometryKm);
-  // OSRM metadata can differ from the geometry chainage used for selection.
+  // OSRM metadata can differ from the geometry chainage used for validation.
   bundle.plan.routeDistanceKm = 650;
   const validation = validateAiChoice(bundle, { stationIds: [idAt(300), idAt(550)] }, {}, HARIER_EV_75);
   expect(validation.ok).toBe(true);
@@ -415,13 +443,31 @@ it('AI rebuild uses geometry chainage, not OSRM metadata distance, for final-leg
   const plan = assembleAiPlan(bundle, validation.seq, { applied: true }, {}, HARIER_EV_75);
 
   const geometryTotalKm = routeLengthKmForTest(bundle.route.geometry);
-  expect(plan.totals.distanceKm).toBeCloseTo(geometryTotalKm, 6);
   const last = plan.stops.at(-1)!;
-  expect(last.leaveSocPct).toBeGreaterThan(0);
-  // The final leg must be charged from geometry chainage. With the old
-  // metadata-based rebuild, total distance and final-leg evidence diverged.
-  const expectedFinalLegKm = geometryTotalKm - last.chainageKm + last.detourKm;
-  expect(expectedFinalLegKm).toBeGreaterThan(140);
+  const finalLegKm = geometryTotalKm - last.chainageKm + last.detourKm;
+  const buffer = DEFAULT_PLAN_OPTIONS.minArrivalSocPct + 2;
+  const expectedArriveSoc = buffer;
+  const expectedLeaveSoc = socRequiredForArrival(finalLegKm, buffer, HARIER_EV_75);
+  const expectedChargeKwh = kwhForSocDelta(expectedArriveSoc, expectedLeaveSoc, HARIER_EV_75);
+  const expectedDestinationSoc = Math.round(socAfterDriving(finalLegKm, expectedLeaveSoc, HARIER_EV_75));
+
+  expect(plan.totals.distanceKm).toBeCloseTo(geometryTotalKm, 6);
+  expect(last.arriveSocPct).toBeCloseTo(Math.round(expectedArriveSoc * 10) / 10, 1);
+  expect(last.leaveSocPct).toBeCloseTo(Math.round(expectedLeaveSoc * 10) / 10, 1);
+  expect(last.chargeKwh).toBeCloseTo(Math.round(expectedChargeKwh * 10) / 10, 1);
+  expect(plan.totals.finalSocPct).toBe(expectedDestinationSoc);
+
+  // Counterfactual: the previous metadata-based rebuild charged a 100 km
+  // final leg from a 650 km total. It produced a materially different final
+  // stop, so these assertions fail if that distance source is restored.
+  const metadataLast = finalize(
+    validation.seq, bundle.plan.routeDistanceKm, bundle.route, DEFAULT_PLAN_OPTIONS, HARIER_EV_75, [],
+  ).at(-1)!;
+  const metadataFinalLegKm = bundle.plan.routeDistanceKm - metadataLast.chainageKm + metadataLast.detourKm;
+  const metadataExpectedLeave = socRequiredForArrival(metadataFinalLegKm, buffer, HARIER_EV_75);
+  expect(metadataFinalLegKm).toBeLessThan(finalLegKm - 40);
+  expect(metadataLast.leaveSocPct).toBeCloseTo(Math.round(metadataExpectedLeave * 10) / 10, 1);
+  expect(metadataLast.chargeKwh).toBeLessThan(last.chargeKwh);
 });
 
 it('AI alternatives inherit degraded numeric evidence and unknown cost without reintroducing bad candidates', async () => {
