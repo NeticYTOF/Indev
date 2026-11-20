@@ -232,6 +232,29 @@ describe('journey briefing', () => {
     expect(markup).not.toContain('No charging stops are needed');
   });
 
+  it('keeps null stop entries as placeholder rows instead of crashing every row', () => {
+    const source = plan();
+    const validStop = source.stops[0] as TripPlan['stops'][number];
+    const broken = plan({
+      stops: [null, undefined, validStop] as unknown as TripPlan['stops'],
+    });
+    const data = buildJourneyBriefingData(broken);
+    expect(data.stopsAvailable).toBe(true);
+    expect(data.itinerary).toHaveLength(3);
+    expect(data.itinerary[0]).toMatchObject({
+      stationName: 'Unknown station', stationId: null, chargeKwh: null, arriveSocPct: null,
+    });
+    expect(data.itinerary[1]).toMatchObject({
+      stationName: 'Unknown station', stationId: null, chargeKwh: null, arriveSocPct: null,
+    });
+    expect(data.itinerary[2]?.stationId).toBe(42);
+    const markup = renderJourneyBriefingMarkup(broken);
+    expect(markup.match(/<tr>/g)).toHaveLength(3);
+    expect(markup).toContain('1. Unknown station');
+    expect(markup).toContain('2. Unknown station');
+    expect(markup).not.toContain('No charging stops are needed');
+  });
+
   it('preserves unreadable stop lists as Unknown, never as a no-stop route', () => {
     const fresh = plan({ stops: undefined as unknown as TripPlan['stops'] });
     expect(buildJourneyBriefingData(fresh).stopsAvailable).toBe(false);

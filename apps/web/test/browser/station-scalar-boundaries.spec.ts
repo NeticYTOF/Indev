@@ -46,7 +46,7 @@ test('invalid review counts remain unknown in plan and both revalidation views',
   await page.screenshot({ path: info.outputPath('station-review-unknown.png') });
 });
 
-test('a missing stop list stays Unknown and does not suppress coordinate-only directions', async ({ page }) => {
+test('a missing stop list stays Unknown and suppresses directions instead of a direct route', async ({ page }) => {
   await blockOutside(page);
   const response = await page.request.post('/api/plan', { data: places });
   const { plan } = await response.json();
@@ -62,7 +62,20 @@ test('a missing stop list stays Unknown and does not suppress coordinate-only di
   await expect(page.locator('.no-stops')).toHaveCount(0);
   await expect(page.locator('.plan-results')).not.toContainText('No charging stops needed');
   await expect(page.locator('.origin')).toHaveText('Unknown');
-  await expect(page.locator('[data-gmaps]')).toHaveCount(1);
+  await expect(page.locator('[data-gmaps]')).toHaveCount(0);
+  await expect(page.locator('.plan-actions')).toContainText('Google Maps directions unavailable');
+});
+
+test('a non-array saved trip payload is reported unavailable, not empty', async ({ page }) => {
+  await blockOutside(page);
+  await page.route('**/api/trips', (route) => route.fulfill({ json: { trips: { unexpected: true } } }));
+  await page.goto('/');
+  await page.evaluate(async () => {
+    const module = await import('/src/trips.ts');
+    module.renderTripsDrawer(document.getElementById('trips-drawer'), null, () => true);
+  });
+  await expect(page.locator('.trip-list')).toContainText('Saved trip list is unavailable');
+  await expect(page.locator('.trip-list')).not.toContainText('No saved trips yet');
 });
 
 test('invalid saved geometry is omitted whole and never trimmed into a route', async ({ page }) => {
