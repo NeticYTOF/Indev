@@ -77,14 +77,16 @@ test('fresh plan opens one detailed evidence workspace only after explicit fetch
 
   await card.getByRole('button', { name: 'Revalidate', exact: true }).click();
   await expect.poll(() => fetches).toBe(1);
+  const fetched = details.locator('[data-station-evidence-fetched]');
   await expect(details.locator('[data-station-evidence-status]')).toContainText('Response received');
-  await expect(details.locator('[data-station-evidence-result]')).toHaveAttribute('data-evidence-station-id', String(requestedId));
-  await expect(details.locator('[data-station-evidence-result]')).toContainText('Rs. 22.75/kWh');
-  await expect(details.locator('[data-station-evidence-result]')).toContainText('Working · free');
-  await expect(details.locator('[data-station-evidence-result]')).toContainText('Faulted');
-  await expect(details.locator('[data-station-evidence-result]')).toContainText('1 usable');
-  await expect(details.locator('[data-station-evidence-result]')).toContainText('1 free');
-  await expect(details.locator('[data-station-evidence-result]')).toContainText('18/11/2026');
+  await expect(fetched.locator('[data-station-evidence-result]')).toHaveAttribute('data-evidence-station-id', String(requestedId));
+  await expect(fetched.locator('[data-station-evidence-result]')).toContainText('Rs. 22.75/kWh');
+  await expect(fetched.locator('[data-station-evidence-result]')).toContainText('Working · free');
+  await expect(fetched.locator('[data-station-evidence-result]')).toContainText('Faulted');
+  await expect(fetched.locator('[data-station-evidence-result]')).toContainText('1 usable');
+  await expect(fetched.locator('[data-station-evidence-result]')).toContainText('1 free');
+  await expect(fetched.locator('[data-station-evidence-result]')).toContainText('18/11/2026');
+  await expect(details.locator('.evidence-station')).toContainText('Planned charger snapshot');
   expect(fetches).toBe(1);
   await details.scrollIntoViewIfNeeded();
   await page.screenshot({ path: info.outputPath('station-evidence-fresh-normal.png') });
@@ -120,10 +122,10 @@ test('malformed and sparse station facts stay Unknown beside unchanged planned f
   await details.locator('summary').click();
   await expect(details.locator('.evidence-station')).toContainText('No charger connectors were returned in this planned snapshot');
   await page.getByRole('button', { name: 'Revalidate', exact: true }).first().click();
-  const result = details.locator('[data-station-evidence-result]');
+  const result = details.locator('[data-station-evidence-fetched] [data-station-evidence-result]');
   await expect(result).toContainText('3 · 7 reviews');
   await expect(result).toContainText('Uncertain');
-  await expect(result).toContainText('Unknown kW');
+  await expect(result).toContainText('Unknown');
   await expect(details.locator('[data-station-evidence-status]')).toContainText('snapshot time is not verified');
   await expect(result.locator('[data-malformed-proof]')).toHaveCount(0);
   await expect(page.locator('img[onerror=malformed]')).toHaveCount(0);
@@ -141,7 +143,7 @@ test('synthetic manual evidence stays visibly labelled as a fixture', async ({ p
   await planFresh(page);
   const details = page.locator('.stop-card').first().locator('[data-station-evidence]');
   await page.getByRole('button', { name: 'Revalidate', exact: true }).first().click();
-  const result = details.locator('[data-station-evidence-result]');
+  const result = details.locator('[data-station-evidence-fetched] [data-station-evidence-result]');
   await expect(result).toContainText('Synthetic station — fixed sample, not live charger data.');
   await expect(details.locator('[data-station-evidence-status]')).toContainText('availability is not guaranteed live');
   await details.scrollIntoViewIfNeeded();
@@ -187,13 +189,14 @@ test('saved trip shows stored facts separately from its one manual evidence fetc
   await expect(details).toContainText('Rs. 22.75/kWh');
   await expect(details).toContainText('42.7 kWh');
   await expect(details).toContainText('This saved trip stores planned charging facts, not a charger snapshot');
-  await expect(details.locator('[data-station-evidence-result]')).toHaveCount(0);
+  await expect(details.locator('[data-station-evidence-fetched] [data-station-evidence-result]')).toHaveCount(0);
   expect(fetches).toBe(0);
 
   await page.getByRole('button', { name: 'Fetch current details', exact: true }).click();
   await expect.poll(() => fetches).toBe(1);
   await expect(details.locator('[data-station-evidence-status]')).toContainText('Response received');
-  await expect(details.locator('[data-station-evidence-result]')).toContainText('Working · free');
+  await expect(details.locator('[data-station-evidence-fetched] [data-station-evidence-result]')).toContainText('Working · free');
+  await expect(details.locator('.evidence-station')).toContainText('This saved trip stores planned charging facts, not a charger snapshot');
   expect(fetches).toBe(1);
   await details.scrollIntoViewIfNeeded();
   await page.screenshot({ path: info.outputPath('station-evidence-saved-mobile.png') });
@@ -208,7 +211,7 @@ test('a wrong station ID in the response is refused and never rendered', async (
   const details = page.locator('.stop-card').first().locator('[data-station-evidence]');
   await page.getByRole('button', { name: 'Revalidate', exact: true }).first().click();
   await expect(details.locator('[data-station-evidence-status]')).toContainText('unavailable right now');
-  await expect(details.locator('[data-station-evidence-result]')).toHaveCount(0);
+  await expect(details.locator('[data-station-evidence-fetched] [data-station-evidence-result]')).toHaveCount(0);
 });
 
 test('a late response cannot write into a disconnected evidence view', async ({ page }) => {
@@ -232,7 +235,7 @@ test('a late response cannot write into a disconnected evidence view', async ({ 
   await page.getByRole('button', { name: 'Plan route', exact: true }).click();
   await expect(page.locator('[data-journey-briefing]')).toBeVisible();
   release();
-  await expect(page.locator('.stop-card').first().locator('[data-station-evidence-result]')).toHaveCount(0);
+  await expect(page.locator('.stop-card').first().locator('[data-station-evidence-fetched] [data-station-evidence-result]')).toHaveCount(0);
   await expect(page.locator('[data-journey-briefing]')).toContainText('Journey briefing');
   expect(fetches).toBe(1);
 });
@@ -256,6 +259,6 @@ test('failed manual fetch leaves retry available and never installs a wrong stat
   await expect(button).toBeEnabled();
   await button.click();
   await expect.poll(() => fetches).toBe(2);
-  await expect(details.locator('[data-station-evidence-result]')).toHaveAttribute('data-evidence-station-id', String(STATION_ID));
+  await expect(details.locator('[data-station-evidence-fetched] [data-station-evidence-result]')).toHaveAttribute('data-evidence-station-id', String(STATION_ID));
   expect(fetches).toBe(2);
 });

@@ -70,7 +70,7 @@ describe('station evidence boundary', () => {
     expect(stop.station.chargers[0]?.plugs).toHaveLength(2);
     // No ccs2 summary exists in this planned fixture; raw charger power is
     // visible individually but is not promoted to an aggregate fact.
-    expect(displayEvidence(evidence.maxKw, ' kW')).toBe('Unknown kW');
+    expect(displayEvidence(evidence.maxKw, ' kW')).toBe('Unknown');
     expect(evidence.chargers[0]?.kw).toBe(60);
     expect(plugHealthLabel('faulted')).toBe('Faulted');
   });
@@ -132,7 +132,7 @@ describe('station evidence boundary', () => {
     }];
     const evidence = normalizeFetchedStationResponse(body);
     expect(evidence?.chargers[0]?.connectors[0]?.health).toBe('working-free');
-    expect(evidence?.warnings.join(' ')).not.toContain('conflicts with its status');
+    expect(evidence?.warnings.join(' ')).not.toContain('conflicts with raw connector evidence');
   });
 
   it('never trusts health-only evidence in a raw connectors container', () => {
@@ -158,7 +158,7 @@ describe('station evidence boundary', () => {
     }];
     const evidence = normalizeFetchedStationResponse(body);
     expect(evidence?.chargers[0]?.connectors[0]?.health).toBe('faulted');
-    expect(evidence?.warnings.join(' ')).toContain('conflicts with its status');
+    expect(evidence?.warnings.join(' ')).toContain('conflicts with raw connector evidence');
   });
 
   it('requires safe integer counts and distinguishes a missing charger list from an empty one', () => {

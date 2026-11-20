@@ -64,7 +64,7 @@ function connectorMarkup(connector: StationEvidence['chargers'][number]['connect
   if (connector.contradiction) flags.push('<span class="evidence-flag evidence-flag-warn">Contradiction</span>');
   if (connector.invalidAvailability) flags.push('<span class="evidence-flag evidence-flag-warn">Invalid availability</span>');
   return `<li class="evidence-connector">` +
-    `<span class="evidence-key">Plug ${index}</span>` +
+    `<span class="evidence-key">Plug ${index + 1}</span>` +
     `<span class="evidence-value">${named(connector.type)} · ${escapeHtml(plugHealthLabel(connector.health))}</span>` +
     `<span class="hint">ID ${concise(connector.connectorId)} · status ${escapeHtml(status)} · ` +
     `available ${connector.available == null ? 'Unknown' : connector.available ? 'yes' : 'no'} · note ${escapeHtml(note)}</span>` +

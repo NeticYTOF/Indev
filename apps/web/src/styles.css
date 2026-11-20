@@ -1746,8 +1746,10 @@ body {
 }
 
 .evidence-status {
+  min-width: 0;
   font-weight: 600;
   color: var(--ink-2);
+  overflow-wrap: anywhere;
 }
 
 .station-evidence-body {
@@ -1828,6 +1830,8 @@ body {
   flex-wrap: wrap;
   gap: 4px 10px;
   align-items: baseline;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .evidence-connector {
@@ -1844,11 +1848,14 @@ body {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--accent-strong);
+  overflow-wrap: anywhere;
 }
 
 .evidence-value {
   font-size: var(--text-sm);
   color: var(--ink);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .evidence-warnings li {
