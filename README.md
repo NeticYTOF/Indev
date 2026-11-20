@@ -57,6 +57,9 @@ npm run dev            # LIVE mode: server :8787 + web :5173
 - `docs/saved-route-editing.md` — manual replanning of saved trips: what exact
   coordinates and vehicle facts are copied, which settings remain review-only,
   and why editing never starts a provider or persistence request.
+- `docs/station-evidence-workspace.md` — the shared fresh/saved charging-stop
+  panel: planned-versus-fetched provenance, explicit manual refreshes, and
+  truthful handling of unavailable or malformed charger evidence.
 
 ## Local request-origin policy
 
