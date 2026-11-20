@@ -2665,16 +2665,20 @@ body.comparing-trips .panel {
   body.comparing-trips .compare-table {
     table-layout: fixed;
     width: 100%;
-    font-size: 10px;
+    font-size: 12px;
   }
   body.comparing-trips .compare-table th,
-  body.comparing-trips .compare-table td {
+  body.comparing-trips .compare-table td,
+  body.comparing-trips .compare-table thead th {
     border-color: #888;
     padding: 4px;
+    color: #111;
+    background: #fff;
     white-space: normal;
     overflow-wrap: anywhere;
   }
   body.comparing-trips .compare-delta {
+    color: #111 !important;
     white-space: normal;
     overflow-wrap: anywhere;
   }
