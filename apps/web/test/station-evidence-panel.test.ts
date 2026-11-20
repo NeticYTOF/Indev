@@ -61,7 +61,7 @@ describe('station evidence panel', () => {
       },
     });
     expect(markup).toContain('Rs. 0/kWh');
-    expect(markup).toContain('30 kWh');
+    expect(markup).toContain('Unknown kWh');
     expect(markup).toContain('Unknown → 60%');
   });
 });

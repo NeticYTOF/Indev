@@ -9,14 +9,9 @@
  * - Unknown vocabulary falls back to uncertain (never "working").
  */
 import type { PlugHealth, StatiqCharger, StatiqConnector, StatiqStationDetail } from './types.js';
+import { classifyPlugValues, connectorSlug as slug } from './plug-classifier.js';
 
-export interface PlugClassification {
-  health: PlugHealth;
-  /** status and fault/availability signals disagree */
-  contradiction: boolean;
-  /** Nominally usable status has present nonboolean availability evidence. */
-  invalidAvailability?: true;
-}
+export type { PlugClassification } from './plug-classifier.js';
 
 const norm = (s: string | null | undefined): string =>
   (s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -24,90 +19,16 @@ const norm = (s: string | null | undefined): string =>
 const USABLE: readonly PlugHealth[] = ['working-free', 'working-occupied', 'finishing'];
 
 export function classifyPlug(c: StatiqConnector): PlugClassification {
-  const status = norm(c.status);
-  const note = norm(c.note ?? '');
-  const available = c.available;
-  const isUnavailable = status.includes('unavailable');
-  const positiveStatus =
-    !isUnavailable && /^(available|charging|preparing|finishing)$/.test(status);
-  const faultInStatus = status.includes('fault');
-  const faultInNote = note.includes('fault'); // fault text
-  const disconnectText = /disconnect|offline/.test(note) || /unavailable|offline/.test(status);
-
-  // Fault text contradicting a positive status -> uncertain, never "working".
-  if (faultInNote && positiveStatus) {
-    return { health: 'uncertain', contradiction: true };
-  }
-
-  // Explicit fault in status (note, if present, agrees or is disconnected).
-  if (faultInStatus) {
-    return { health: 'faulted', contradiction: false };
-  }
-  if (faultInNote) {
-    return { health: 'faulted', contradiction: false };
-  }
-
-  // Explicitly unavailable / disconnected without fault text -> offline.
-  if (isUnavailable || status.includes('offline')) {
-    return { health: 'offline', contradiction: false };
-  }
-
-  // Null/missing availability retains legacy semantics. Present malformed
-  // availability cannot substantiate a nominal usable status. Definite
-  // fault/offline and positive-status/fault-note rules above stay intact.
-  if (positiveStatus && available != null && typeof available !== 'boolean') {
-    return { health: 'uncertain', contradiction: true, invalidAvailability: true };
-  }
-
-  // Occupied but working.
-  if (status === 'charging') {
-    if (disconnectText) return { health: 'uncertain', contradiction: true };
-    return { health: 'working-occupied', contradiction: false };
-  }
-
-  if (note.includes('finish') && disconnectText) {
-    return { health: 'uncertain', contradiction: true };
-  }
-
-  if (status === 'finishing') {
-    if (disconnectText) return { health: 'uncertain', contradiction: true };
-    return { health: 'finishing', contradiction: false };
-  }
-
-  if (status === 'preparing') {
-    if (available === false || disconnectText) {
-      return { health: 'uncertain', contradiction: true };
-    }
-    return { health: 'working-free', contradiction: false };
-  }
-
-  if (status === 'available') {
-    if (note.includes('charging') && available !== true) {
-      return { health: 'working-occupied', contradiction: false };
-    }
-    if (available === false && disconnectText) {
-      return { health: 'uncertain', contradiction: true };
-    }
-    if (available === false) {
-      return { health: 'uncertain', contradiction: true };
-    }
-    if (disconnectText) {
-      return { health: 'uncertain', contradiction: true };
-    }
-    return { health: 'working-free', contradiction: false };
-  }
-
-  if (disconnectText || status.includes('unavailable')) {
-    return { health: 'offline', contradiction: false };
-  }
-
-  // Unknown vocabulary: never call it working.
-  return { health: 'uncertain', contradiction: true };
+  return classifyPlugValues({
+    status: c.status,
+    available: c.available,
+    note: c.note,
+  });
 }
 
 /** Normalize connector type: CCS-2, CCS2, ccs-2 all -> 'ccs2'. */
 export function connectorSlug(type: string): string {
-  return norm(type);
+  return slug(type);
 }
 
 /** Is this connector a DC CCS2 plug (the Harrier EV's fast-charge standard)? */

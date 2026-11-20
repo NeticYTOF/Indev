@@ -77,7 +77,7 @@ test('fresh plan opens one detailed evidence workspace only after explicit fetch
 
   await card.getByRole('button', { name: 'Revalidate', exact: true }).click();
   await expect.poll(() => fetches).toBe(1);
-  await expect(details.locator('[data-station-evidence-status]')).toContainText('Station details received');
+  await expect(details.locator('[data-station-evidence-status]')).toContainText('Response received');
   await expect(details.locator('[data-station-evidence-result]')).toHaveAttribute('data-evidence-station-id', String(requestedId));
   await expect(details.locator('[data-station-evidence-result]')).toContainText('Rs. 22.75/kWh');
   await expect(details.locator('[data-station-evidence-result]')).toContainText('Working · free');
@@ -143,7 +143,7 @@ test('synthetic manual evidence stays visibly labelled as a fixture', async ({ p
   await page.getByRole('button', { name: 'Revalidate', exact: true }).first().click();
   const result = details.locator('[data-station-evidence-result]');
   await expect(result).toContainText('Synthetic station — fixed sample, not live charger data.');
-  await expect(details.locator('[data-station-evidence-status]')).toContainText('Charger availability is a snapshot, not guaranteed live.');
+  await expect(details.locator('[data-station-evidence-status]')).toContainText('availability is not guaranteed live');
   await details.scrollIntoViewIfNeeded();
   await page.screenshot({ path: info.outputPath('station-evidence-synthetic-mobile.png') });
 });
@@ -192,7 +192,7 @@ test('saved trip shows stored facts separately from its one manual evidence fetc
 
   await page.getByRole('button', { name: 'Fetch current details', exact: true }).click();
   await expect.poll(() => fetches).toBe(1);
-  await expect(details.locator('[data-station-evidence-status]')).toContainText('Station details received');
+  await expect(details.locator('[data-station-evidence-status]')).toContainText('Response received');
   await expect(details.locator('[data-station-evidence-result]')).toContainText('Working · free');
   expect(fetches).toBe(1);
   await details.scrollIntoViewIfNeeded();

@@ -81,7 +81,10 @@ function chargerMarkup(charger: StationEvidence['chargers'][number], index: numb
     `<div><dt>Tariff</dt><dd>${charger.pricePerKwh == null ? 'Unknown' : formatTariff(charger.pricePerKwh)}</dd></div>` +
     `<div><dt>Last used</dt><dd>${escapeHtml(lastUsedLabel([{ lastUsedOn: charger.lastUsedOn }]))}</dd></div>` +
     `</dl>` +
-    `<ul class="evidence-connectors">${charger.connectors.map(connectorMarkup).join('') || '<li class="hint">No connectors returned.</li>'}</ul>` +
+    `<ul class="evidence-connectors">${charger.connectors.map(connectorMarkup).join('') ||
+      (charger.connectorsMissing
+        ? '<li class="hint">Connector list is Unknown for this charger.</li>'
+        : '<li class="hint">No connectors returned for this charger.</li>')}</ul>` +
     `</li>`;
 }
 
@@ -103,7 +106,10 @@ function evidenceMarkup(evidence: StationEvidence): string {
     `</div>` +
     warnings +
     `<dl class="evidence-grid">` +
-    `<div><dt>Fetched at</dt><dd${evidence.sourceKind === 'fetched' ? ' class="fetched"' : ''}>${named(evidence.fetchedAt == null ? null : formatDateTime(evidence.fetchedAt))}</dd></div>` +
+    `<div><dt>Snapshot fetched at</dt><dd${evidence.sourceKind === 'fetched' ? ' class="fetched"' : ''}>${named(evidence.fetchedAt == null ? null : formatDateTime(evidence.fetchedAt))}</dd></div>` +
+    `${evidence.sourceKind === 'fetched'
+      ? `<div><dt>Response received</dt><dd>${named(evidence.receivedAt == null ? null : formatDateTime(evidence.receivedAt))} (this browser)</dd></div>`
+      : ''}` +
     `<div><dt>Rating</dt><dd>${concise(evidence.rating)} · ${evidence.reviewCount == null ? 'unknown' : evidence.reviewCount} reviews</dd></div>` +
     `<div><dt>CCS2 DC</dt><dd>${concise(c.total)} total · ${concise(c.usable)} usable</dd></div>` +
     `<div><dt>Availability</dt><dd>${concise(c.free)} free · ${concise(c.occupied)} occupied</dd></div>` +
@@ -168,7 +174,8 @@ function plannedEvidenceMarkup(options: EvidencePanelOptions): string {
     : options.savedStation
       ? '<p class="hint">This saved trip stores planned charging facts, not a charger snapshot. Fetch current details below for station status.</p>'
       : '<p class="hint">No charger connectors were returned in this planned snapshot. Fetch current details below for station status.</p>';
-  const snapshot = evidence && evidence.connectorTotal > 0
+  const hasChargerData = evidence != null && (evidence.chargers.length > 0 || evidence.chargersMissing);
+  const snapshot = evidence && hasChargerData
     ? `<div class="evidence-station"><strong>Planned charger snapshot</strong>${evidenceMarkup(evidence)}</div>`
     : `<div class="evidence-station">` +
       `${evidence?.synthetic ? '<div class="banner banner-synthetic">Synthetic planned station — fixed sample, not live charger data.</div>' : ''}` +
@@ -211,7 +218,7 @@ export function wireStationEvidence(
   options: { buttonSelector: string; stationId: number; label?: string },
 ): StationRevalidationHandle | null {
   const button = root.querySelector<HTMLButtonElement>(options.buttonSelector);
-  const panel = root.querySelector<HTMLElement>('[data-station-evidence]');
+  const panel = root.querySelector<HTMLDetailsElement>('details[data-station-evidence]');
   const status = root.querySelector<HTMLElement>('[data-station-evidence-status]');
   const target = root.querySelector<HTMLElement>('[data-station-evidence-fetched]');
   if (!button || !panel || !status || !target || !Number.isSafeInteger(options.stationId) || options.stationId <= 0) {
@@ -232,18 +239,19 @@ export function wireStationEvidence(
     try {
       const response = await fetch(`/api/stations/${options.stationId}`);
       if (!response.ok) throw new Error('Station details unavailable right now.');
-      const evidence = normalizeFetchedStationResponse(await response.json());
+      const evidence = normalizeFetchedStationResponse(await response.json(), new Date().toISOString());
       if (!evidence || !stationMatchesId(evidence, options.stationId)) {
         throw new Error('Station details could not be verified for this stop.');
       }
       if (requestGeneration !== generation ||
           !button.isConnected || !panel.isConnected || !status.isConnected || !target.isConnected) return;
-      const when = evidence.fetchedAt == null ? 'at an unknown time' : formatDateTime(evidence.fetchedAt);
+      const received = evidence.receivedAt == null ? 'at an unverified time' : formatDateTime(evidence.receivedAt);
+      const snapshot = evidence.fetchedAt == null ? 'at an unknown time' : formatDateTime(evidence.fetchedAt);
       status.textContent = evidence.provenance === 'received'
-        ? `Station details received ${when}. Charger availability is a snapshot, not guaranteed live.`
+        ? `Response received ${received}. Charger snapshot fetched ${snapshot}; availability is not guaranteed live.`
         : evidence.provenance === 'retained'
-          ? `Retained station details received ${when}; not a fresh fetch.`
-          : `Station details received ${when}; snapshot time is not verified.`;
+          ? `Retained response received ${received}; snapshot fetched ${snapshot}. Not a fresh fetch.`
+          : `Response received ${received}; snapshot time is not verified.`;
       target.innerHTML = evidenceMarkup(evidence);
       panel.open = true;
     } catch {

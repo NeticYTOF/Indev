@@ -66,9 +66,12 @@ describe('station evidence boundary', () => {
     expect(evidence.chargers[0]).toMatchObject({
       chargerId: 7, kw: 60, pricePerKwh: 22.75, lastUsedOn: '18/11/2026',
     });
-    expect(evidence.chargers[0]?.connectors.map((c) => c.health)).toEqual(['working-free', 'faulted']);
+    expect(evidence?.chargers[0]?.connectors.map((c) => c.health)).toEqual(['working-free', 'faulted']);
     expect(stop.station.chargers[0]?.plugs).toHaveLength(2);
-    expect(displayEvidence(evidence.maxKw, ' kW')).toBe('60 kW');
+    // No ccs2 summary exists in this planned fixture; raw charger power is
+    // visible individually but is not promoted to an aggregate fact.
+    expect(displayEvidence(evidence.maxKw, ' kW')).toBe('Unknown kW');
+    expect(evidence.chargers[0]?.kw).toBe(60);
     expect(plugHealthLabel('faulted')).toBe('Faulted');
   });
 
@@ -119,9 +122,10 @@ describe('station evidence boundary', () => {
     expect(connector?.available).toBeNull();
   });
 
-  it('preserves derived plug health in a fetched mock shape without raw status', () => {
+  it('preserves derived plug health in a confirmed synthetic mock shape', () => {
     const body = fetchedBody();
     const station = body.station as Record<string, unknown>;
+    station.synthetic = true;
     station.chargers = [{
       chargerId: 7, name: 'DC', type: 'DC', kw: 60, pricePerKwh: 22.75,
       plugs: [{ connectorId: 1, type: 'CCS-2', health: 'working-free', contradiction: false }],
@@ -129,6 +133,20 @@ describe('station evidence boundary', () => {
     const evidence = normalizeFetchedStationResponse(body);
     expect(evidence?.chargers[0]?.connectors[0]?.health).toBe('working-free');
     expect(evidence?.warnings.join(' ')).not.toContain('conflicts with its status');
+  });
+
+  it('never trusts health-only evidence in a raw connectors container', () => {
+    const body = fetchedBody();
+    const station = body.station as Record<string, unknown>;
+    station.chargers = [{
+      chargerId: 7, name: 'DC', type: 'DC', kw: 60, pricePerKwh: 22.75,
+      connectors: [{ connectorId: 1, type: 'CCS-2', health: 'working-free' }],
+    }];
+    const evidence = normalizeFetchedStationResponse(body, '2026-11-20T11:05:00.000Z');
+    expect(evidence?.chargers[0]?.connectors[0]?.health).toBe('unknown');
+    expect(evidence?.chargers[0]?.connectors[0]?.status).toBeNull();
+    expect(evidence?.receivedAt).toBe('2026-11-20T11:05:00.000Z');
+    expect(evidence?.fetchedAt).toBe('2026-11-20T11:00:00.000Z');
   });
 
   it('never trusts a supplied fetched health label over raw status', () => {
@@ -155,6 +173,21 @@ describe('station evidence boundary', () => {
     const absent = normalizeFetchedStationResponse({ station: { stationId: 42, name: 'No list', fetchedAt: '2026-11-20T11:00:00Z' } });
     expect(absent?.chargersMissing).toBe(true);
     expect(absent?.warnings.join(' ')).toContain('Charger list is Unknown');
+
+    const noConnectors = normalizeFetchedStationResponse({ station: {
+      stationId: 42, name: 'No connectors', fetchedAt: '2026-11-20T11:00:00Z',
+      chargers: [{ chargerId: 1, name: 'DC', type: 'DC', kw: 60 }],
+    } });
+    expect(noConnectors?.chargers[0]?.connectorsMissing).toBe(true);
+    expect(noConnectors?.chargers[0]?.kw).toBe(60);
+  });
+
+  it('flags a summary availability claim contradicted by returned connector health', () => {
+    const body = fetchedBody();
+    const station = body.station as Record<string, unknown>;
+    station.ccs2 = { total: 2, usable: 2, free: 2, occupied: 0, uncertain: 0, faulted: 0, offline: 0 };
+    const evidence = normalizeFetchedStationResponse(body);
+    expect(evidence?.warnings.join(' ')).toContain('availability is contradictory');
   });
 
   it('distinguishes manual receipt from retained data and rejects malformed fetch times', () => {

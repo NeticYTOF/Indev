@@ -8,7 +8,8 @@
  * separate from a manually fetched snapshot, and reports absent/malformed
  * evidence as Unknown rather than zero/available/reliable.
  */
-import { classifyPlug, type PlanStop } from '@indeev/core';
+import type { PlanStop } from '@indeev/core';
+import { classifyPlugValues } from '@indeev/core/plug-classifier';
 
 export type EvidenceNumber = number | null;
 export type EvidenceString = string | null;
@@ -36,6 +37,8 @@ export interface StationChargerEvidence {
   pricePerKwh: EvidenceNumber;
   lastUsedOn: EvidenceString;
   connectors: StationConnectorEvidence[];
+  /** Missing connector evidence differs from an explicitly returned empty list. */
+  connectorsMissing: boolean;
 }
 
 export interface StationCountEvidence {
@@ -59,7 +62,10 @@ export interface StationEvidence {
   reviewCount: EvidenceNumber;
   /** No provider supplies a verified reliability score; null is intentional. */
   reliability: null;
+  /** Upstream snapshot time; absent or malformed means Unknown. */
   fetchedAt: EvidenceString;
+  /** Browser receipt time for the explicit manual response; not provider time. */
+  receivedAt: EvidenceString;
   provenance: EvidenceProvenance;
   synthetic: boolean;
   sourceKind: 'planned' | 'fetched';
@@ -118,6 +124,7 @@ function normalizeConnector(
   warnings: string[],
   index: number,
   sourceKind: 'planned' | 'fetched',
+  allowDerivedHealth: boolean,
 ): StationConnectorEvidence {
   const c = record(value);
   const id = number(c?.connectorId ?? c?.displayId, 1);
@@ -128,19 +135,14 @@ function normalizeConnector(
   const rawAvailablePresent = c != null && Object.prototype.hasOwnProperty.call(c, 'available') && c.available != null;
   const rawStatusPresent = rawStatus != null || rawAvailablePresent || text(c?.note) != null;
   const candidateHealth = suppliedHealth(c?.health);
-  // Planned StationLiveView plugs AND the mock endpoint's derived plugs carry
-  // health without raw status; preserve that health only for this shape. A
-  // raw connector's supplied `health` is untrusted metadata and is ignored.
-  const derivedPlugShape = !rawStatusPresent && candidateHealth !== 'unknown';
-  const plannedHealth = sourceKind === 'planned' || (sourceKind === 'fetched' && derivedPlugShape)
-    ? candidateHealth
-    : 'unknown';
+  // Only a real `plugs` container from a planned station or confirmed mock
+  // station supplies derived health. A raw `connectors` entry with no status
+  // and a forged health label is never trusted.
+  const derivedPlugShape = allowDerivedHealth && !rawStatusPresent && candidateHealth !== 'unknown';
+  const plannedHealth = derivedPlugShape ? candidateHealth : 'unknown';
   const invalidAvailability = rawAvailablePresent && !Object.is(c?.available, available);
   const derived = !derivedPlugShape
-    ? classifyPlug({
-      displayId: typeof c?.displayId === 'number' ? c.displayId : (id ?? 0),
-      connectorId: typeof c?.connectorId === 'number' ? c.connectorId : (id ?? 0),
-      type: type ?? '',
+    ? classifyPlugValues({
       status: rawStatus ?? '',
       // Deliberately pass the raw untrusted value: classifyPlug rejects
       // present non-boolean availability as uncertain/contradictory.
@@ -158,8 +160,8 @@ function normalizeConnector(
     : (derived?.contradiction ?? false);
   if (!c) warnings.push(`Connector ${index} had no usable record.`);
   else if (health === 'unknown') warnings.push(`Connector ${index} status is Unknown.`);
-  if (sourceKind === 'fetched' && rawStatusPresent && c?.health != null && c.health !== health) {
-    warnings.push(`Connector ${index} supplied a health label that conflicts with its status; status was used.`);
+  if (sourceKind === 'fetched' && !allowDerivedHealth && c?.health != null && c.health !== health) {
+    warnings.push(`Connector ${index} supplied a health label that conflicts with raw connector evidence; status was used.`);
   }
   return {
     connectorId: id,
@@ -178,17 +180,22 @@ function normalizeCharger(
   warnings: string[],
   index: number,
   sourceKind: 'planned' | 'fetched',
+  allowPlugsHealth: boolean,
 ): StationChargerEvidence {
   const ch = record(value);
+  const isPlugs = !Array.isArray(ch?.connectors) && Array.isArray(ch?.plugs);
   const rawConnectors = Array.isArray(ch?.connectors)
     ? ch!.connectors as unknown[]
-    : Array.isArray(ch?.plugs)
+    : isPlugs
       ? ch!.plugs as unknown[]
       : null;
   if (!ch) warnings.push(`Charger ${index} had no usable record.`);
   if (ch && rawConnectors == null) warnings.push(`Charger ${index} connectors are Unknown.`);
+  // Live stations use raw connectors; planned stations and confirmed mock
+  // stations may use already-derived plugs.
+  const allowDerivedHealth = isPlugs && (sourceKind === 'planned' || allowPlugsHealth);
   const connectors = (rawConnectors ?? []).map((connector, connectorIndex) =>
-    normalizeConnector(connector, warnings, connectorIndex + 1, sourceKind));
+    normalizeConnector(connector, warnings, connectorIndex + 1, sourceKind, allowDerivedHealth));
   return {
     chargerId: number(ch?.chargerId, 1),
     name: text(ch?.name),
@@ -197,7 +204,14 @@ function normalizeCharger(
     pricePerKwh: number(ch?.pricePerKwh, 0),
     lastUsedOn: text(ch?.lastUsedOn),
     connectors,
+    connectorsMissing: rawConnectors == null,
   };
+}
+
+function isCcs2DcEvidence(charger: StationChargerEvidence, connector: StationConnectorEvidence): boolean {
+  const chargerType = charger.type?.toLowerCase() ?? '';
+  const connectorType = connector.type?.toLowerCase() ?? '';
+  return chargerType === 'dc' && /ccs-?2/.test(connectorType);
 }
 
 function normalizeCounts(value: unknown): StationCountEvidence {
@@ -219,7 +233,9 @@ function normalizeStation(value: unknown, sourceKind: 'planned' | 'fetched'): St
   const chargersMissing = !Array.isArray(raw.chargers);
   const chargersRaw = chargersMissing ? [] : raw.chargers as unknown[];
   if (chargersMissing) warnings.push('Charger list is Unknown.');
-  const chargers = chargersRaw.map((charger, index) => normalizeCharger(charger, warnings, index + 1, sourceKind));
+  const allowPlugsHealth = sourceKind === 'planned' || raw.synthetic === true;
+  const chargers = chargersRaw.map((charger, index) =>
+    normalizeCharger(charger, warnings, index + 1, sourceKind, allowPlugsHealth));
   const ccs2 = record(raw.ccs2);
   const fetchedAt = sourceKind === 'fetched' ? validFetchedAt(raw.fetchedAt) : text(raw.fetchedAt);
   if (sourceKind === 'fetched' && raw.fetchedAt != null && fetchedAt == null) {
@@ -235,6 +251,32 @@ function normalizeStation(value: unknown, sourceKind: 'planned' | 'fetched'): St
   if (ccs2 != null && ccs2.hasInvalidSelectedTariff === true) {
     warnings.push('Selected charger tariff was malformed; it is Unknown.');
   }
+  const ccs2Connectors = chargers.flatMap((charger) =>
+    charger.connectors.filter((connector) => isCcs2DcEvidence(charger, connector)));
+  const derivedHealthCounts = ccs2Connectors.reduce((counts, connector) => {
+    {
+      if (connector.health === 'working-free' || connector.health === 'working-occupied' || connector.health === 'finishing') counts.usable++;
+      if (connector.health === 'working-free' || connector.health === 'finishing') counts.free++;
+      if (connector.health === 'working-occupied') counts.occupied++;
+      if (connector.health === 'uncertain') counts.uncertain++;
+      if (connector.health === 'faulted') counts.faulted++;
+      if (connector.health === 'offline') counts.offline++;
+    }
+    return counts;
+  }, { usable: 0, free: 0, occupied: 0, uncertain: 0, faulted: 0, offline: 0 });
+  // Unknown/missing connector shape cannot confirm or refute an aggregate claim.
+  const canCompareConnectors = ccs2Connectors.length > 0 && chargers.every((charger) => !charger.connectorsMissing);
+  const summaryCounts = normalizeCounts(ccs2);
+  const claimFields: Array<[keyof typeof derivedHealthCounts, string]> = [
+    ['usable', 'usable'], ['free', 'free'], ['occupied', 'occupied'],
+    ['uncertain', 'uncertain'], ['faulted', 'faulted'], ['offline', 'offline'],
+  ];
+  for (const [field, label] of claimFields) {
+    const claimed = summaryCounts[field];
+    if (canCompareConnectors && claimed != null && derivedHealthCounts[field] !== claimed) {
+      warnings.push(`CCS2 summary claims ${claimed} ${label} connector(s), but returned connector health supports ${derivedHealthCounts[field]}; availability is contradictory.`);
+    }
+  }
   return {
     stationId: number(raw.stationId, 1),
     name: text(raw.name),
@@ -246,6 +288,7 @@ function normalizeStation(value: unknown, sourceKind: 'planned' | 'fetched'): St
     reviewCount: count(raw.reviewCount),
     reliability: null,
     fetchedAt,
+    receivedAt: null,
     provenance: 'unknown',
     synthetic: raw.synthetic === true,
     sourceKind,
@@ -271,10 +314,14 @@ export function normalizePlannedStation(station: PlanStop['station']): StationEv
  * every field is treated as untrusted because HTTP responses can be stale,
  * malformed, or replaced in tests/proxies.
  */
-export function normalizeFetchedStationResponse(body: unknown): StationEvidence | null {
+export function normalizeFetchedStationResponse(
+  body: unknown,
+  receivedAt: unknown = null,
+): StationEvidence | null {
   const raw = record(body);
   if (!raw || !('station' in raw)) return null;
   const evidence = normalizeStation(raw.station, 'fetched');
+  evidence.receivedAt = validFetchedAt(receivedAt);
   if (raw.retained === true || raw.live === false) {
     // Only an explicit retained/non-live marker downgrades the response.
     evidence.provenance = 'retained';

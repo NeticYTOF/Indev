@@ -23,17 +23,23 @@ empty list.
 ## Provenance
 
 The current HTTP station endpoint returns a fetch timestamp but no `live`
-flag. A successful manual call with a valid fetch time is therefore described
-as **station details received**: charger availability is a snapshot and is not
-guaranteed live. A response explicitly marked `retained: true` or `live: false`
-is labelled retained/non-live; an invalid or absent timestamp leaves the
-snapshot time `Unknown` and says availability is unverified.
-Stations marked synthetic by mock mode keep a prominent synthetic banner.
+flag. The workspace records the browser's response-receipt time separately
+from the upstream snapshot `fetchedAt`: a later receipt does not make an old
+snapshot live. A successful call with a valid snapshot time is described as
+**response received**, with charger availability explicitly called a snapshot
+and not guaranteed live. A response explicitly marked `retained: true` or
+`live: false` is labelled retained/non-live; an invalid or absent snapshot time
+leaves that time `Unknown` and says availability is unverified. Stations marked
+synthetic by mock mode keep a prominent synthetic banner.
 
 Raw fetched connectors are classified from their status, availability, and
-note using the core plug rules. A `health` label on a raw connector is not
-trusted over that evidence. The mock endpoint's derived `plugs` shape, which
-has no raw status, retains its supplied health label only for that shape.
+note using the core plug rules. Derived `health` is accepted only from an
+actual planned/core `plugs` container or the mock endpoint's confirmed
+synthetic `plugs` shape. A raw `connectors` container never trusts a supplied
+`health` label, including one supplied without raw status. A missing connector
+list is distinct from an empty list, and an aggregate CCS2 claim contradicted
+by returned connector health is reported as an explicit warning rather than an
+unchecked availability fact.
 
 ## Manual fetch safety
 
