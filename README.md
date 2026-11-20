@@ -60,6 +60,9 @@ npm run dev            # LIVE mode: server :8787 + web :5173
 - `docs/station-evidence-workspace.md` — the shared fresh/saved charging-stop
   panel: planned-versus-fetched provenance, explicit manual refreshes, and
   truthful handling of unavailable or malformed charger evidence.
+- `docs/saved-trip-comparison.md` — the read-only two-trip workspace: exact
+  stored vehicle facts, honest Unknowns, signed same-unit differences, explicit
+  provenance labels, and its standalone download/print behavior.
 
 ## Local request-origin policy
 
