@@ -81,6 +81,23 @@ describe('journey briefing', () => {
     expect(html).not.toContain('gradient');
   });
 
+  it('does not mutate the plan when reporting a missing itinerary fact', () => {
+    const source = plan();
+    const incomplete = {
+      ...source,
+      stops: [{ ...(source.stops[0] as TripPlan['stops'][number]), chargeKwh: Number.NaN }],
+    };
+    const originalWarnings = [...incomplete.warnings];
+
+    const first = buildJourneyBriefingData(incomplete);
+    const second = buildJourneyBriefingData(incomplete);
+
+    expect(incomplete.warnings).toEqual(originalWarnings);
+    expect(first.warnings).toContain('Journey briefing cannot show complete charging facts for stop 1.');
+    expect(second.warnings).toEqual(first.warnings);
+    expect(first.itinerary).toHaveLength(0);
+  });
+
   it('shows unknown costs as unknown and handles no-stop routes', () => {
     const noStops = plan({
       stops: [],

@@ -93,7 +93,8 @@ export function buildJourneyBriefingData(plan: TripPlan): JourneyBriefingData {
   const knownCostInr = nonnegative(plan.totals?.estPriceInr);
   const finalSocPct = nonnegative(plan.totals?.finalSocPct);
   const stops = Array.isArray(plan.stops) ? plan.stops : [];
-  const warnings = Array.isArray(plan.warnings) ? plan.warnings : [];
+  // Evidence holes are local to this presentation; never mutate the plan's own warnings.
+  const warnings: string[] = Array.isArray(plan.warnings) ? [...plan.warnings] : [];
 
   const legs: JourneyLeg[] = [];
   let fromLabel = plan.origin.label;
