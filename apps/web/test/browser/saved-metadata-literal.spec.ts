@@ -34,6 +34,10 @@ test('new saves reject string ranges and legacy values stay literal when opened'
   await page.goto('/'); await page.locator('#trips-button').click();
   await page.getByRole('button', { name: 'Open', exact: true }).click();
   const vehicle = page.locator('.plan-results .plan-vehicle');
+  await expect(vehicle).toContainText('your real-world range Unknown');
+  await expect(vehicle).toContainText('claim Unknown');
+  await expect(vehicle).toContainText('legacy stored real-world text:');
+  await expect(vehicle).toContainText('legacy stored claim text:');
   await expect(vehicle).toContainText(realRange); await expect(vehicle).toContainText(claimRange);
   await expect(page.locator('[data-range-proof], [data-claim-proof], [data-station-attribute-proof]')).toHaveCount(0);
   await expect(page.locator('.saved-stop').first()).toHaveAttribute('data-station-id', trip.stations[0].stationId);

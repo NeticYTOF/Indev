@@ -1930,6 +1930,60 @@ body {
   gap: 8px;
 }
 
+.trip-list-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.trip-search-label,
+.trip-sort-label {
+  color: var(--ink-3);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.trip-search,
+.trip-sort {
+  min-width: 0;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  padding: 8px 9px;
+}
+
+.trip-search:focus,
+.trip-sort:focus {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 1px;
+}
+
+.trip-search::placeholder {
+  color: var(--ink-3);
+}
+
+.trip-list-result-count {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 8px 14px;
+  color: var(--ink-3);
+  font-size: var(--text-xs);
+  border-bottom: 1px solid var(--line);
+}
+
+.hidden-selection-notice {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
 .trip-row {
   display: flex;
   align-items: center;

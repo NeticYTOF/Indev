@@ -24,6 +24,7 @@ import { formatDuration } from './format.js';
 import { savedRouteGeometry } from './safe-url.js';
 import { buildTripComparison } from './trip-compare.js';
 import { clearTripComparisonView, renderTripComparisonWorkspace } from './trip-compare-view.js';
+import { filterAndSortTrips, type TripListSort } from './trip-list.js';
 
 /**
  * Hide the saved-trips drawer. Closing it leaves every in-drawer focus
@@ -130,6 +131,10 @@ export function renderTripsDrawer(
   drawer.innerHTML = '';
   const selected = new Set<number>();
   let loadedTrips: SavedTrip[] = [];
+  let searchQuery = '';
+  let sortOrder: TripListSort = 'newest';
+  let loadState: 'loading' | 'ready' | 'unavailable' | 'error' = 'loading';
+  let visibleIndices = new Set<number>();
   const head = el(`
     <div class="drawer-head">
       <div>
@@ -147,12 +152,63 @@ export function renderTripsDrawer(
     hideTripsDrawer(drawer);
   });
 
+  const controls = el(`
+    <div class="trip-list-controls">
+      <label class="trip-search-label" for="trip-search">Search saved trips</label>
+      <input id="trip-search" class="trip-search" type="search" autocomplete="off" placeholder="Name, origin or destination" data-trip-search disabled>
+      <button type="button" class="btn btn-compact btn-ghost" data-trip-search-clear disabled>Clear search</button>
+      <label class="trip-sort-label" for="trip-sort">Sort</label>
+      <select id="trip-sort" class="trip-sort" data-trip-sort disabled>
+        <option value="newest">Newest first</option>
+        <option value="oldest">Oldest first</option>
+        <option value="name">Name A–Z</option>
+      </select>
+      <p class="trip-list-result-count" data-trip-result-count role="status" aria-live="polite"></p>
+    </div>
+  `);
+  drawer.appendChild(controls);
   const list = el('<div class="trip-list"></div>');
   drawer.appendChild(list);
+  const hiddenNotice = el('<p class="hint hidden-selection-notice" role="status" aria-live="polite" hidden></p>');
+  drawer.appendChild(hiddenNotice);
   const status = head.querySelector<HTMLButtonElement>('[data-compare-selected]');
   const selectionStatus = head.querySelector<HTMLElement>('#compare-selection-status');
+  const searchInput = controls.querySelector<HTMLInputElement>('[data-trip-search]');
+  const clearSearch = controls.querySelector<HTMLButtonElement>('[data-trip-search-clear]');
+  const sortSelect = controls.querySelector<HTMLSelectElement>('[data-trip-sort]');
+  const resultCount = controls.querySelector<HTMLElement>('[data-trip-result-count]');
+
+  const updateHiddenSelectionNotice = (): void => {
+    const hidden = [...selected].filter((index) => !visibleIndices.has(index)).length;
+    hiddenNotice.hidden = hidden === 0;
+    if (hidden > 0) {
+      hiddenNotice.textContent = `${hidden} selected trip${hidden === 1 ? '' : 's'} hidden by the current search.`;
+    }
+  };
+
+  const renderList = (): void => {
+    if (loadState !== 'ready') return;
+    list.innerHTML = '';
+    const entries = filterAndSortTrips(loadedTrips, searchQuery, sortOrder);
+    if (resultCount) resultCount.textContent = `Showing ${entries.length} of ${loadedTrips.length} saved trips.`;
+    if (searchInput) searchInput.disabled = false;
+    if (sortSelect) sortSelect.disabled = false;
+    if (clearSearch) clearSearch.disabled = searchQuery.length === 0;
+    if (entries.length === 0) {
+      list.appendChild(el(searchQuery.trim().length > 0
+        ? '<p class="hint">No saved trips match this search.</p>'
+        : '<p class="hint">No saved trips yet. Plan a route, then save it.</p>'));
+    } else {
+      entries.forEach(({ trip, sourceIndex }) => {
+        list.appendChild(renderTripRow(trip, sourceIndex, selected.has(sourceIndex), toggleSelection, map, drawer, loadSavedRoute));
+      });
+    }
+    visibleIndices = new Set(entries.map(({ sourceIndex }) => sourceIndex));
+    updateSelection();
+  };
 
   const updateSelection = (announcement?: string): void => {
+    updateHiddenSelectionNotice();
     const count = selected.size;
     if (status) {
       status.textContent = `Compare selected (${count}/2)`;
@@ -169,6 +225,23 @@ export function renderTripsDrawer(
       button.textContent = active ? 'Remove from comparison' : 'Select to compare';
     });
   };
+
+  searchInput?.addEventListener('input', () => {
+    searchQuery = searchInput.value;
+    renderList();
+  });
+  clearSearch?.addEventListener('click', () => {
+    if (!searchInput) return;
+    searchInput.value = '';
+    searchQuery = '';
+    renderList();
+    searchInput.focus({ preventScroll: true });
+  });
+  sortSelect?.addEventListener('change', () => {
+    const value = sortSelect.value;
+    sortOrder = value === 'oldest' || value === 'name' ? value : 'newest';
+    renderList();
+  });
 
   const toggleSelection = (index: number): void => {
     if (selected.has(index)) {
@@ -242,24 +315,25 @@ export function renderTripsDrawer(
       const { trips } = await api.trips();
       list.innerHTML = '';
       const tripsKnown = Array.isArray(trips);
-      const tripList = tripsKnown ? trips : [];
-      loadedTrips = tripList;
+      loadedTrips = tripsKnown ? trips : [];
       selected.clear();
-      updateSelection();
       if (!tripsKnown) {
+        loadState = 'unavailable';
+        if (searchInput) searchInput.disabled = true;
+        if (sortSelect) sortSelect.disabled = true;
+        if (resultCount) resultCount.textContent = 'Saved trip list is unavailable.';
         list.appendChild(el('<p class="hint">Saved trip list is unavailable.</p>'));
+        updateSelection();
         return;
       }
-      if (tripList.length === 0) {
-        list.appendChild(el('<p class="hint">No saved trips yet. Plan a route, then save it.</p>'));
-        return;
-      }
-      tripList.forEach((trip, index) => {
-        list.appendChild(renderTripRow(trip, index, selected.has(index), toggleSelection, map, drawer, loadSavedRoute));
-      });
-      updateSelection();
+      loadState = 'ready';
+      renderList();
     } catch (err) {
+      loadState = 'error';
+      if (searchInput) searchInput.disabled = true;
+      if (sortSelect) sortSelect.disabled = true;
       list.innerHTML = '';
+      if (resultCount) resultCount.textContent = 'Saved trips could not be loaded.';
       list.appendChild(el(`<p class="hint">Could not load trips: ${escapeHtml(err instanceof Error ? err.message : 'unknown error')}</p>`));
     }
   };
@@ -432,7 +506,9 @@ function renderSavedSummary(
         <span class="destination">${safeText(destination.label)}</span>
       </div>
       <div class="plan-vehicle">
-        ${safeText(vehicle.label)}${safeNumber(vehicle.realWorldRangeKm) != null ? ` · your real-world range ${safeInteger(vehicle.realWorldRangeKm)} km` : ''}${safeNumber(vehicle.claimedRangeKm) != null ? ` · claim ${safeInteger(vehicle.claimedRangeKm)} km (mfr)` : ''}
+        ${safeText(vehicle.label)} · your real-world range ${safeNumber(vehicle.realWorldRangeKm) != null ? `${safeInteger(vehicle.realWorldRangeKm)} km` : 'Unknown'} · claim ${safeNumber(vehicle.claimedRangeKm) != null ? `${safeInteger(vehicle.claimedRangeKm)} km (mfr)` : 'Unknown'}
+        ${typeof vehicle.realWorldRangeKm !== 'number' && vehicle.realWorldRangeKm != null ? `<span class="legacy-fact"> · legacy stored real-world text: ${safeText(String(vehicle.realWorldRangeKm))} (not a usable range)</span>` : ''}
+        ${typeof vehicle.claimedRangeKm !== 'number' && vehicle.claimedRangeKm != null ? `<span class="legacy-fact"> · legacy stored claim text: ${safeText(String(vehicle.claimedRangeKm))} (not a usable claim)</span>` : ''}
       </div>
     </div>
     <div class="trip-strip">

@@ -6,6 +6,18 @@ The saved-trips drawer lets the user explicitly select two stored trips with
 two trips, and announces its count in a polite live status. No comparison is
 created from a partial selection.
 
+The same drawer has a local **Search saved trips** field and Newest first /
+Oldest first / Name A–Z sorting. Search matches literal text in each saved name,
+origin and destination; it sends no geocoding, plan, station, AI or trip request.
+Unknown or malformed created dates sort last in either date direction. A live
+result count distinguishes matches, no matches, no saved trips, an unavailable
+list and a failed load; **Clear search** restores the unfiltered view. Filtering
+and sorting change only the local presentation: the original load index remains
+attached to every row, so Compare, Open, Edit and Delete keep targeting the
+record the user selected. Selected trips hidden by the search remain in the
+comparison and are announced; clearing or removing the selection updates that
+notice without rewriting any saved record.
+
 The comparison workspace is a read-only view of the same `GET /api/trips` data
 already loaded by the drawer. Selecting, swapping, removing, clearing, going
 back, and opening the standalone download perform no plan, geocode, station,
