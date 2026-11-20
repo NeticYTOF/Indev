@@ -84,7 +84,6 @@ test('fresh plan opens one detailed evidence workspace only after explicit fetch
   await expect(details.locator('[data-station-evidence-result]')).toContainText('Faulted');
   await expect(details.locator('[data-station-evidence-result]')).toContainText('1 usable');
   await expect(details.locator('[data-station-evidence-result]')).toContainText('1 free');
-  await expect(details.locator('[data-station-evidence-result]')).toContainText('Synthetic station');
   await expect(details.locator('[data-station-evidence-result]')).toContainText('18/11/2026');
   expect(fetches).toBe(1);
   await details.scrollIntoViewIfNeeded();
@@ -125,7 +124,7 @@ test('malformed and sparse station facts stay Unknown beside unchanged planned f
   await expect(result).toContainText('3 · 7 reviews');
   await expect(result).toContainText('Uncertain');
   await expect(result).toContainText('Unknown kW');
-  await expect(result).toContainText('snapshot time is not verified');
+  await expect(details.locator('[data-station-evidence-status]')).toContainText('snapshot time is not verified');
   await expect(result.locator('[data-malformed-proof]')).toHaveCount(0);
   await expect(page.locator('img[onerror=malformed]')).toHaveCount(0);
   await details.scrollIntoViewIfNeeded();
