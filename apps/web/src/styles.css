@@ -1153,6 +1153,235 @@ body {
   gap: 8px;
 }
 
+/* --- journey briefing: whole-trip legs, battery profile, itinerary --- */
+
+.journey-briefing {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-lg);
+  background: var(--surface-2);
+}
+
+.journey-briefing h3,
+.journey-briefing h4 {
+  margin: 0;
+  color: var(--ink);
+}
+
+.journey-briefing h3 {
+  font-size: var(--text-lg);
+  letter-spacing: -0.01em;
+}
+
+.journey-briefing h4 {
+  font-size: var(--text-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-2);
+}
+
+.journey-briefing > .hint {
+  margin: -6px 0 0;
+}
+
+.briefing-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.briefing-summary > div {
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
+.briefing-summary dt {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.briefing-summary dd {
+  margin: 3px 0 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.journey-legs,
+.journey-battery-profile {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.journey-leg {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent-border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
+.journey-leg[data-leg-kind='final'] {
+  border-left-color: var(--accent);
+}
+
+.journey-leg-place {
+  min-width: 0;
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.journey-leg-distance {
+  color: var(--accent-strong);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.journey-leg-eta,
+.journey-leg .hint {
+  grid-column: 1 / -1;
+  font-size: var(--text-xs);
+  color: var(--ink-3);
+}
+
+.journey-battery-profile {
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+
+.journey-battery-point {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
+.journey-battery-point h4 {
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.journey-battery-point .hint {
+  margin: 8px 0 0;
+  font-size: var(--text-xs);
+  color: var(--ink-3);
+}
+
+.briefing-battery-value {
+  display: grid;
+  grid-template-columns: 54px minmax(40px, 1fr) 44px;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.briefing-battery-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.briefing-battery-value strong {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.briefing-meter {
+  display: block;
+  height: 9px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.briefing-meter.empty {
+  opacity: 0.45;
+}
+
+.briefing-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.briefing-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
+.briefing-scroll:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.briefing-itinerary {
+  width: 100%;
+  min-width: 660px;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.briefing-itinerary caption {
+  padding: 10px 12px;
+  text-align: left;
+  color: var(--ink-3);
+}
+
+.briefing-itinerary th,
+.briefing-itinerary td {
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  color: var(--ink-2);
+}
+
+.briefing-itinerary thead th {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent-strong);
+  white-space: nowrap;
+}
+
+.briefing-itinerary tbody th {
+  color: var(--ink);
+}
+
+.briefing-itinerary tbody th .hint {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
 /* ============================================================
    Stop cards
    Base = legacy block layout (current markup until its rewrite);
@@ -1677,5 +1906,161 @@ body {
      54px clears the head (16 + ~20 line + 16 + 1 border). */
   #trips-drawer:not(.hidden) ~ #toast-root {
     top: calc(52px + var(--safe-t) + 54px);
+  }
+}
+
+/* ============================================================
+   Print — journey itinerary only, flat black on white
+   ============================================================ */
+
+@page {
+  margin: 12mm;
+}
+
+@media print {
+  html,
+  body,
+  #app {
+    position: static;
+    height: auto;
+    overflow: visible;
+    background: #fff;
+    color: #111;
+  }
+
+  #map,
+  .top-cluster,
+  .sheet-fab,
+  .drawer,
+  #toast-root,
+  .planner,
+  .plan-head,
+  .trip-strip,
+  .plan-actions,
+  .stops,
+  .plan-results > .banners {
+    display: none !important;
+  }
+
+  .panel {
+    position: static;
+    width: auto;
+    max-height: none;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: #fff;
+    color: #111;
+    overflow: visible;
+    box-shadow: none;
+    transform: none;
+    visibility: visible;
+  }
+
+  .plan-results {
+    padding: 0;
+    border: 0;
+    gap: 10px;
+  }
+
+  .journey-briefing {
+    gap: 10px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: #fff;
+    color: #111;
+  }
+
+  .journey-briefing h3,
+  .journey-briefing h4,
+  .briefing-summary dd,
+  .journey-leg-place,
+  .briefing-battery-value strong,
+  .briefing-itinerary tbody th {
+    color: #111;
+  }
+
+  .briefing-banners {
+    display: flex !important;
+  }
+
+  .banner {
+    background: #fff;
+    color: #111 !important;
+    border-color: #333 !important;
+    border-left-width: 5px;
+  }
+
+  .banner-synthetic {
+    border-left-style: solid;
+  }
+
+  .banner-warn {
+    border-left-style: dashed;
+  }
+
+  .briefing-summary > div,
+  .journey-leg,
+  .journey-battery-point {
+    border-color: #777;
+    background: #fff;
+  }
+
+  .briefing-summary dt,
+  .journey-leg .hint,
+  .journey-leg-eta,
+  .journey-battery-point .hint,
+  .briefing-battery-label,
+  .briefing-itinerary caption {
+    color: #444;
+  }
+
+  .journey-leg-distance {
+    color: #111;
+  }
+
+  .briefing-meter {
+    border-color: #777;
+    background: #eee;
+  }
+
+  .briefing-meter-fill {
+    background: #111;
+  }
+
+  .briefing-scroll {
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: #fff;
+  }
+
+  .briefing-itinerary {
+    min-width: 0;
+    font-size: 10px;
+  }
+
+  .briefing-itinerary th,
+  .briefing-itinerary td {
+    padding: 4px 5px;
+    border-color: #777;
+    color: #111;
+    background: #fff;
+  }
+
+  .briefing-itinerary thead {
+    display: table-header-group;
+  }
+
+  .briefing-itinerary thead th {
+    color: #111;
+    background: #eee;
+  }
+
+  .journey-leg,
+  .journey-battery-point,
+  .briefing-itinerary tr {
+    break-inside: avoid;
   }
 }
