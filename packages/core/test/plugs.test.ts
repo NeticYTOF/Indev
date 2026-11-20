@@ -214,3 +214,36 @@ it('does not turn unrelated faulted invalid metadata into a usable-power hole', 
   expect(summary.maxKw).toBe(60); expect(summary.hasInvalidUsablePower).toBe(false);
   expect(summary.hasInvalidSelectedTariff).toBe(false); expect(summary.faulted).toBe(1);
 });
+
+it.each(['available', 'charging', 'preparing', 'finishing'].flatMap(status => ['false', 0, 1, {}, []].map(available => ({ status, available }))))('does not promote $status with malformed availability $available', ({ status, available }) => {
+  const input = conn(status, true, null); Object.assign(input, { available });
+  const result = classifyPlug(input);
+  expect(result).toMatchObject({ health: 'uncertain', contradiction: true, invalidAvailability: true });
+  const summary = summarizeCcs2(station([{ type: 'DC', kw: 120, price: 99, connectors: [input] }]));
+  expect(summary.usable).toBe(0); expect(summary.free).toBe(0); expect(summary.maxKw).toBeNull(); expect(summary.pricePerKwh).toBeNull();
+  expect(summary.hasInvalidUsableAvailability).toBe(true);
+});
+
+it.each(['faulted', 'offline', 'unavailable'])('preserves definite %s evidence despite malformed availability', status => {
+  const input = conn(status, false, null); Object.assign(input, { available: 'false' });
+  expect(classifyPlug(input).health).toBe(status === 'faulted' ? 'faulted' : 'offline');
+  expect(summarizeCcs2(station([{ type: 'DC', kw: 60, price: 20, connectors: [input] }])).hasInvalidUsableAvailability).toBe(false);
+});
+
+it.each([null, undefined])('keeps legacy absent availability %j semantics', available => {
+  const input = conn('available', true, null); Object.assign(input, { available });
+  expect(classifyPlug(input)).toEqual({ health: 'working-free', contradiction: false });
+});
+
+it('keeps positive-status fault-note contradiction uncertain without calling it definitely faulted', () => {
+  const input = conn('charging', false, 'Faulted'); Object.assign(input, { available: 'false' });
+  expect(classifyPlug(input)).toEqual({ health: 'uncertain', contradiction: true });
+});
+
+it.each([false, true])('keeps valid same-charger connector sibling and counts no false free plug, invalid-first=%s', invalidFirst => {
+  const good = conn('charging', false, 'Charging'), bad = conn('available', true, null);
+  Object.assign(bad, { available: 'false' });
+  const summary = summarizeCcs2(station([{ type: 'DC', kw: 60, price: 20, connectors: invalidFirst ? [bad, good] : [good, bad] }]));
+  expect(summary.usable).toBe(1); expect(summary.free).toBe(0); expect(summary.occupied).toBe(1); expect(summary.uncertain).toBe(1);
+  expect(summary.maxKw).toBe(60); expect(summary.pricePerKwh).toBe(20);
+});

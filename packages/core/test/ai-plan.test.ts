@@ -309,7 +309,7 @@ function handBuiltBundle(chainages: number[], totalKm: number) {
           stationUrl: '',
         },
       },
-      summary: { total: 1, usable: 1, free: 1, occupied: 0, uncertain: 0, faulted: 0, offline: 0, maxKw: 60, pricePerKwh: 20, hasInvalidUsablePower: false, hasMissingUsablePower: false, hasInvalidSelectedTariff: false, hasContradiction: false, isUsable: true },
+      summary: { total: 1, usable: 1, free: 1, occupied: 0, uncertain: 0, faulted: 0, offline: 0, maxKw: 60, pricePerKwh: 20, hasInvalidUsablePower: false, hasInvalidUsableAvailability: false, hasMissingUsablePower: false, hasInvalidSelectedTariff: false, hasContradiction: false, isUsable: true },
       view: {
         stationId: id,
         name: `Hand ${ch}`,
