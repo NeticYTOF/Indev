@@ -40,4 +40,8 @@ system with no gradients. The download is a standalone HTML file with its own
 print stylesheet; the in-app print view is opt-in via the comparison body class
 and does not change journey-itinerary printing. Keyboard focus moves into the
 workspace on entry, returns to a usable drawer control after back/remove/clear,
-and stays on the swap control after a swap redraw.
+and stays on the swap control after a swap redraw. Escape returns from the
+workspace to the saved-trips drawer without triggering the planner's separate
+Escape action; the selected pair remains ready to reopen. The visible context
+states that the figures are stored planned facts, lists km/minutes/kWh/INR/%
+units, and repeats that no best route is inferred.
