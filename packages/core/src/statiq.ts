@@ -39,6 +39,12 @@ import type {
 } from './types.js';
 import { sleep as defaultSleep } from './utils.js';
 import { UpstreamBudget, UpstreamRunStoppedError } from './upstream-budget.js';
+import {
+  statusCodeForHttp,
+  transportCodeForCause,
+  type ProviderCallContext,
+  type ProviderFailureCollector,
+} from './provider-failure.js';
 
 export const DEFAULT_STATIQ_BASE_URL =
   'https://harrier-evroute.aaravnirajsingh.workers.dev/api';
@@ -64,6 +70,13 @@ export class StatiqApiError extends Error {
     // include request headers (token safety).
     super(`Statiq API ${status} on ${path}: ${body.slice(0, 200)}`);
     this.name = 'StatiqApiError';
+  }
+}
+
+export class StatiqBodyError extends StatiqApiError {
+  constructor(failedPath: string) {
+    super(200, failedPath, 'response body could not be decoded');
+    this.name = 'StatiqBodyError';
   }
 }
 
@@ -184,6 +197,10 @@ export class StatiqClient {
   private readonly doSleep: (ms: number) => Promise<void>;
   private readonly runDeadlineAt: number | undefined;
   private readonly onUpstreamCall: ((entry: UpstreamAuditEntry) => void) | undefined;
+  /** Per-run bounded completion evidence; never an execution controller. */
+  private failureCollector: ProviderFailureCollector | undefined;
+  /** Separate from completion-order audit seq; incremented at dispatch. */
+  private dispatchAttempts = 0;
   /** Shared per-run attempt budget (attached by the planner for live runs). */
   private runBudget: UpstreamBudget | undefined;
   private upstreamAttempts = 0;
@@ -212,8 +229,13 @@ export class StatiqClient {
   }
 
   /** Stations near a point (~13 km radius, capped at 256 by the upstream). */
-  markers(lat: number, lon: number, signal?: AbortSignal): Promise<StatiqMarkersResponse> {
-    return this.postJson('/stations/markers', { latitude: lat, longitude: lon }, signal);
+  markers(
+    lat: number,
+    lon: number,
+    signal?: AbortSignal,
+    context?: ProviderCallContext,
+  ): Promise<StatiqMarkersResponse> {
+    return this.postJson('/stations/markers', { latitude: lat, longitude: lon }, signal, context);
   }
 
   /** Nearest station cards around a point. */
@@ -225,7 +247,11 @@ export class StatiqClient {
    * Full details with a fetched-at timestamp. The memo returns the original
    * fetch time (not access time) so status displays stay honest.
    */
-  async detailsWithMeta(stationId: number, signal?: AbortSignal): Promise<StationDetailsWithMeta> {
+  async detailsWithMeta(
+    stationId: number,
+    signal?: AbortSignal,
+    context?: ProviderCallContext,
+  ): Promise<StationDetailsWithMeta> {
     if (signal?.aborted) throw new StatiqAbortError();
     const cached = this.detailsCache.get(stationId);
     if (cached && this.now() - cached.at < this.cacheTtlMs) {
@@ -235,7 +261,7 @@ export class StatiqClient {
     }
     const response = await this.postJson<StatiqDetailsResponse>('/stations/details', {
       station_id: stationId,
-    }, signal);
+    }, signal, context);
     if (signal?.aborted) throw new StatiqAbortError();
     if (!hasFreshProvenance(response)) throw new StatiqProvenanceError('/stations/details');
     const fetchedAt = new Date();
@@ -260,8 +286,41 @@ export class StatiqClient {
    * stops the whole run fail-closed. The client is per planning run
    * (single-run memo policy); attach BEFORE the first upstream call.
    */
-  attachRunBudget(budget: UpstreamBudget): void {
+  attachRunBudget(budget: UpstreamBudget, collector?: ProviderFailureCollector): void {
     this.runBudget = budget;
+    if (collector) this.failureCollector = collector;
+  }
+
+  /** Attach a bounded, per-run completion-only evidence collector. */
+  attachFailureCollector(collector: ProviderFailureCollector): void {
+    this.failureCollector = collector;
+  }
+
+  private reportFailure(
+    context: ProviderCallContext | undefined,
+    path: string,
+    code: Parameters<ProviderFailureCollector['record']>[0]['code'],
+    dispatchSeq: number | null,
+    httpStatus: number | null,
+  ): void {
+    const collector = this.failureCollector;
+    if (!collector) return;
+    try {
+      const endpointClass =
+        path === '/stations/markers' ? 'stations/markers' :
+        path === '/stations/details' ? 'stations/details' : 'none';
+      collector.record({
+        endpointClass: context?.endpointClass ?? endpointClass,
+        phase: context?.phase ?? (endpointClass === 'stations/markers' ? 'scan' : 'details'),
+        // Details/route are null by contract; only marker context may carry ordinal.
+        sampleOrdinal: endpointClass === 'stations/markers' ? context?.sampleOrdinal ?? null : null,
+        dispatchSeq,
+        httpStatus,
+        code,
+      });
+    } catch {
+      /* Diagnostics must never alter run behavior. */
+    }
   }
 
   /**
@@ -357,9 +416,20 @@ export class StatiqClient {
     return this.upstreamAttempts;
   }
 
-  private async postJson<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  /** Dispatched attempts after successful reservation, not completions. */
+  dispatchedAttemptsMade(): number {
+    return this.dispatchAttempts;
+  }
+
+  private async postJson<T>(
+    path: string,
+    body: unknown,
+    signal?: AbortSignal,
+    context?: ProviderCallContext,
+  ): Promise<T> {
     let lastError: unknown;
     let lastRetryAfterMs: number | undefined;
+    let fatalEvidenceRecorded = false;
     // 1 initial attempt + `retries` retries; aborts are never retried
     for (let attempt = 0; attempt <= this.retries; attempt++) {
       if (attempt > 0) {
@@ -381,10 +451,18 @@ export class StatiqClient {
       // 1) Paced permit FIRST: the limiter (and any backoff above) is fully
       // awaited BEFORE any reservation - no up-front reservation can be
       // cancelled by another waiter finding the cap exhausted.
-      await this.acquireSlot(signal);
+      try {
+        await this.acquireSlot(signal);
+      } catch (err) {
+        this.reportFailure(context, path, signal?.aborted ? 'deadline' : transportCodeForCause(err), null, null);
+        throw err;
+      }
       // A permit can settle before this continuation runs. Refuse an
       // intervening abort BEFORE reservation, keeping reserved == dispatched.
-      if (signal?.aborted) throw new StatiqAbortError();
+      if (signal?.aborted) {
+        this.reportFailure(context, path, 'deadline', null, null);
+        throw new StatiqAbortError();
+      }
       // 2) Atomic reserve immediately before fetch, with NO await between a
       // successful reserve and the dispatch (reservation-race invariant):
       //  - fatal stop (first 429/401/403): this caller fails fast, zero NEW
@@ -394,7 +472,21 @@ export class StatiqClient {
       //    callers proceeds; exhaustion never poisons shared state;
       //  - success: reserved == dispatched, so the shared counters always
       //    match real network work.
-      this.runBudget?.reserveAttempt();
+      try {
+        this.runBudget?.reserveAttempt();
+      } catch (err) {
+        const code =
+          err instanceof UpstreamRunStoppedError && err.cause === 'budget-exhausted'
+            ? 'budget_exhausted'
+            : err instanceof UpstreamRunStoppedError && err.cause === 'throttled'
+              ? 'fatal_throttled'
+              : 'fatal_auth';
+        this.reportFailure(context, path, code, null, null);
+        throw err;
+      }
+      // Dispatch seq is distinct from completion-order audit seq and exists
+      // only after a successful reservation, immediately before fetch.
+      const dispatchSeq = ++this.dispatchAttempts;
       // ONE AUDIT PER ATTEMPT: header-time audit marks the attempt as
       // answered on the wire; the catch's audit-0 fallbacks skip when it
       // already ran (a body-read failure after headers must not double-).
@@ -442,6 +534,14 @@ export class StatiqClient {
             : undefined;
         if (budget && fatalCause) {
           budget.stop(fatalCause, fatalRetryAfter);
+          if (!fatalEvidenceRecorded) {
+            this.reportFailure(
+              context, path,
+              fatalCause === 'throttled' ? 'fatal_throttled' : 'fatal_auth',
+              dispatchSeq, res.status,
+            );
+            fatalEvidenceRecorded = true;
+          }
           // Preserve the known fatal status even if an aborted body cannot
           // supply diagnostics. No body is invented when none was read.
           fatalAtHeaders = new StatiqRunFatalError(fatalCause, res.status, path, '', fatalRetryAfter);
@@ -454,9 +554,17 @@ export class StatiqClient {
         // stop the shared budget and every dispatched attempt audits once.
         if (signal?.aborted) {
           if (fatalAtHeaders) throw fatalAtHeaders;
+          this.reportFailure(context, path, 'deadline', dispatchSeq, res.status);
           throw new StatiqAbortError();
         }
-        const text = await res.text();
+        let text: string;
+        try {
+          text = await res.text();
+        } catch (err) {
+          if (fatalAtHeaders) throw fatalAtHeaders;
+          this.reportFailure(context, path, 'body_read_failure', dispatchSeq, res.status);
+          throw err;
+        }
         if (fatalCause) {
           // no retry path is entered under a budget: the fatal error carries
           // the full body diagnostics and the parsed wait for honest evidence
@@ -475,8 +583,19 @@ export class StatiqClient {
           }
           throw new StatiqApiError(res.status, path, text, retryAfter);
         }
-        const parsed = JSON.parse(text) as T;
-        if (!hasFreshProvenance(parsed)) throw new StatiqProvenanceError(path);
+        let parsed: T;
+        try {
+          parsed = JSON.parse(text) as T;
+        } catch {
+          // A 200 with an undecodable body is terminal: never retry it and
+          // never leak the raw body into diagnostics.
+          this.reportFailure(context, path, 'invalid_json', dispatchSeq, res.status);
+          throw new StatiqBodyError(path);
+        }
+        if (!hasFreshProvenance(parsed)) {
+          this.reportFailure(context, path, 'nonfresh_provenance', dispatchSeq, res.status);
+          throw new StatiqProvenanceError(path);
+        }
         return parsed;
       } catch (err) {
         // run-fatal and budget-gate errors are never retried, never
@@ -492,6 +611,7 @@ export class StatiqClient {
         // controller), which is a retryable transport failure - see below.
         if (signal?.aborted) {
           if (!attemptAudited) this.audit(path, 0);
+          this.reportFailure(context, path, 'deadline', dispatchSeq, null);
           throw new StatiqAbortError();
         }
         // Every outbound attempt is auditable, even transport failures.
@@ -504,6 +624,24 @@ export class StatiqClient {
         if (!(err instanceof StatiqApiError) && !attemptAudited) {
           this.audit(path, 0);
         }
+        if (err instanceof StatiqBodyError || err instanceof StatiqProvenanceError) {
+          throw err;
+        }
+        if (!attemptAudited) {
+          const wireStatus = err instanceof StatiqApiError ? err.status : null;
+          const code =
+            wireStatus != null && wireStatus > 0
+              ? statusCodeForHttp(wireStatus)
+              : controller.signal.aborted
+                ? 'transport_timeout'
+                : transportCodeForCause(err);
+          this.reportFailure(context, path, code, dispatchSeq, wireStatus);
+        }
+        if (err instanceof StatiqApiError && err.status > 0) {
+          this.reportFailure(
+            context, path, statusCodeForHttp(err.status), dispatchSeq, err.status,
+          );
+        }
         if (err instanceof StatiqApiError && err.status < 500 && err.status !== 429) {
           throw err;
         }
@@ -515,7 +653,8 @@ export class StatiqClient {
       }
     }
     if (lastError instanceof StatiqApiError) throw lastError;
-    throw new StatiqApiError(0, path, lastError instanceof Error ? lastError.message : 'network error');
+    // No provider message is copied into the terminal error.
+    throw new StatiqApiError(0, path, 'provider request failed');
   }
 
   /**
