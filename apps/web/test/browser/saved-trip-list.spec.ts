@@ -200,7 +200,9 @@ test('filtered and sorted Edit/Delete actions target their original saved record
     else await route.abort();
   });
   const unexpected: string[] = [];
-  let deletedId: string | null = null;
+  let planRequests = 0;
+  let deleteMethod: string | null = null;
+  let deletePath: string | null = null;
   const trips = [
     savedTrip('yankee', 'Yankee', '2026-01-03T00:00:00Z', 'Delhi', 'Jaipur'),
     savedTrip('beta', 'Beta', '2026-01-01T00:00:00Z', 'Pune', 'Goa'),
@@ -213,11 +215,13 @@ test('filtered and sorted Edit/Delete actions target their original saved record
   });
   await page.route('**/api/trips/*', async (route) => {
     if (route.request().method() !== 'DELETE') return route.continue();
-    deletedId = route.request().url().split('/').pop() ?? null;
+    deleteMethod = route.request().method();
+    deletePath = new URL(route.request().url()).pathname;
     await route.fulfill({ json: { ok: true } });
   });
   for (const path of ['**/api/plan', '**/api/ai/plan', '**/api/geocode*', '**/api/stations/*']) {
     await page.route(path, (route) => {
+      if (path === '**/api/plan') planRequests += 1;
       unexpected.push(new URL(route.request().url()).pathname);
       return route.fulfill({ status: 500, body: 'unexpected request' });
     });
@@ -236,6 +240,89 @@ test('filtered and sorted Edit/Delete actions target their original saved record
   await page.locator('[data-trip-sort]').selectOption('name');
   await page.locator('[data-trip-search]').fill('mumbai');
   await row('Zulu').getByRole('button', { name: 'Delete', exact: true }).click();
-  await expect.poll(() => deletedId).toBe('zulu');
+  await expect.poll(() => deletePath).toBe('/api/trips/zulu');
+  expect(deleteMethod).toBe('DELETE');
+  expect(planRequests).toBe(0);
   expect(unexpected).toEqual([]);
+});
+
+test('drawer query and sort survive close and reopen but not a page reload', async ({ page }, info) => {
+  await page.route(/^https?:\/\//, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') await route.continue();
+    else await route.abort();
+  });
+  const trips = [
+    savedTrip('yankee', 'Yankee', '2026-01-03T00:00:00Z', 'Delhi', 'Jaipur'),
+    savedTrip('beta', 'Beta', '2026-01-01T00:00:00Z', 'Pune', 'Goa'),
+    savedTrip('zulu', 'Zulu', '2026-01-02T00:00:00Z', 'Chennai', 'Mumbai'),
+  ];
+  await page.route('**/api/trips', (route) => route.fulfill({ json: { trips } }));
+  await page.goto('/');
+  await page.locator('#trips-button').click();
+  const search = page.locator('[data-trip-search]');
+  const sort = page.locator('[data-trip-sort]');
+  await search.fill('goa');
+  await sort.selectOption('name');
+  await expect(page.locator('.trip-row .trip-name')).toHaveText(['Beta']);
+  await page.locator('[data-close]').click();
+  await expect(page.locator('#trips-drawer')).toBeHidden();
+
+  await page.locator('#trips-button').click();
+  await expect(search).toHaveValue('goa');
+  await expect(sort).toHaveValue('name');
+  await expect(page.locator('.trip-row .trip-name')).toHaveText(['Beta']);
+  await expect(page.locator('[data-trip-result-count]')).toHaveText('Showing 1 of 3 saved trips.');
+  await page.screenshot({ path: info.outputPath('saved-trip-list-restored-desktop.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: info.outputPath('saved-trip-list-restored-mobile.png') });
+
+  await page.locator('[data-trip-search-clear]').focus();
+  await page.keyboard.press('Enter');
+  await expect(search).toHaveValue('');
+  await expect(search).toBeFocused();
+  await expect(page.locator('.trip-row .trip-name')).toHaveText(['Beta', 'Yankee', 'Zulu']);
+
+  await page.reload();
+  await page.locator('#trips-button').click();
+  await expect(search).toHaveValue('');
+  await expect(sort).toHaveValue('newest');
+});
+
+test('successful deletion keeps the query and drops a deleted comparison selection', async ({ page }) => {
+  await page.route(/^https?:\/\//, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') await route.continue();
+    else await route.abort();
+  });
+  let trips = [
+    savedTrip('yankee', 'Yankee', '2026-01-03T00:00:00Z', 'Delhi', 'Jaipur'),
+    savedTrip('beta', 'Beta', '2026-01-01T00:00:00Z', 'Pune', 'Goa'),
+    savedTrip('zulu', 'Zulu', '2026-01-02T00:00:00Z', 'Chennai', 'Mumbai'),
+  ];
+  let deletePath: string | null = null;
+  await page.route('**/api/trips', (route) => route.fulfill({ json: { trips } }));
+  await page.route('**/api/trips/*', async (route) => {
+    if (route.request().method() !== 'DELETE') return route.continue();
+    deletePath = new URL(route.request().url()).pathname;
+    trips = trips.filter((trip) => trip.id !== 'zulu');
+    await route.fulfill({ json: { ok: true } });
+  });
+  await page.goto('/');
+  await page.locator('#trips-button').click();
+  const row = page.locator('.trip-row').filter({ hasText: 'Zulu' });
+  const compare = page.locator('[data-compare-selected]');
+  await page.locator('[data-trip-search]').fill('zulu');
+  await expect(page.locator('.trip-row .trip-name')).toHaveText(['Zulu']);
+  await row.getByRole('button', { name: 'Select to compare' }).click();
+  await expect(compare).toHaveText('Compare selected (1/2)');
+
+  await row.getByRole('button', { name: 'Delete', exact: true }).click();
+  await expect.poll(() => deletePath).toBe('/api/trips/zulu');
+  await expect(page.locator('[data-trip-search]')).toHaveValue('zulu');
+  await expect(page.locator('[data-trip-result-count]')).toHaveText('Showing 0 of 2 saved trips.');
+  await expect(page.locator('.trip-list')).toContainText('No saved trips match this search.');
+  await expect(compare).toHaveText('Compare selected (0/2)');
+  await expect(compare).toBeDisabled();
+  await expect(page.locator('.hidden-selection-notice')).toBeHidden();
 });

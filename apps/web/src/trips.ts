@@ -44,6 +44,13 @@ export function hideTripsDrawer(drawer: HTMLElement): void {
 
 type LoadSavedRoute = (draft: SavedRouteDraft) => boolean;
 
+/**
+ * In-memory drawer view state for the current page only. It is deliberately
+ * never written to storage: route labels stay private to the open tab and a
+ * page reload returns to the default view.
+ */
+const tripDrawerSession: { query: string; sort: TripListSort } = { query: '', sort: 'newest' };
+
 function safeNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
@@ -131,8 +138,8 @@ export function renderTripsDrawer(
   drawer.innerHTML = '';
   const selected = new Set<number>();
   let loadedTrips: SavedTrip[] = [];
-  let searchQuery = '';
-  let sortOrder: TripListSort = 'newest';
+  let searchQuery = tripDrawerSession.query;
+  let sortOrder = tripDrawerSession.sort;
   let loadState: 'loading' | 'ready' | 'unavailable' | 'error' = 'loading';
   let visibleIndices = new Set<number>();
   const head = el(`
@@ -177,6 +184,8 @@ export function renderTripsDrawer(
   const clearSearch = controls.querySelector<HTMLButtonElement>('[data-trip-search-clear]');
   const sortSelect = controls.querySelector<HTMLSelectElement>('[data-trip-sort]');
   const resultCount = controls.querySelector<HTMLElement>('[data-trip-result-count]');
+  if (searchInput) searchInput.value = searchQuery;
+  if (sortSelect) sortSelect.value = sortOrder;
 
   const updateHiddenSelectionNotice = (): void => {
     const hidden = [...selected].filter((index) => !visibleIndices.has(index)).length;
@@ -228,18 +237,21 @@ export function renderTripsDrawer(
 
   searchInput?.addEventListener('input', () => {
     searchQuery = searchInput.value;
+    tripDrawerSession.query = searchQuery;
     renderList();
   });
   clearSearch?.addEventListener('click', () => {
     if (!searchInput) return;
     searchInput.value = '';
     searchQuery = '';
+    tripDrawerSession.query = '';
     renderList();
     searchInput.focus({ preventScroll: true });
   });
   sortSelect?.addEventListener('change', () => {
     const value = sortSelect.value;
     sortOrder = value === 'oldest' || value === 'name' ? value : 'newest';
+    tripDrawerSession.sort = sortOrder;
     renderList();
   });
 
