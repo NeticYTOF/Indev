@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 
+
 async function blockOutside(page: import('@playwright/test').Page) {
   await page.route(/^https?:\/\//, async route => {
     const url = new URL(route.request().url());
@@ -57,8 +58,13 @@ test('a missing stop list stays Unknown and suppresses directions instead of a d
   await page.evaluate(async (plan) => {
     const panel = document.getElementById('planner-panel');
     if (!(panel instanceof HTMLElement)) throw new Error('Planner panel missing');
+    const mapHost = document.createElement('div');
+    mapHost.style.width = '1px';
+    mapHost.style.height = '1px';
+    document.body.appendChild(mapHost);
+    const map = (await import('/src/map.ts')).createMap(mapHost);
     const module = await import('/src/plan-panel.ts');
-    module.renderPlanPanel(panel, null, plan);
+    module.renderPlanPanel(panel, map, plan);
   }, plan);
   await expect(page.locator('.plan-results')).toContainText('Charging stop list is Unknown');
   await expect(page.locator('.no-stops')).toHaveCount(0);
@@ -75,8 +81,13 @@ test('a non-array saved trip payload is reported unavailable, not empty', async 
   await page.evaluate(async () => {
     const drawer = document.getElementById('trips-drawer');
     if (!(drawer instanceof HTMLElement)) throw new Error('Trips drawer missing');
+    const mapHost = document.createElement('div');
+    mapHost.style.width = '1px';
+    mapHost.style.height = '1px';
+    document.body.appendChild(mapHost);
+    const map = (await import('/src/map.ts')).createMap(mapHost);
     const module = await import('/src/trips.ts');
-    module.renderTripsDrawer(drawer, null, () => true);
+    module.renderTripsDrawer(drawer, map, () => true);
   });
   await expect(page.locator('.trip-list')).toContainText('Saved trip list is unavailable');
   await expect(page.locator('.trip-list')).not.toContainText('No saved trips yet');
@@ -106,8 +117,13 @@ test('invalid saved geometry is omitted whole and never trimmed into a route', a
   await page.evaluate(async () => {
     const drawer = document.getElementById('trips-drawer');
     if (!(drawer instanceof HTMLElement)) throw new Error('Trips drawer missing');
+    const mapHost = document.createElement('div');
+    mapHost.style.width = '1px';
+    mapHost.style.height = '1px';
+    document.body.appendChild(mapHost);
+    const map = (await import('/src/map.ts')).createMap(mapHost);
     const module = await import('/src/trips.ts');
-    module.renderTripsDrawer(drawer, null, () => true);
+    module.renderTripsDrawer(drawer, map, () => true);
   });
   await page.locator('#trips-button').click();
   await page.getByRole('button', { name: 'Open', exact: true }).click();
@@ -155,8 +171,15 @@ test('stop-card component omits Directions for malformed coordinates and preserv
   // Component boundary test only. Invalid coordinates are intentionally not
   // sent to MapLibre; this does not claim upstream planning validation.
   await page.evaluate(async plan => {
+    const panel = document.getElementById('planner-panel');
+    if (!(panel instanceof HTMLElement)) throw new Error('Planner panel missing');
+    const mapHost = document.createElement('div');
+    mapHost.style.width = '1px';
+    mapHost.style.height = '1px';
+    document.body.appendChild(mapHost);
+    const map = (await import('/src/map.ts')).createMap(mapHost);
     const modulePath = '/src/plan-panel.ts'; const module = await import(modulePath);
-    module.renderPlanPanel(document.getElementById('planner-panel'), null, plan);
+    module.renderPlanPanel(panel, map, plan);
   }, plan);
   const first = page.locator('.stop-card').first(), second = page.locator('.stop-card').nth(1);
   await expect(first).toContainText('Directions unavailable');
