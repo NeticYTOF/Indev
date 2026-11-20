@@ -116,6 +116,10 @@ export interface Ccs2Summary {
   offline: number;
   maxKw: number | null;
   pricePerKwh: number | null;
+  /** Numeric evidence is independent of connector health/availability. */
+  hasInvalidUsablePower: boolean;
+  hasMissingUsablePower: boolean;
+  hasInvalidSelectedTariff: boolean;
   /** Any status/fault contradictions among CCS2 DC plugs (UI shows uncertainty). */
   hasContradiction: boolean;
   /** Exists at least one usable CCS2 DC plug. */
@@ -134,6 +138,9 @@ export function summarizeCcs2(station: StatiqStationDetail): Ccs2Summary {
     offline: 0,
     maxKw: null,
     pricePerKwh: null,
+    hasInvalidUsablePower: false,
+    hasMissingUsablePower: false,
+    hasInvalidSelectedTariff: false,
     hasContradiction: false,
     isUsable: false,
   };
@@ -165,9 +172,17 @@ export function summarizeCcs2(station: StatiqStationDetail): Ccs2Summary {
       }
       if (USABLE.includes(health)) {
         s.usable++;
-        if (ch.kw != null && (s.maxKw == null || ch.kw > s.maxKw)) {
+        if (ch.kw == null) {
+          s.hasMissingUsablePower = true;
+        } else if (typeof ch.kw !== 'number' || !Number.isFinite(ch.kw) || ch.kw <= 0) {
+          s.hasInvalidUsablePower = true;
+        } else if (s.maxKw == null || ch.kw > s.maxKw) {
+          // Keep the tariff paired with this known-power charger. Do not
+          // borrow a sibling's price or turn unknown into free charging.
           s.maxKw = ch.kw;
-          s.pricePerKwh = ch.pricePerKwh;
+          const validTariff = typeof ch.pricePerKwh === 'number' && Number.isFinite(ch.pricePerKwh) && ch.pricePerKwh >= 0;
+          s.pricePerKwh = validTariff ? ch.pricePerKwh : null;
+          s.hasInvalidSelectedTariff = ch.pricePerKwh != null && !validTariff;
         }
       }
     }

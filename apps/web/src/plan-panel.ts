@@ -35,7 +35,7 @@ export function renderPlanPanel(
     banners.appendChild(el('<div class="banner banner-synthetic">Synthetic data — this plan comes from mock mode, not live chargers.</div>'));
   }
   if (plan.status === 'degraded') {
-    banners.appendChild(el('<div class="banner banner-warn">Coverage incomplete — some route samples could not be scanned. Treat charger coverage as partial.</div>'));
+    banners.appendChild(el('<div class="banner banner-warn">Coverage incomplete: some route samples or station evidence could not be verified. Treat charger coverage as partial.</div>'));
   }
   for (const w of plan.warnings) {
     banners.appendChild(el(`<div class="banner banner-warn">${escapeHtml(w)}</div>`));

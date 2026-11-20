@@ -493,9 +493,22 @@ async function planCore(
         throw new Error('Station details are missing charger or connector lists');
       }
       if (response.station) {
+        const summary = summarizeCcs2(response.station);
+        if (summary.isUsable && summary.hasInvalidUsablePower && summary.maxKw == null) {
+          // Connector health is known, but there is no supported power for
+          // timing this candidate. Preserve a hole, not a known-unusable
+          // verdict and not the legacy missing-only 50 kW estimate.
+          throw new Error('Usable charger power is malformed');
+        }
+        if (summary.isUsable && summary.maxKw != null && (summary.hasInvalidUsablePower || summary.hasMissingUsablePower)) {
+          warnings.push(`Station "${c.name}" (${c.stationId}) has incomplete charger power data; planning uses a charger with known power only.`);
+        }
+        if (summary.hasInvalidSelectedTariff) {
+          warnings.push(`Station "${c.name}" (${c.stationId}) has an invalid tariff; its charging cost is unknown.`);
+        }
         detailCache.set(c.stationId, {
           candidate: c,
-          summary: summarizeCcs2(response.station),
+          summary,
           view: toStationView(response.station, fetchedAt),
         });
         hooks.stats.candidatesDetailed = detailCache.size;
@@ -516,7 +529,9 @@ async function planCore(
         throw err;
       }
       unknownCandidates.add(c.stationId);
-      warnings.push(`Skipping "${c.name}" (${c.stationId}): live details unavailable.`);
+      warnings.push(err instanceof Error && err.message === 'Usable charger power is malformed'
+        ? `Skipping "${c.name}" (${c.stationId}): usable charger power is invalid; charging time cannot be verified.`
+        : `Skipping "${c.name}" (${c.stationId}): live details unavailable.`);
     }
     // processed counts every COMPLETED per-station lookup (fetched, empty
     // or skipped) - run-fatal unwinds do not reach this line.
@@ -552,7 +567,7 @@ async function planCore(
     // 'no usable station' cannot be certified over holes.
     if (unknownCandidates.size > 0) {
       throw new PlanningError(
-        `Plan not determined: ${unknownCandidates.size} candidate charger lookups returned no data,` +
+        `Plan not determined: ${unknownCandidates.size} candidate charger lookups lacked usable detail evidence,` +
           ` so "no usable station on this route" cannot be certified over incomplete coverage.` +
           ' This is not a route verdict; no trip was saved. Retry.',
         'not_determined',
@@ -621,7 +636,7 @@ async function planCore(
   const stops = finalize(chosen, totalKm, route, opts, vehicle, warnings);
   const totals = computeTotals(stops, totalKm, route, opts, vehicle);
 
-  const status: PlanStatus = corridor.failedSamples.length > 0 ? 'degraded' : 'ok';
+  const status: PlanStatus = corridor.failedSamples.length > 0 || unknownCandidates.size > 0 ? 'degraded' : 'ok';
   const plan: TripPlan = {
     id: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
@@ -779,8 +794,17 @@ export function finalize(
 
     const chargeKwh = Math.max(0, kwhForSocDelta(arriveSocPct, leaveSoc, vehicle));
     const chargerKw = cur.cand.summary.maxKw ?? 50;
+    if (cur.cand.summary.maxKw == null) {
+      warnings.push(`Charging time at "${cur.cand.view.name}" uses the existing 50 kW estimate because charger power is missing, not verified.`);
+    }
     const chargeMin = chargeTimeMin(arriveSocPct, leaveSoc, chargerKw, vehicle);
+    if (!Number.isFinite(chargeMin) || chargeMin < 0) {
+      throw new PlanningError('Plan not determined: charger power does not support a finite charging-time estimate.', 'not_determined');
+    }
     const pricePerKwh = cur.cand.summary.pricePerKwh;
+    const rawCost = pricePerKwh != null ? Math.round(chargeKwh * pricePerKwh) : null;
+    const estimatedCost = rawCost != null && Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : null;
+    if (rawCost != null && estimatedCost == null) warnings.push(`Charging cost at "${cur.cand.view.name}" is unknown because its numeric estimate is outside the supported range.`);
 
     etaMin += legTimeMin(legKm, route);
     stops.push({
@@ -792,7 +816,7 @@ export function finalize(
       leaveSocPct: round1(leaveSoc),
       chargeKwh: round1(chargeKwh),
       pricePerKwh,
-      estPriceInr: pricePerKwh != null ? Math.round(chargeKwh * pricePerKwh) : null,
+      estPriceInr: estimatedCost,
       chargeTimeMin: Math.round(chargeMin),
       arrivalEtaMin: Math.round(etaMin),
       departureEtaMin: Math.round(etaMin + chargeMin),
@@ -818,14 +842,18 @@ export function computeTotals(
   const chargeMin = stops.reduce((s, x) => s + x.chargeTimeMin, 0);
   const kwh = stops.reduce((s, x) => s + x.chargeKwh, 0);
   // A known subtotal is not a trip total: an unknown tariff is not free.
-  const price = stops.length === 0 || stops.some((s) => s.estPriceInr == null)
+  const priceSubtotal = stops.length === 0 || stops.some((s) => s.estPriceInr == null)
     ? null
     : stops.reduce((s, x) => s + (x.estPriceInr ?? 0), 0);
+  const price = priceSubtotal != null && Number.isFinite(priceSubtotal) && priceSubtotal >= 0 ? priceSubtotal : null;
   // Each off-route stop requires leaving and rejoining the base route.
   // Match the proportional travel-time model already used by stop ETAs;
   // otherwise the trip total silently omits driving that its legs include.
   const detourKm = 2 * stops.reduce((sum, stop) => sum + stop.detourKm, 0);
   const driveMin = route.durationMin + legTimeMin(detourKm, route);
+  if (!Number.isFinite(chargeMin) || chargeMin < 0 || !Number.isFinite(driveMin + chargeMin)) {
+    throw new PlanningError('Plan not determined: charging metadata does not support a finite trip-time estimate.', 'not_determined');
+  }
   const last = stops.at(-1);
   const finalLegKm = last ? totalKm - last.chainageKm + last.detourKm : totalKm;
   const finalSoc = socAfterDriving(
