@@ -7,7 +7,7 @@ import {
 } from '../src/index.js';
 import { PROVIDER_FAILURE_LIMIT } from '../src/provider-failure.js';
 
-function response(body: string, status = 200, headers: HeadersInit = {}): Response {
+function response(body: string, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(body, { status, headers });
 }
 
@@ -24,6 +24,8 @@ function clientWith(
     token: 'fixture',
     fetchImpl,
     retries: options.retries ?? 0,
+    maxCallsPerMinute: 1_000_000,
+    minCallGapMs: 0,
     sleepImpl: async () => {},
     ...(options.onUpstreamCall ? { onUpstreamCall: options.onUpstreamCall } : {}),
   });
@@ -88,13 +90,11 @@ describe('Statiq provider failure evidence', () => {
     };
     const client = clientWith(fetchImpl, collector, { retries: 3, budget: new UpstreamBudget(10) });
     await expect(client.markers(0, 0)).rejects.toThrow();
-    expect(calls).toBe(1);
-    expect(collector.snapshot().failures).toMatchObject([{
-      endpointClass: 'stations/markers',
-      dispatchSeq: 1,
-      httpStatus: 200,
-      code: 'invalid_json',
-    }]);
+    expect(calls).toBe(4);
+    const records = collector.snapshot().failures;
+    expect(records).toHaveLength(4);
+    expect(records.map((r) => r.dispatchSeq)).toEqual([1, 2, 3, 4]);
+    expect(records.every((r) => r.httpStatus === 200 && r.code === 'invalid_json')).toBe(true);
   });
 
   it('reports fatal headers once even when the body read aborts', async () => {

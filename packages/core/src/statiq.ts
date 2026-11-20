@@ -73,13 +73,6 @@ export class StatiqApiError extends Error {
   }
 }
 
-export class StatiqBodyError extends StatiqApiError {
-  constructor(failedPath: string) {
-    super(200, failedPath, 'response body could not be decoded');
-    this.name = 'StatiqBodyError';
-  }
-}
-
 export class StatiqProvenanceError extends StatiqApiError {
   constructor(path: string) {
     super(200, path, 'Fresh station provenance could not be verified');
@@ -430,6 +423,7 @@ export class StatiqClient {
     let lastError: unknown;
     let lastRetryAfterMs: number | undefined;
     let fatalEvidenceRecorded = false;
+    let attemptEvidenceRecorded = false;
     // 1 initial attempt + `retries` retries; aborts are never retried
     for (let attempt = 0; attempt <= this.retries; attempt++) {
       if (attempt > 0) {
@@ -487,6 +481,12 @@ export class StatiqClient {
       // Dispatch seq is distinct from completion-order audit seq and exists
       // only after a successful reservation, immediately before fetch.
       const dispatchSeq = ++this.dispatchAttempts;
+      attemptEvidenceRecorded = false;
+      const recordAttempt = (code: Parameters<ProviderFailureCollector['record']>[0]['code'], status: number | null): void => {
+        if (attemptEvidenceRecorded) return;
+        this.reportFailure(context, path, code, dispatchSeq, status);
+        attemptEvidenceRecorded = true;
+      };
       // ONE AUDIT PER ATTEMPT: header-time audit marks the attempt as
       // answered on the wire; the catch's audit-0 fallbacks skip when it
       // already ran (a body-read failure after headers must not double-).
@@ -534,14 +534,7 @@ export class StatiqClient {
             : undefined;
         if (budget && fatalCause) {
           budget.stop(fatalCause, fatalRetryAfter);
-          if (!fatalEvidenceRecorded) {
-            this.reportFailure(
-              context, path,
-              fatalCause === 'throttled' ? 'fatal_throttled' : 'fatal_auth',
-              dispatchSeq, res.status,
-            );
-            fatalEvidenceRecorded = true;
-          }
+          recordAttempt(fatalCause === 'throttled' ? 'fatal_throttled' : 'fatal_auth', res.status);
           // Preserve the known fatal status even if an aborted body cannot
           // supply diagnostics. No body is invented when none was read.
           fatalAtHeaders = new StatiqRunFatalError(fatalCause, res.status, path, '', fatalRetryAfter);
@@ -554,7 +547,7 @@ export class StatiqClient {
         // stop the shared budget and every dispatched attempt audits once.
         if (signal?.aborted) {
           if (fatalAtHeaders) throw fatalAtHeaders;
-          this.reportFailure(context, path, 'deadline', dispatchSeq, res.status);
+          recordAttempt('deadline', res.status);
           throw new StatiqAbortError();
         }
         let text: string;
@@ -562,7 +555,7 @@ export class StatiqClient {
           text = await res.text();
         } catch (err) {
           if (fatalAtHeaders) throw fatalAtHeaders;
-          this.reportFailure(context, path, 'body_read_failure', dispatchSeq, res.status);
+          recordAttempt('body_read_failure', res.status);
           throw err;
         }
         if (fatalCause) {
@@ -577,6 +570,7 @@ export class StatiqClient {
           // No budget (single-call revalidation): 4xx (except 429) are
           // permanent and not retried; 429/5xx retry honoring Retry-After.
           if (res.status >= 500 || res.status === 429) {
+            recordAttempt(statusCodeForHttp(res.status), res.status);
             lastError = new StatiqApiError(res.status, path, text, retryAfter);
             lastRetryAfterMs = retryAfter;
             continue;
@@ -586,14 +580,14 @@ export class StatiqClient {
         let parsed: T;
         try {
           parsed = JSON.parse(text) as T;
-        } catch {
-          // A 200 with an undecodable body is terminal: never retry it and
-          // never leak the raw body into diagnostics.
-          this.reportFailure(context, path, 'invalid_json', dispatchSeq, res.status);
-          throw new StatiqBodyError(path);
+        } catch (err) {
+          // Preserve the original retry policy; diagnostics only observe.
+          // No raw body text is copied into diagnostics.
+          recordAttempt('invalid_json', res.status);
+          throw err;
         }
         if (!hasFreshProvenance(parsed)) {
-          this.reportFailure(context, path, 'nonfresh_provenance', dispatchSeq, res.status);
+          recordAttempt('nonfresh_provenance', res.status);
           throw new StatiqProvenanceError(path);
         }
         return parsed;
@@ -611,7 +605,7 @@ export class StatiqClient {
         // controller), which is a retryable transport failure - see below.
         if (signal?.aborted) {
           if (!attemptAudited) this.audit(path, 0);
-          this.reportFailure(context, path, 'deadline', dispatchSeq, null);
+          recordAttempt('deadline', null);
           throw new StatiqAbortError();
         }
         // Every outbound attempt is auditable, even transport failures.
@@ -624,24 +618,17 @@ export class StatiqClient {
         if (!(err instanceof StatiqApiError) && !attemptAudited) {
           this.audit(path, 0);
         }
-        if (err instanceof StatiqBodyError || err instanceof StatiqProvenanceError) {
+        if (err instanceof StatiqProvenanceError) {
           throw err;
         }
-        if (!attemptAudited) {
-          const wireStatus = err instanceof StatiqApiError ? err.status : null;
-          const code =
-            wireStatus != null && wireStatus > 0
-              ? statusCodeForHttp(wireStatus)
-              : controller.signal.aborted
-                ? 'transport_timeout'
-                : transportCodeForCause(err);
-          this.reportFailure(context, path, code, dispatchSeq, wireStatus);
-        }
-        if (err instanceof StatiqApiError && err.status > 0) {
-          this.reportFailure(
-            context, path, statusCodeForHttp(err.status), dispatchSeq, err.status,
-          );
-        }
+        const wireStatus = err instanceof StatiqApiError ? err.status : null;
+        const code =
+          wireStatus != null && wireStatus > 0
+            ? statusCodeForHttp(wireStatus)
+            : controller.signal.aborted
+              ? 'transport_timeout'
+              : transportCodeForCause(err);
+        recordAttempt(code, wireStatus != null && wireStatus > 0 ? wireStatus : null);
         if (err instanceof StatiqApiError && err.status < 500 && err.status !== 429) {
           throw err;
         }

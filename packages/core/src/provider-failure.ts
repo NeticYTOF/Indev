@@ -187,6 +187,17 @@ export function statusCodeForHttp(status: number | null): ProviderFailureCode {
 }
 
 
+function defaultNow(): { wallMs: number; monotonicMs: number } {
+  const wallMs = safeElapsedClock(Date.now()) ?? 0;
+  let monotonicMs = wallMs;
+  try {
+    if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+      monotonicMs = safeElapsedClock(performance.now()) ?? wallMs;
+    }
+  } catch { /* wall fallback */ }
+  return { wallMs, monotonicMs };
+}
+
 function safeNow(
   clock: ProviderFailureClock,
   previous: { wallMs: number; monotonicMs: number } | undefined,
@@ -195,22 +206,18 @@ function safeNow(
   let monotonicMs = previous?.monotonicMs ?? wallMs;
   try {
     const now = clock.now();
-    // Preserve clock domains: never replace a bad monotonic reading with the
-    // Date.now epoch after a valid performance.now baseline.
     const nextWall = safeElapsedClock(ownDataValue(now, 'wallMs'));
     const nextMonotonic = safeElapsedClock(ownDataValue(now, 'monotonicMs'));
     if (nextWall != null) wallMs = nextWall;
     if (nextMonotonic != null) monotonicMs = nextMonotonic;
-  } catch {
-    /* Keep the last valid domain values. */
-  }
+  } catch { /* keep last valid domain values */ }
   return { wallMs, monotonicMs };
 }
 
-function elapsed(start: number, now: number): number {
+function elapsed(start: number, now: number, previousElapsed: number): number {
   const delta = now - start;
-  if (!Number.isFinite(delta) || delta < 0) return 0;
-  return Math.min(Math.round(delta), 2_147_483_647);
+  const candidate = Number.isFinite(delta) && delta >= 0 ? Math.round(delta) : 0;
+  return Math.max(previousElapsed, Math.min(candidate, 2_147_483_647));
 }
 
 export interface ProviderFailureCollector {
@@ -226,29 +233,22 @@ export function emptyProviderFailureReport(): ProviderFailureReport {
 }
 
 export function createProviderFailureCollector(
-  clock: ProviderFailureClock,
+  clock: ProviderFailureClock = { now: defaultNow },
 ): ProviderFailureCollector {
-  const initial = { wallMs: safeElapsedClock(Date.now()) ?? 0, monotonicMs: 0 };
-  try {
-    initial.monotonicMs =
-      typeof performance !== 'undefined' && typeof performance.now === 'function'
-        ? safeElapsedClock(performance.now()) ?? initial.wallMs
-        : initial.wallMs;
-  } catch {
-    initial.monotonicMs = initial.wallMs;
-  }
-  let previous = initial;
-  const start = initial;
+  const start = safeNow(clock, undefined);
+  let previous = start;
+  let wallElapsed = 0;
+  let monotonicElapsed = 0;
   const failures: ProviderFailureEvidence[] = [];
   let omittedFailureCount = 0;
 
   return {
     record(input: ProviderFailureInput): void {
-      // Collection can never change budgets, retry decisions, or policy.
       try {
         const now = safeNow(clock, previous);
         previous = now;
-        // One own-data read per input field. Accessors are never evaluated.
+        wallElapsed = elapsed(start.wallMs, now.wallMs, wallElapsed);
+        monotonicElapsed = elapsed(start.monotonicMs, now.monotonicMs, monotonicElapsed);
         const inputRecord = input as unknown;
         const endpointInput = ownDataValue(inputRecord, 'endpointClass');
         const phaseInput = ownDataValue(inputRecord, 'phase');
@@ -257,31 +257,20 @@ export function createProviderFailureCollector(
         const statusInput = ownDataValue(inputRecord, 'httpStatus');
         const codeInput = ownDataValue(inputRecord, 'code');
         const record: ProviderFailureEvidence = Object.freeze({
-          endpointClass:
-            endpointInput === 'stations/markers' ||
-            endpointInput === 'stations/details'
-              ? endpointInput
-              : 'none',
-          phase:
-            phaseInput === 'scan' ||
-            phaseInput === 'details' ||
-            phaseInput === 'route' ||
-            phaseInput === 'run'
-              ? phaseInput
-              : 'run',
-          sampleOrdinal:
-            phaseInput === 'scan' ? safePositiveInteger(sampleInput) : null,
+          endpointClass: endpointInput === 'stations/markers' ||
+            endpointInput === 'stations/details' ? endpointInput : 'none',
+          phase: phaseInput === 'scan' || phaseInput === 'details' ||
+            phaseInput === 'route' || phaseInput === 'run' ? phaseInput : 'run',
+          sampleOrdinal: phaseInput === 'scan' ? safePositiveInteger(sampleInput) : null,
           dispatchSeq: safePositiveInteger(dispatchInput),
           httpStatus: safeHttpStatus(statusInput),
           code: isProviderFailureCode(codeInput) ? codeInput : 'unknown',
-          elapsedWallMs: elapsed(start.wallMs, now.wallMs),
-          elapsedMonotonicMs: elapsed(start.monotonicMs, now.monotonicMs),
+          elapsedWallMs: wallElapsed,
+          elapsedMonotonicMs: monotonicElapsed,
         });
         if (failures.length < PROVIDER_FAILURE_LIMIT) failures.push(record);
         else omittedFailureCount += 1;
-      } catch {
-        /* Diagnostics are best-effort and must not alter any run outcome. */
-      }
+      } catch { /* diagnostics never alter run behavior */ }
     },
     snapshot(): ProviderFailureReport {
       return Object.freeze({
