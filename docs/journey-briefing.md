@@ -22,7 +22,10 @@ facts already present in the returned `TripPlan` into a whole-trip overview:
   copy with flat black/orange styling and its own print stylesheet.
   “Print itinerary” opens the page print view, where map and planner controls
   are suppressed in favor of the briefing. The existing save, animated export,
-  maps link, and stop cards remain unchanged.
+  maps link, and stop cards remain unchanged. The Maps link keeps the charging
+  stops in plan order; if a plan exceeds the conservative one-link bounds, the
+  UI shows clearly labelled ordered segments instead of silently dropping a
+  waypoint. Live Maps acceptance is verified separately from these local checks.
 
 Times in the briefing are always relative to departure. The planner does not
 return a wall-clock departure time, physical charger availability, or a
