@@ -14,6 +14,12 @@ import { toast } from './toast.js';
 import { formatElapsedMs, planFailureGuidance, type PlanFailureGuidance } from './plan-errors.js';
 import { SubmitGate } from './submit-gate.js';
 import { GeocodeSession } from './geocode-session.js';
+import { savedRouteDraftReady, type SavedRouteDraft } from './saved-route.js';
+
+export interface PlannerController {
+  /** Copy a saved route into the composer for manual review; no network calls. */
+  loadSavedRoute: (draft: SavedRouteDraft) => boolean;
+}
 
 interface PlaceInput {
   hit: GeocodeHit | null;
@@ -24,7 +30,7 @@ const MIN_SOC = 10;
 const MAX_SOC = 100;
 const SOC_STEP = 5;
 
-export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
+export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerController {
   root.innerHTML = '';
 
   const section = document.createElement('section');
@@ -58,6 +64,9 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
 
   const form = el(`<form class="planner-form" autocomplete="off" novalidate></form>`) as HTMLFormElement;
   section.appendChild(form);
+
+  const savedReview = el(`<div class="saved-route-review hidden" role="status" aria-live="polite"></div>`);
+  section.insertBefore(savedReview, form);
 
   // ---- brand header: the product identity lives in the card ----
   const head = el(`
@@ -97,6 +106,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
   });
 
   const errorBox = el(`<div class="error-box hidden" role="alert"></div>`);
+  hideError(errorBox);
 
   // Health-check failure does not establish that all server endpoints are offline.
   const offline = el(`
@@ -137,12 +147,52 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
 
   let catalog: VehicleCatalogEntry[] = [];
   let defaultVehicle = 'tata-harrier-ev-75';
+  let catalogState: 'loading' | 'ready' | 'unavailable' = 'loading';
+  let pendingSavedVehicle: SavedRouteDraft['vehicle'] | null = null;
+  const restoreVehicleDraft = (draft: SavedRouteDraft['vehicle']): void => {
+    if (catalogState === 'loading') {
+      // The catalog response owns vehicleRow until it settles; reapply after it.
+      pendingSavedVehicle = draft;
+      return;
+    }
+    const selector = vehicleRow.querySelector<HTMLSelectElement>('select[data-vehicle]');
+    if (!selector) return;
+
+    const catalogMatch = catalogState === 'ready' && draft.catalogId != null
+      ? catalog.find((entry) => entry.id === draft.catalogId)
+      : undefined;
+    const useCatalog = catalogMatch != null && catalogMatch.id !== defaultVehicle
+      && draft.realWorldRangeKm != null;
+    selector.value = useCatalog ? catalogMatch.id : 'custom';
+    selector.dispatchEvent(new Event('change'));
+
+    if (useCatalog) {
+      const range = vehicleRow.querySelector<HTMLInputElement>('input[data-real-world]');
+      if (range) range.value = String(draft.realWorldRangeKm);
+      return;
+    }
+
+    const battery = vehicleRow.querySelector<HTMLInputElement>('input[data-custom-kwh]');
+    const range = vehicleRow.querySelector<HTMLInputElement>('input[data-real-world]');
+    if (battery && draft.batteryKwh != null) battery.value = String(draft.batteryKwh);
+    if (range && draft.realWorldRangeKm != null) range.value = String(draft.realWorldRangeKm);
+  };
   void api.vehicles().then((res) => {
     catalog = res.catalog;
     defaultVehicle = res.default;
+    catalogState = 'ready';
     buildVehicleSelect(vehicleRow, catalog, defaultVehicle);
+    const pending = pendingSavedVehicle;
+    pendingSavedVehicle = null;
+    if (pending) restoreVehicleDraft(pending);
   }).catch(() => {
-    vehicleRow.innerHTML = '<p class="hint">Vehicle catalog unavailable (server offline?).</p>';
+    catalogState = 'unavailable';
+    buildVehicleSelect(vehicleRow, [], defaultVehicle);
+    const note = el('<p class="hint warn-hint">Vehicle catalog unavailable — only the custom vehicle inputs can be used.</p>');
+    vehicleRow.appendChild(note);
+    const pending = pendingSavedVehicle;
+    pendingSavedVehicle = null;
+    if (pending) restoreVehicleDraft(pending);
   });
 
   // ---- start charge stepper ----
@@ -263,6 +313,40 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
 
   section.appendChild(errorBox);
 
+  const loadSavedRoute = (draft: SavedRouteDraft): boolean => {
+    if (!savedRouteDraftReady(draft)) {
+      showError(errorBox, 'This saved route has invalid coordinates. Reopen it to inspect the record, then pick both places manually.');
+      return false;
+    }
+
+    // Clear the old saved summary; it must never appear to describe a new plan.
+    root.querySelector('.plan-results')?.remove();
+    originField.setSavedPlace(draft.origin);
+    destField.setSavedPlace(draft.destination);
+    restoreVehicleDraft(draft.vehicle);
+    hideError(errorBox);
+
+    savedReview.replaceChildren();
+    const title = el('<p class="review-title">Editing saved route — review before planning</p>');
+    const intro = el('<p>Origin, destination and known vehicle facts were copied from the saved trip. No saved record changes until you explicitly save a new plan.</p>');
+    const list = el('<ul></ul>');
+    for (const note of draft.reviewNotes) {
+      const item = document.createElement('li');
+      item.textContent = note;
+      list.appendChild(item);
+    }
+    const submitNote = el('<p>Plan or Plan with AI starts a new manual run. Start charge remains at the value shown below and must be reviewed.</p>');
+    savedReview.append(title, intro, list, submitNote);
+    savedReview.classList.remove('hidden');
+    if (window.innerWidth <= 720) {
+      root.classList.add('open');
+      document.getElementById('sheet-open')?.setAttribute('aria-expanded', 'true');
+      document.getElementById('sheet-open')?.classList.add('hidden');
+    }
+    originField.input.focus();
+    return true;
+  };
+
   form.addEventListener('ai-plan', async () => {
     if (!origin.hit || !destination.hit) {
       showError(errorBox, 'Pick both a starting point and a destination from the suggestions first.');
@@ -373,6 +457,8 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): void {
       }
     }
   });
+
+  return { loadSavedRoute };
 }
 
 export function onPlanAvailable(plan: TripPlan, map: maplibregl.Map): void {
@@ -388,6 +474,7 @@ export function onPlanAvailable(plan: TripPlan, map: maplibregl.Map): void {
     })),
   });
   const panel = document.getElementById('planner-panel') as HTMLElement;
+  panel.querySelector<HTMLElement>('.saved-route-review')?.classList.add('hidden');
   renderPlanPanel(panel, map, plan);
   if (window.innerWidth <= 720) {
     panel.classList.add('open');
@@ -515,7 +602,12 @@ function makeSearchField(
   placeholder: string,
   field: 'origin' | 'destination',
   onPicked: (hit: GeocodeHit | null) => void,
-): { wrap: HTMLElement; input: HTMLInputElement; invalidateSuggestions: () => void } {
+): {
+  wrap: HTMLElement;
+  input: HTMLInputElement;
+  invalidateSuggestions: () => void;
+  setSavedPlace: (place: { label: string; lat: number; lon: number }) => void;
+} {
   const letter = field === 'origin' ? 'A' : 'B';
   const wrap = el(`
     <div class="search-field" data-field="${field}">
@@ -654,7 +746,18 @@ function makeSearchField(
     }
   });
 
-  return { wrap, input, invalidateSuggestions };
+  // Saved coordinates come from storage, never from the geocoder. Invalidate
+  // any pending query/response first so a late result cannot replace the
+  // exact place the user chose when replanning.
+  const setSavedPlace = (place: { label: string; lat: number; lon: number }): void => {
+    onPicked(null);
+    invalidateSuggestions();
+    input.value = place.label;
+    onPicked({ ...place, name: place.label, city: null, state: null, country: null });
+    input.dispatchEvent(new Event('picked'));
+  };
+
+  return { wrap, input, invalidateSuggestions, setSavedPlace };
 }
 
 function showError(box: HTMLElement, message: string): void {
