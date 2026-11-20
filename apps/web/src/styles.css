@@ -9,29 +9,29 @@
 
 :root {
   /* ---- surfaces & ink ---- */
-  --bg: #070C15;
-  --surface: #0E1626;
-  --surface-2: #131F33;
-  --surface-3: #182740;
-  --ink: #F1F5FB;
-  --ink-2: #A9B8CF;
-  --ink-3: #6C7B95;
-  --ink-4: #434F68;
-  --line: #22304B;
-  --line-2: #2C3D5C;
+  --bg: #050506;
+  --surface: #0E0E10;
+  --surface-2: #151517;
+  --surface-3: #1D1D20;
+  --ink: #F4F2EE;
+  --ink-2: #B8B4AD;
+  --ink-3: #88837B;
+  --ink-4: #5B5650;
+  --line: #252422;
+  --line-2: #34322E;
 
-  /* ---- accent (electric blue) ---- */
-  --accent: #4D9FFF;
-  --accent-strong: #7AB5FF;
-  --accent-ink: #04182E;
-  --accent-soft: #102544;
-  --accent-border: #2A5085;
+  /* ---- accent (restrained burnt orange) ---- */
+  --accent: #D87932;
+  --accent-strong: #EC9A55;
+  --accent-ink: #1A0F06;
+  --accent-soft: #25170E;
+  --accent-border: #6A3C1D;
 
   /* ---- semantics (solid fills) ---- */
   --ok: #3ED598;          --ok-soft: #0C2820;   --ok-border: #17553E;
   --warn: #F4B951;         --warn-soft: #2B2110; --warn-border: #584420;
   --bad: #F26D76;          --bad-soft: #2B1115;  --bad-border: #5A2833;
-  --synthetic: #B990FF;     --synthetic-soft: #211835; --synthetic-border: #453468;
+  --synthetic: #E99455;   --synthetic-soft: #231710; --synthetic-border: #6B3C1C;
 
   /* ---- battery / SoC ---- */
   --soc-high: #3ED598;
@@ -46,8 +46,8 @@
   --brand-other: #66748F;
 
   /* ---- map ---- */
-  --route: #4D9FFF;
-  --route-casing: #E9F1FC;
+  --route: #D87932;
+  --route-casing: #F4F2EE;
 
   /* ---- radius ---- */
   --r-xl: 22px;
@@ -147,7 +147,7 @@ body {
 .maplibregl-ctrl-attrib,
 .maplibregl-ctrl-attrib.maplibregl-compact {
   font-size: var(--text-xs);
-  background-color: rgba(14, 22, 38, 0.92) !important;
+  background-color: rgba(14, 14, 16, 0.92) !important;
   color: var(--ink-3) !important;
   border-radius: var(--r-sm);
 }
