@@ -2607,7 +2607,9 @@ body.comparing-trips .panel {
   body.comparing-trips .planner {
     display: block !important;
   }
-  body.comparing-trips .compare-toolbar {
+  body.comparing-trips .compare-toolbar,
+  body.comparing-trips .compare-card-actions,
+  body.comparing-trips button {
     display: none !important;
   }
   body.comparing-trips .compare-workspace {
@@ -2639,7 +2641,11 @@ body.comparing-trips .panel {
   }
   body.comparing-trips .compare-toolbar h2,
   body.comparing-trips .compare-slot,
-  body.comparing-trips .compare-table caption {
+  body.comparing-trips .compare-table caption,
+  body.comparing-trips .compare-card h4,
+  body.comparing-trips .compare-difference h4,
+  body.comparing-trips .compare-stop-id,
+  body.comparing-trips .compare-notes {
     color: #111;
   }
   body.comparing-trips .compare-table th,
@@ -2647,8 +2653,6 @@ body.comparing-trips .panel {
     border-color: #888;
     padding: 4px;
   }
-  body.comparing-trips .compare-card,
-  body.comparing-trips .compare-difference,
   body.comparing-trips .compare-stop,
   body.comparing-trips .compare-facts > div {
     break-inside: avoid;
