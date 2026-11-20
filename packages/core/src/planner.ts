@@ -160,9 +160,20 @@ export async function planTripDetailed(
   destination: { label: string; lat: number; lon: number },
   options: PlanOptions = {},
 ): Promise<PlanBundle> {
-  const opts = mergePlanOptions(options);
+  const baseOpts = mergePlanOptions(options);
   const vehicle = deps.vehicle ?? HARIER_EV_75;
   const resolvedVehicle: ResolvedVehicle = deps.resolvedVehicle ?? resolveVehicle();
+  // A USER-supplied real-world range is a SAFE range, not just a consumption
+  // input. The owner's 300 km cap stays in force for the default profile
+  // (realWorldRangeKm == null); any explicit user range can only TIGHTEN the
+  // hard leg cap, never widen it. Otherwise a failure for a shorter-range
+  // vehicle would still claim a 300 km safe running range that was never
+  // grounded in that vehicle's inputs.
+  const userSafeRangeKm = resolvedVehicle.realWorldRangeKm;
+  const opts: Required<PlanOptions> =
+    userSafeRangeKm != null && Number.isFinite(userSafeRangeKm)
+      ? { ...baseOpts, maxLegKm: Math.min(baseOpts.maxLegKm, userSafeRangeKm) }
+      : baseOpts;
   const vehicleMeta: PlanVehicleMeta = {
     label: resolvedVehicle.label,
     catalogId: resolvedVehicle.catalogId,
