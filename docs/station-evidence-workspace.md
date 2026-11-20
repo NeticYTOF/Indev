@@ -48,11 +48,27 @@ One explicit click performs exactly one call to the existing
 fetch on panel expansion or saved-trip open, and no retry loop. A pending call
 disables its own button and blocks duplicate dispatches. Responses with a
 different station ID, stale generation, or a detached view are discarded
-instead of being written into another stop. After either outcome the same
+instead of being written into another stop. This includes reopening a saved
+trip with the same or a different station ID and switching from a fresh plan to
+a saved trip while a manual fetch is in flight. After either outcome the same
 button becomes available for another explicit attempt; keyboard focus is
-restored only if the button's previous focus was lost to the body.
+restored only if the button's previous focus was lost to the body. An input the
+user focuses during the request keeps focus when the response settles.
+
+Network aborts, HTTP failures, non-JSON replies, and malformed station bodies
+all produce the same announced retryable status and install no fetched result.
+The status element is a polite live region; expanding a details element with
+the keyboard never fetches. Long and hostile upstream strings are escaped and
+wrapped for desktop and 390px mobile layouts.
 
 The shared controller uses the existing endpoint and does not modify providers,
 planner policy, candidate lookup, pacing, saved records, or the deployed
 worker. External station links pass the existing URL allowlist; all upstream
-text is escaped before rendering.
+text is escaped before rendering. Manual fetch and details expansion write no
+trip and trigger no background station lookup.
+
+Printing follows the established journey-itinerary semantics: `.stops` and
+therefore both planned and fetched station-evidence details are hidden,
+whether the details were open or closed on screen. The Journey Briefing and
+its summary remain the printable evidence view; this workspace does not add a
+new print layout or claim that live charger availability is guaranteed.
