@@ -146,3 +146,69 @@ test('suggestion active state clears on blur and Escape without losing refocus b
   await expect(from).toHaveAttribute('aria-expanded', 'false');
   await expect(from).not.toHaveAttribute('aria-activedescendant', /.+/);
 });
+
+test('stale geocode HTTP error cannot clear newer active options', async ({ page }) => {
+  let releaseOld!: () => void;
+  const held = new Promise<void>((resolve) => { releaseOld = resolve; });
+  await page.route('**/api/geocode?q=Old*', async (route) => {
+    await held;
+    await route.fulfill({ status: 500, json: { error: 'Synthetic stale geocode failure' } });
+  });
+  const from = page.getByRole('combobox', { name: 'From', exact: true });
+  const list = page.locator('[data-field=origin] .suggestions');
+  const started = page.waitForRequest('**/api/geocode?q=Old*');
+  await from.fill('Old query');
+  await started;
+  try {
+    await from.fill('New query');
+    await expect(list.getByRole('option')).toHaveCount(3);
+    await from.press('ArrowDown');
+    await expect(from).toHaveAttribute('aria-activedescendant', 'place-options-origin-option-0');
+    await expect(list.locator('[role=option][aria-selected=true]')).toHaveCount(1);
+    const response = page.waitForResponse('**/api/geocode?q=Old*');
+    releaseOld();
+    const stale = await response;
+    await stale.finished();
+    await page.waitForTimeout(100);
+    await expect(list).toBeVisible();
+    await expect(from).toHaveAttribute('aria-expanded', 'true');
+    await expect(list.getByRole('option')).toHaveCount(3);
+    await expect(list.locator('[role=option]').first()).toHaveAttribute('aria-selected', 'true');
+    await expect(list.locator('[role=option][aria-selected=true]')).toHaveCount(1);
+    await expect(from).toHaveAttribute('aria-activedescendant', 'place-options-origin-option-0');
+    await expect(from).toHaveValue('New query');
+  } finally {
+    releaseOld();
+  }
+});
+
+test('current geocode HTTP 500 leaves combobox recoverable', async ({ page }) => {
+  await page.route('**/api/geocode?q=Fail*', (route) => route.fulfill({
+    status: 500, json: { error: 'Synthetic current geocode failure' },
+  }));
+  const from = page.getByRole('combobox', { name: 'From', exact: true });
+  const list = page.locator('[data-field=origin] .suggestions');
+  await from.fill('Town');
+  await expect(list.getByRole('option')).toHaveCount(3);
+  await from.press('ArrowDown');
+  await expect(from).toHaveAttribute('aria-activedescendant', 'place-options-origin-option-0');
+  await expect(list.locator('[role=option][aria-selected=true]')).toHaveCount(1);
+  const response = page.waitForResponse('**/api/geocode?q=Fail*');
+  await from.fill('Fail query');
+  const failure = await response;
+  await failure.finished();
+  await page.waitForTimeout(100);
+  expect(failure.status()).toBe(500);
+  await expect(list).toBeHidden();
+  await expect(from).toHaveAttribute('aria-expanded', 'false');
+  await expect(from).not.toHaveAttribute('aria-activedescendant', /.+/);
+  await expect(list.getByRole('option')).toHaveCount(0);
+  await expect(list.locator('.suggestion-item.active')).toHaveCount(0);
+  await expect(from).toHaveValue('Fail query');
+  await from.fill('Recover');
+  await expect(list.getByRole('option')).toHaveCount(3);
+  await expect(from).toHaveAttribute('aria-expanded', 'true');
+  await from.press('ArrowDown');
+  await expect(from).toHaveAttribute('aria-activedescendant', 'place-options-origin-option-0');
+  await expect(list.locator('[role=option][aria-selected=true]')).toHaveCount(1);
+});
