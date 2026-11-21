@@ -92,3 +92,58 @@ describe('AI provider deadline and caller cancel are distinct', () => {
     expect(dispatches).toBe(0);
   });
 });
+
+describe('exact HackClub completion policy', () => {
+  const exactDeps = {
+    baseUrl: 'https://ai.hackclub.com/proxy/v1',
+    apiKey: 'test-key', model: 'z-ai/glm-5.3-flash',
+  };
+  const okBody = { choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] };
+
+  it.each([
+    ['other model', { ...exactDeps, model: 'other-model' }, 'https://ai.hackclub.com/proxy/v1'],
+    ['lookalike host', { ...exactDeps, baseUrl: 'https://ai.hackclub.com.evil/proxy/v1' }, 'https://ai.hackclub.com.evil/proxy/v1'],
+  ])('leaves %s options untouched', async (_name, changed, expectedHost) => {
+    let sent: Record<string, unknown> | null = null;
+    let usedUrl = '';
+    const capture = (async (url: unknown, init?: RequestInit) => {
+      usedUrl = String(url);
+      sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify(okBody), { status: 200 });
+    }) as typeof fetch;
+    await chatCompletion({ ...changed, fetchImpl: capture }, [{ role: 'user', content: 'x' }]);
+    expect(sent).not.toHaveProperty('reasoning');
+    expect(sent).not.toHaveProperty('max_tokens');
+    expect(sent).not.toHaveProperty('stream');
+    expect(usedUrl).toBe(`${expectedHost}/chat/completions`);
+  });
+
+  it('applies low-effort bounded options only to the exact pair in both paths', async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const capture = (async (_url: unknown, init?: RequestInit) => {
+      sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify(okBody), { status: 200 });
+    }) as typeof fetch;
+    await chatCompletion({ ...exactDeps, fetchImpl: capture }, [{ role: 'user', content: 'x' }]);
+    await chatCompletionWithTools({ ...exactDeps, fetchImpl: capture }, [], [], []);
+    expect(sent).toHaveLength(2);
+    for (const request of sent) {
+      expect(request).toMatchObject({ reasoning: { effort: 'low' }, max_tokens: 4096, stream: false });
+      expect(request.model).toBe('z-ai/glm-5.3-flash');
+    }
+  });
+
+  it('rejects parseable finish_reason:length in both paths before accepting output', async () => {
+    const truncated = { choices: [{
+      message: { content: JSON.stringify({ chosenStationIds: [] }),
+        tool_calls: [{ id: 't', type: 'function',
+          function: { name: 'get_station_details', arguments: '{"ids":[1]}' } }] },
+      finish_reason: 'length',
+    }] };
+    const fetchImpl = (async () => new Response(JSON.stringify(truncated), { status: 200 })) as typeof fetch;
+    await expect(chatCompletion({ ...exactDeps, fetchImpl }, [{ role: 'user', content: 'x' }]))
+      .rejects.toMatchObject({ reason: 'output_limit' });
+    await expect(chatCompletionWithTools({ ...exactDeps, fetchImpl }, [], [], ['get_station_details']))
+      .rejects.toMatchObject({ reason: 'output_limit' });
+  });
+});

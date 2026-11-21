@@ -42,7 +42,24 @@ export type AiToolCall = (
   maxCalls?: number,
 ) => Promise<{ content: string | null; toolCalls: ChatToolCall[] }>;
 
-export type AiFailureReason = 'provider' | 'cancelled' | 'headers_timeout' | 'body_timeout';
+const HACKCLUB_BASE = 'https://ai.hackclub.com/proxy/v1';
+const HACKCLUB_MODEL = 'z-ai/glm-5.3-flash';
+
+/** Exact-model policy only. Mandatory reasoning stays enabled at low effort;
+ *  no stream assembler, no broad config for unknown models. */
+function completionOptions(baseUrl: string, model: string, payload: Record<string, unknown>) {
+  const exact = baseUrl.replace(/\/+$/, '') === HACKCLUB_BASE && model === HACKCLUB_MODEL;
+  return exact
+    ? { ...payload, reasoning: { effort: 'low' }, max_tokens: 4096, stream: false }
+    : payload;
+}
+
+function rejectTruncated(finishReason: unknown): void {
+  if (finishReason === 'length') {
+    throw new AiProviderError('AI response truncated before completion.', 'output_limit');
+  }
+}
+export type AiFailureReason = 'provider' | 'cancelled' | 'headers_timeout' | 'body_timeout' | 'output_limit';
 
 export class AiProviderError extends Error {
   constructor(message: string, readonly reason: AiFailureReason = 'provider') {
@@ -127,12 +144,12 @@ export async function chatCompletion(
           Authorization: `Bearer ${deps.apiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
+        body: JSON.stringify(completionOptions(deps.baseUrl, deps.model, {
           model: deps.model,
           temperature: 0.2,
           messages,
           response_format: { type: 'json_object' },
-        }),
+        })),
         signal: watch.signal,
       }),
       watch.promise,
@@ -140,11 +157,12 @@ export async function chatCompletion(
     if (!res.ok) throw new AiProviderError(`AI provider returned ${res.status}`);
     phase.value = 'body';
     const body = await Promise.race([res.json(), watch.promise]) as {
-      choices?: Array<{ message?: { content?: string } }>;
+      choices?: Array<{ message?: { content?: string }; finish_reason?: unknown }>;
     };
     if (watch.callerAborted() || watch.timedOut()) {
       throw new AiProviderError('AI request ended before completion.', 'cancelled');
     }
+    rejectTruncated(body.choices?.[0]?.finish_reason);
     const content = body.choices?.[0]?.message?.content;
     if (typeof content !== 'string' || !content.trim()) {
       throw new AiProviderError('AI provider returned an empty message');
@@ -177,12 +195,12 @@ export async function chatCompletionWithTools(
       (deps.fetchImpl ?? fetch)(`${deps.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${deps.apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: JSON.stringify(completionOptions(deps.baseUrl, deps.model, {
           model: deps.model, temperature: 0.2, messages,
           ...(tools.length > 0
             ? { tools, tool_choice: 'auto' }
             : { tool_choice: 'none' }),
-        }),
+        })),
         signal: watch.signal,
       }),
       watch.promise,
@@ -201,6 +219,7 @@ export async function chatCompletionWithTools(
     if (!Array.isArray(choices) || choices.length === 0) throw new AiProviderError('malformed tool response');
     const first = choices[0];
     if (typeof first !== 'object' || first === null || Array.isArray(first)) throw new AiProviderError('malformed tool response');
+    if ('finish_reason' in first) rejectTruncated(first.finish_reason);
     const message = (first as { message?: unknown }).message;
     if (typeof message !== 'object' || message === null || Array.isArray(message)) throw new AiProviderError('malformed tool response');
     const m = message as { content?: unknown; tool_calls?: unknown };
