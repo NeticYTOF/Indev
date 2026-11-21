@@ -34,6 +34,10 @@ describe('classifyPlug (observed Statiq vocabulary)', () => {
     [conn('available', true, 'DefectiveFault'), 'uncertain', true],
     [conn('available', true, 'DefaultFault'), 'uncertain', true],
     [conn('available', true, 'NoFaultDetected Faulted'), 'uncertain', true],
+    [conn('available', true, 'No. Faulted'), 'uncertain', true],
+    [conn('available', true, 'No; Faulted'), 'uncertain', true],
+    [conn('available', true, 'Faulted Not fault free'), 'uncertain', true],
+    [conn('available', true, 'Not fault free'), 'uncertain', true],
     // available flag + disconnected note contradict status -> uncertain
     [conn('available', false, 'Disconnected'), 'uncertain', true],
     // unavailable + disconnected -> offline

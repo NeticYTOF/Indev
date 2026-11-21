@@ -23,22 +23,20 @@ const norm = (s: string | null | undefined): string =>
   (s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
 const DEFAULT_WORDS: Record<string, true> = { default: true, defaults: true };
+const CLEAN_NEGATED_FAULT_NOTES: Record<string, true> = {
+  'no fault': true, nofault: true,
+  'no faults': true, nofaults: true,
+  'no fault detected': true, nofaultdetected: true,
+  'no fault found': true, nofaultfound: true,
+  'not faulted': true, notfaulted: true,
+};
 interface FaultSignals { positive: boolean; negated: boolean }
 function faultSignals(text: string | null | undefined): FaultSignals {
-  const tokens = (text ?? '').toLowerCase().match(/[a-z0-9]+/g) ?? [];
-  const signals: FaultSignals = { positive: false, negated: false };
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i] as string;
-    const negatedFusion = /^(?:no|not)(?:fault|faults|faulted)(?:detected|found)?$/.test(token);
-    const faultWord = /^(?:fault|faults|faulted)$/.test(token);
-    const precededByNegation = tokens[i - 1] === 'no' || tokens[i - 1] === 'not';
-    if (negatedFusion || (faultWord && precededByNegation)) {
-      signals.negated = true;
-    } else if ((faultWord || /fault/.test(token)) && DEFAULT_WORDS[token] !== true) {
-      signals.positive = true;
-    }
-  }
-  return signals;
+  const clean = (text ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const negated = CLEAN_NEGATED_FAULT_NOTES[clean] === true;
+  const positive = !negated && (clean.match(/[a-z0-9]+/g) ?? [])
+    .some((token) => DEFAULT_WORDS[token] !== true && /fault/.test(token));
+  return { positive, negated };
 }
 /** Shared normalization for connector type vocabulary. */
 export function connectorSlug(type: string): string {
