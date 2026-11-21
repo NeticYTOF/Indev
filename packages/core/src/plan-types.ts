@@ -38,6 +38,7 @@ export interface StationLiveView {
   lon: number;
   address: string | null;
   city: string | null;
+  accessType?: string | null;
   hours: string | null;
   openText: string | null;
   rating: number | null;
@@ -61,6 +62,32 @@ export interface PlanSelectedCharger {
   name: string;
   kw: number;
   pricePerKwh: number | null;
+  lastUsedOn?: string | null;
+}
+
+export interface PlanCandidateCharger {
+  chargerId: number;
+  name: string;
+  type: string;
+  kw: number | null;
+  pricePerKwh: number | null;
+  lastUsedOn: string | null;
+}
+
+export interface PlanCandidateEvidence {
+  fetchedAt: string;
+  hours: string | null;
+  openText: string | null;
+  address: string | null;
+  accessType: string | null;
+  stationUrl: string | null;
+  navUrl: string | null;
+  amenities: readonly string[];
+  reliability: null;
+  reliabilityNote: 'No verified reliability score is available.';
+  ccs2EligibleCount: number;
+  ccs2ContradictionCount: number;
+  chargers: readonly PlanCandidateCharger[];
 }
 
 export interface PlanStop {
@@ -129,6 +156,7 @@ export interface PlanCandidate {
   maxKw: number | null;
   pricePerKwh: number | null;
   selectedCharger?: PlanSelectedCharger;
+  evidence: PlanCandidateEvidence;
 }
 
 export interface TripPlan {

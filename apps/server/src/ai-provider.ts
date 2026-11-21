@@ -70,6 +70,14 @@ export async function chatCompletion(
   }
 }
 
+export function safeEvidenceUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  try {
+    const parsed = new URL(raw.trim());
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.href : null;
+  } catch { return null; }
+}
+
 /** Parse the model's JSON answer defensively; strict shape checks after. */
 export function parseChoiceJson(content: string): { stationIds?: number[]; notes?: string } {
   let parsed: unknown;

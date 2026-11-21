@@ -440,6 +440,8 @@ describe('AI-safe candidates', () => {
       ...Array.from({ length: 10 }, (_, i) => ({ id: 60 + i, name: `S ${i}`, chainageKm: 250 + i * 50 })),
     ];
     const statiq = fakeStatiq(occupied);
+    const baseline = await planTripDetailed({ router: fakeRouter(700), statiq }, O, D(700), { includeCandidates: true });
+    const baselineProjection = JSON.stringify((baseline.plan.candidates ?? []).find(c => c.stationId === 50));
     // make station 50's plugs occupied-but-working
     const original = (statiq as unknown as { detailsWithMeta: (id: number) => Promise<{ response: StatiqDetailsResponse }> }).detailsWithMeta;
     (statiq as unknown as Record<string, unknown>).detailsWithMeta = async (id: number) => {
@@ -470,17 +472,21 @@ describe('AI-safe candidates', () => {
     // fields it does get
     const sample = cands[0] as unknown as Record<string, unknown>;
     expect(Object.keys(sample).sort()).toEqual([
-      'brand',
-      'chainageKm',
-      'city',
-      'maxKw',
-      'name',
-      'offRouteKm',
-      'pricePerKwh',
-      'rating',
-      'reviewCount',
-      'stationId',
+      'brand', 'chainageKm', 'city', 'evidence', 'maxKw', 'name',
+      'offRouteKm', 'pricePerKwh', 'rating', 'reviewCount', 'stationId',
     ]);
+    const evidence = sample.evidence as Record<string, unknown>;
+    expect(evidence.fetchedAt).toBeTruthy();
+    expect(evidence.hours).toBe('00:00 To 23:59');
+    expect(evidence.openText).toBe('Open Now');
+    const projected50 = JSON.stringify((bundle.plan.candidates ?? []).find(c => c.stationId === 50));
+    expect(projected50).toBe(baselineProjection);
+    const chargers = evidence.chargers as Array<Record<string, unknown>>;
+    expect(chargers[0]?.lastUsedOn).toBe('19/11/2026');
+    expect(evidence.accessType).toBe('public');
+    expect(evidence.reliability).toBeNull();
+    expect(evidence.reliabilityNote).toBe('No verified reliability score is available.');
+    expect(JSON.stringify(evidence)).not.toMatch(/"(charging|occupied|available|status|plugs)"/i);
   });
 });
 

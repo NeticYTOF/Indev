@@ -20,7 +20,7 @@ import { hasFreshProvenance } from './provenance.js';
  */
 import { cumulativeKm } from './geo.js';
 import { scanCorridor, type CorridorCandidate } from './corridor.js';
-import { certifyCappedCharger, classifyPlug, summarizeCcs2, type Ccs2Summary } from './plugs.js';
+import { certifyCappedCharger, classifyPlug, connectorSlug, summarizeCcs2, type Ccs2Summary } from './plugs.js';
 import { detectBrand } from './brands.js';
 import { pMap } from './utils.js';
 import { chargeTimeMin, kwhForSocDelta, socAfterDriving, socRequiredForArrival, HARIER_EV_75, type VehicleConfig } from './vehicle.js';
@@ -625,7 +625,9 @@ async function planCore(
             candidate: c,
             summary,
             view: toStationView(response.station, fetchedAt),
-            ...(capSelected ? { selectedCharger: capSelected } : {}),
+            ...(capSelected
+              ? { selectedCharger: { ...capSelected, lastUsedOn: response.station.chargers.find(ch => ch.chargerId === capSelected.chargerId)?.lastUsedOn ?? null } }
+              : {}),
           });
           hooks.stats.candidatesDetailed = detailCache.size;
         }
@@ -788,6 +790,11 @@ async function planCore(
 
 /** AI-safe candidate projection: no plug occupancy, no health detail. */
 function toAiCandidate(c: Candidate): PlanCandidate {
+  const ccs2Rows = c.view.chargers.flatMap(ch => ch.plugs
+    .filter(p => connectorSlug(p.type) === 'ccs2' && connectorSlug(ch.type) === 'dc')
+    .map(p => ({ charger: ch, plug: p })));
+  const eligibleCount = ccs2Rows.filter(row => !row.plug.contradiction && USABLE_EVIDENCE_HEALTH.has(row.plug.health)).length;
+  const contradictionCount = ccs2Rows.filter(row => row.plug.contradiction).length;
   return {
     stationId: c.candidate.stationId,
     name: c.view.name,
@@ -800,8 +807,29 @@ function toAiCandidate(c: Candidate): PlanCandidate {
     maxKw: c.selectedCharger ? c.selectedCharger.kw : c.summary.maxKw,
     pricePerKwh: c.selectedCharger ? c.selectedCharger.pricePerKwh : c.summary.pricePerKwh,
     ...(c.selectedCharger ? { selectedCharger: c.selectedCharger } : {}),
+    evidence: {
+      fetchedAt: c.view.fetchedAt,
+      hours: c.view.hours,
+      openText: c.view.openText,
+      address: c.view.address,
+      accessType: c.view.accessType ?? null,
+      stationUrl: c.view.stationUrl,
+      navUrl: c.view.navUrl,
+      amenities: c.view.amenities,
+      reliability: null,
+      reliabilityNote: 'No verified reliability score is available.',
+      ccs2EligibleCount: eligibleCount,
+      ccs2ContradictionCount: contradictionCount,
+      chargers: c.view.chargers.map(ch => ({
+        chargerId: ch.chargerId, name: ch.name, type: ch.type,
+        kw: Number.isFinite(ch.kw) && ch.kw > 0 ? ch.kw : null,
+        pricePerKwh: ch.pricePerKwh, lastUsedOn: ch.lastUsedOn,
+      })),
+    },
   };
 }
+
+const USABLE_EVIDENCE_HEALTH: ReadonlySet<string> = new Set(['working-free', 'working-occupied', 'finishing']);
 
 /**
  * Pick the next stop from `cursor`:
@@ -1016,6 +1044,7 @@ export function toStationView(
     city: s.city,
     hours: s.hours,
     openText: s.openText,
+    accessType: s.accessType ?? null,
     rating: s.rating ?? null,
     reviewCount: s.reviewCount ?? null,
     reliability: null, // public data has no verified reliability score
