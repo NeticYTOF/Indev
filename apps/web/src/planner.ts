@@ -272,7 +272,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
   // aria-hidden visual-only so a long wait is never live-region spam.
   const liveBusy = el(`
     <div class="plan-busy hidden">
-      <p class="plan-busy-hint" role="status">Every candidate charger is fetched individually with safety pacing — a long corridor can take several minutes. Nothing is cached between runs.</p>
+      <p class="plan-busy-hint" role="status">Live charger checks use safety pacing. A long corridor can take several minutes. Nothing is cached between runs.</p>
       <p class="plan-busy-progress" role="status"></p>
       <button type="button" class="btn btn-ghost plan-busy-cancel hidden">Cancel this run</button>
       <div class="plan-busy-recovery hidden">
@@ -407,11 +407,11 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
   const jobProgressText = (status: PlanJobStatus, cancelling = false): string => {
     if (cancelling) return 'Cancellation requested — waiting for the server to confirm a terminal state.';
     const p = status.progress;
-    if (!p) return 'Job accepted. Route scan is starting; the charger inventory is not yet known.';
+    if (!p) return 'Job accepted. Corridor discovery is starting; the charger inventory is not yet known.';
     if (!p.candidateInventoryComplete) {
       return `Scanning route samples: ${p.samplesCompleted} of ${p.samplesPlanned} responded. Charger inventory is still unknown; remaining counts are minimums only.`;
     }
-    return `Corridor discovery complete (${p.samplesPlanned} samples). Charger details checking ${p.candidatesProcessed} of ${p.candidatesPlanned} unique chargers.`;
+    return `AI-selective mode: corridor discovery found ${p.candidatesPlanned} unique chargers. ${p.candidatesProcessed} were checked by tool request; remaining work is unknown until the model finishes.`;
   };
 
   section.appendChild(errorBox);
