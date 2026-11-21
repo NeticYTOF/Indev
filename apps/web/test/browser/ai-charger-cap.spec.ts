@@ -84,7 +84,10 @@ test('AI charger cap propagates, rejects invalid locally, and blank omits it', a
   expect(counters.lastAiBody).toMatchObject({ maxChargerKw: 100 });
   await expect(page.locator('.stop-stats')).toContainText('Selected charger 60 kW charger (#7220)');
   await expect(page.locator('.stop-stats')).toContainText('Tariff unknown');
-  await expect(page.locator('.plan-results .banners')).toContainText('rated at or below the configured kW cap');
+  const capWarn = page.locator('.plan-results > .banners > .banner-warn',
+    { hasText: 'rated at or below the configured kW cap' });
+  await expect(capWarn).toHaveCount(1);
+  await expect(capWarn).toContainText('rated at or below the configured kW cap');
   await expect(cap).toHaveValue('100');
   await cap.fill('');
   await page.getByRole('button', { name: 'Plan with AI', exact: true }).click();

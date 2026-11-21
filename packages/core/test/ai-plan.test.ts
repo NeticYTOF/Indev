@@ -464,11 +464,29 @@ describe('AI-safe candidates', () => {
     );
     const cands = bundle.plan.candidates ?? [];
     expect(cands.length).toBeGreaterThan(0);
-    const json = JSON.stringify(cands);
-    // the AI must never see occupancy
-    expect(json).not.toContain('charging');
-    expect(json).not.toContain('occupied');
-    expect(json).not.toContain('available');
+    // Bound any occupancy/health leak to forbidden FIELD NAMES and exact
+    // occupancy VALUES, never to a prose substring (the honest explicit
+    // reliabilityNote legitimately contains the word 'available').
+    const forbiddenKeys = new Set([
+      'status', 'available', 'availability', 'plugs', 'connectors', 'occupancy',
+      'occupied', 'charging', 'working-free', 'working-occupied',
+      'plugStatus', 'connectorStatus', 'occupancyStatus',
+    ]);
+    const occupancyValues = new Set([
+      'available', 'charging', 'occupied', 'faulted', 'unavailable',
+      'preparing', 'finishing', 'working-free', 'working-occupied', 'busy',
+    ]);
+    const auditNoOccupancy = (value: unknown): void => {
+      if (Array.isArray(value)) { value.forEach(auditNoOccupancy); return; }
+      if (value && typeof value === 'object') {
+        for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+          expect(forbiddenKeys.has(key)).toBe(false);
+          if (typeof nested === 'string') expect(occupancyValues.has(nested.toLowerCase())).toBe(false);
+          auditNoOccupancy(nested);
+        }
+      }
+    };
+    auditNoOccupancy(cands);
     // fields it does get
     const sample = cands[0] as unknown as Record<string, unknown>;
     expect(Object.keys(sample).sort()).toEqual([
