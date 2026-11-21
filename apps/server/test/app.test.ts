@@ -1089,3 +1089,118 @@ it('HTTP refresh maps real-client nonfresh evidence to502 without treating it as
   const result = await app.request('/api/stations/42');
   expect(result.status).toBe(502); expect(await result.json()).toMatchObject({ code: 'upstream_invalid' }); expect(calls).toBe(1);
 });
+describe('ordered stopover API boundary', () => {
+  const endpoints = ['/api/plan', '/api/ai/plan'] as const;
+  type Place = { label: string; lat: number; lon: number };
+  type RouteCall = { origin: Place; destination: Place; via: readonly Place[] };
+  type AiMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+  const viaOne: Place[] = [{ label: 'Ahmedabad', lat: 23.02, lon: 72.57 }];
+  const viaFive: Place[] = [
+    { label: 'Nagpur', lat: 21.15, lon: 79.09 },
+    { label: 'Indore', lat: 22.72, lon: 75.86 },
+    { label: 'Ahmedabad', lat: 23.02, lon: 72.57 },
+    { label: 'Surat', lat: 21.17, lon: 72.83 },
+    { label: 'Vapi', lat: 20.37, lon: 72.91 },
+  ];
+  const badVia: unknown[] = [
+    null,
+    { label: 'X', lat: 23, lon: 72 },
+    Array.from({ length: 6 }, (_, i) => ({ label: `V${i}`, lat: 20 + i, lon: 70 + i })),
+    [{ label: '   ', lat: 23, lon: 72 }],
+    [{ label: 'Not finite', lat: Number.NaN, lon: 72 }],
+    [{ label: 'Out of range', lat: 91, lon: 72 }],
+  ];
+  const noViaBody = JSON.stringify({ origin: ORIGIN, destination: DEST });
+  const withViaBody = (via: unknown, startSocPct?: number): string =>
+    JSON.stringify({ origin: ORIGIN, destination: DEST, via, startSocPct });
+  const aiConfig = { baseUrl: 'https://ai.test/v1', apiKey: 'sk-test', model: 'test-model' };
+  const shortRoute = (): RouteResult => ({
+    distanceKm: 2,
+    durationMin: 2,
+    geometry: [
+      { lat: 28.6, lon: 77.2 },
+      { lat: 28.61, lon: 77.21 },
+    ],
+  });
+
+  async function request(path: string, body: string, mock = false) {
+    const calls = { factory: 0, router: 0, ai: 0 };
+    const routes: RouteCall[] = [];
+    const deps = await makeDeps({
+      mock,
+      ai: aiConfig,
+      aiCall: async (_messages: AiMessage[]): Promise<string> => {
+        calls.ai += 1;
+        return JSON.stringify({ chosenStationIds: [] });
+      },
+      createStatiq: (_opts?: { retries?: number }): StatiqClient => {
+        calls.factory += 1;
+        return liveStatiqFake();
+      },
+      router: {
+        route: async (
+          origin: Place,
+          destination: Place,
+          _signal: AbortSignal | undefined,
+          via: readonly Place[] = [],
+        ): Promise<RouteResult> => {
+          calls.router += 1;
+          routes.push({ origin, destination, via });
+          return shortRoute();
+        },
+      } as unknown as OsrmRouter,
+    });
+    const response = await createApp(deps).request(path, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+    });
+    return { response, calls, routes };
+  }
+
+  it.each(endpoints)('%s rejects malformed stopovers before any run', async (path) => {
+    for (const via of badVia) {
+      const { response, calls } = await request(path, withViaBody(via));
+      expect(response.status).toBe(400);
+      expect((await response.json() as { code: string }).code).toBe('bad_request');
+      expect(calls).toEqual({ factory: 0, router: 0, ai: 0 });
+    }
+  });
+  it.each(endpoints)('%s refuses mock stopovers but keeps A-B demo working', async (path) => {
+    for (const via of [viaOne, viaFive]) {
+      const { response, calls } = await request(path, withViaBody(via), true);
+      expect(response.status).toBe(422);
+      expect((await response.json() as { code: string }).code).toBe('unsupported_mock_stopovers');
+      expect(calls).toEqual({ factory: 0, router: 0, ai: 0 });
+    }
+    for (const body of [noViaBody, withViaBody([])]) {
+      const { response, calls } = await request(path, body, true);
+      expect(response.status).toBe(200);
+      expect(calls).toEqual({ factory: 0, router: 0, ai: 0 });
+    }
+  });
+
+  for (const path of endpoints) {
+    for (const [name, via] of [['one', viaOne], ['five', viaFive]] as const) {
+      it(`${path} routes ${name} stopover set in one full route`, async () => {
+        const low = await request(path, withViaBody(via, 60));
+        const high = await request(path, withViaBody(via, 100));
+        const aiCalls = path === '/api/ai/plan' ? 1 : 0;
+        const readings: number[] = [];
+        for (const result of [low, high]) {
+          expect(result.response.status).toBe(200);
+          expect(result.calls).toEqual({ factory: 1, router: 1, ai: aiCalls });
+          expect(result.routes).toHaveLength(1);
+          const call = result.routes[0] as RouteCall;
+          expect(call.origin).toEqual(ORIGIN);
+          expect(call.destination).toEqual(DEST);
+          expect(call.via).toEqual(via);
+          const body = await result.response.json() as {
+            plan: { via?: Place[]; totals: { finalSocPct: number } };
+          };
+          expect(body.plan.via).toEqual(via);
+          readings.push(body.plan.totals.finalSocPct);
+        }
+        expect(readings[1] as number).toBeGreaterThan(readings[0] as number);
+      });
+    }
+  }
+});

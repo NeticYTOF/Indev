@@ -38,6 +38,7 @@ import {
   type PlanOptions,
   type PlanRunBudget,
   type ResolvedVehicle,
+  type PlaceRef,
   type TripPlan,
   type VehicleSelection,
 } from '@indeev/core';
@@ -252,6 +253,7 @@ export function createApp(deps: AppDeps): Hono {
     const b = body as {
       origin?: { label?: string; lat?: number; lon?: number };
       destination?: { label?: string; lat?: number; lon?: number };
+      via?: unknown;
       vehicle?: VehicleSelection;
       startSocPct?: number;
     };
@@ -263,6 +265,14 @@ export function createApp(deps: AppDeps): Hono {
         { error: 'origin and destination each need label, lat and lon', code: 'bad_request' },
         400,
       );
+    }
+
+    const via = readVia(b.via);
+    if (!via.ok) {
+      return c.json({ error: 'via must be an array of at most 5 places with label, lat and lon', code: 'bad_request' }, 400);
+    }
+    if (deps.mock && via.value.length > 0) {
+      return c.json({ error: 'Synthetic demo planning supports only A-B trips; ordered stopovers require live routing.', code: 'unsupported_mock_stopovers' }, 422);
     }
 
     const startSoc = readStartSocPct(b.startSocPct);
@@ -293,6 +303,7 @@ export function createApp(deps: AppDeps): Hono {
     const statiq = deps.createStatiq({ retries: statiqRetries });
     const options: PlanOptions = {
       startSocPct: startSoc.value,
+      via: via.value,
       runBudget,
     };
     try {
@@ -318,6 +329,7 @@ export function createApp(deps: AppDeps): Hono {
     const b = body as {
       origin?: { label?: string; lat?: number; lon?: number };
       destination?: { label?: string; lat?: number; lon?: number };
+      via?: unknown;
       vehicle?: VehicleSelection;
       startSocPct?: number;
       request?: string;
@@ -330,6 +342,14 @@ export function createApp(deps: AppDeps): Hono {
         { error: 'origin and destination each need label, lat and lon', code: 'bad_request' },
         400,
       );
+    }
+
+    const via = readVia(b?.via);
+    if (!via.ok) {
+      return c.json({ error: 'via must be an array of at most 5 places with label, lat and lon', code: 'bad_request' }, 400);
+    }
+    if (deps.mock && via.value.length > 0) {
+      return c.json({ error: 'Synthetic demo planning supports only A-B trips; ordered stopovers require live routing.', code: 'unsupported_mock_stopovers' }, 422);
     }
 
     const startSoc = readStartSocPct(b?.startSocPct);
@@ -378,6 +398,7 @@ export function createApp(deps: AppDeps): Hono {
     const startSocPct = startSoc.value;
     const planOptions: PlanOptions = {
       runBudget,
+      via: via.value,
       ...(startSocPct === undefined ? {} : { startSocPct }),
     };
     // Mirror the planner's tightened leg ceiling so AI validation reports
@@ -630,6 +651,21 @@ function coordRef(v: unknown): { label: string; lat: number; lon: number } | nul
     };
   }
   return null;
+}
+
+function readVia(value: unknown): { ok: true; value: PlaceRef[] } | { ok: false } {
+  if (value === undefined) return { ok: true, value: [] };
+  if (!Array.isArray(value) || value.length > 5 || Object.keys(value).length !== value.length) return { ok: false };
+  const places: PlaceRef[] = [];
+  for (const raw of value) {
+    if (typeof raw !== 'object' || raw === null) return { ok: false };
+    const place = raw as { label?: unknown };
+    if (typeof place.label !== 'string' || !place.label.trim()) return { ok: false };
+    const coord = coordRef(place);
+    if (!coord) return { ok: false };
+    places.push({ label: place.label.trim(), lat: coord.lat, lon: coord.lon });
+  }
+  return { ok: true, value: places };
 }
 
 type StartSocRead = { ok: true; value: number | undefined } | { ok: false };
