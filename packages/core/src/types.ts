@@ -95,7 +95,7 @@ export interface StatiqStationDetail {
     ccs2Dc: boolean;
     maxDcCcs2Kw: number | null;
     availableNow: boolean;
-    statusCounts: Record<string, number>;
+    statusCounts: Record<string, number> | null;
   } | null;
 }
 

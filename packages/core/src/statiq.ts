@@ -441,12 +441,23 @@ function stationDetailFromBulk(
     const maxKw = strictOptionalNumber(ownDataValue(summaryRaw, 'maxDcCcs2Kw'));
     const counts = ownDataValue(summaryRaw, 'statusCounts');
     if (typeof anyDc !== 'boolean' || typeof ccs2Dc !== 'boolean' ||
-        typeof availableNow !== 'boolean' || !ownRecord(counts)) return reject('item_detail_summary');
-    const statusCounts: Record<string, number> = {};
-    for (const key of Object.keys(counts)) {
-      const n = ownDataValue(counts, key);
-      if (!bulkInt(n) || (n as number) < 0) return reject('item_detail_summary');
-      statusCounts[key] = n as number;
+        typeof availableNow !== 'boolean') return reject('item_detail_summary');
+    // Worker contract (7e0ae875): statusCounts is explicitly null when no
+    // DC/CCS2 connector was counted (AC-only or DC-empty station), otherwise
+    // a known-count record. Null stays unknown; an empty record stays a
+    // known-empty record. Absent fields and every other shape stay fail-closed.
+    let statusCounts: Record<string, number> | null;
+    if (counts === null) {
+      statusCounts = null;
+    } else if (ownRecord(counts)) {
+      statusCounts = {};
+      for (const key of Object.keys(counts)) {
+        const n = ownDataValue(counts, key);
+        if (!bulkInt(n) || (n as number) < 0) return reject('item_detail_summary');
+        statusCounts[key] = n as number;
+      }
+    } else {
+      return reject('item_detail_summary');
     }
     summary = { anyDc, ccs2Dc, maxDcCcs2Kw: maxKw, availableNow, statusCounts };
   }

@@ -9,7 +9,7 @@
  * validation.
  */
 import { describe, expect, it } from 'vitest';
-import { StatiqAbortError, StatiqClient, type UpstreamAuditEntry } from '../src/statiq.js';
+import { StatiqAbortError, StatiqClient, StatiqProvenanceError, type UpstreamAuditEntry } from '../src/statiq.js';
 import { UpstreamBudget, UpstreamRunStoppedError } from '../src/upstream-budget.js';
 import { scanCorridor, type BulkMarkerSource } from '../src/corridor.js';
 import { createProviderFailureCollector, type ProviderFailureCollector } from '../src/provider-failure.js';
@@ -389,5 +389,89 @@ describe('bulk details + corridor adoption', () => {
       deadlineOffsetMs: 1_000 });
     await expect(client.markersBulk(points)).rejects.toBeInstanceOf(StatiqAbortError);
     expect(calls).toHaveLength(0); // no dispatch, no orphan, no retry
+  });
+});
+
+describe('bulk details summary statusCounts wire contract', () => {
+  const AC_ONLY_CHARGERS = [{
+    chargerId: 2, name: 'AC', type: 'AC', kw: 7, pricePerKwh: 10,
+    currency: 'INR', lastUsedOn: null,
+    connectors: [{ displayId: 1, connectorId: 2, type: 'Type-2',
+      status: 'available', available: true, note: null }],
+  }];
+
+  function summaryResponse(
+    call: { body: unknown },
+    statusCounts: unknown,
+    chargers?: unknown,
+    omit = false,
+  ) {
+    const response = detailsResponse(call.body);
+    for (const item of response.items) {
+      item.data.station.summary = {
+        anyDc: true, ccs2Dc: true, maxDcCcs2Kw: 60, availableNow: true,
+        ...(omit ? {} : { statusCounts }),
+      };
+      if (chargers !== undefined) item.data.station.chargers = chargers;
+    }
+    return { body: JSON.stringify(response) };
+  }
+
+  it('accepts the worker null for AC-only and DC-empty stations and preserves null', async () => {
+    for (const chargers of [AC_ONLY_CHARGERS, []]) {
+      const { client, budget } = bulkClient({ maxAttempts: 2, calls: [],
+        respond: (call) => summaryResponse(call, null, chargers) });
+      const results = await client.detailsBulk([1]);
+      expect(results).toHaveLength(1);
+      const summary = results[0]?.response?.response.station?.summary;
+      expect(summary).not.toBeNull();
+      expect(summary!.statusCounts).toBeNull();
+      expect(budget.completedAttempts).toBe(1);
+    }
+  });
+
+  it('keeps a known-empty record and a valid count record distinct from null', async () => {
+    const cases: Array<[unknown, Record<string, number>]> = [
+      [{}, {}],
+      [{ available: 2, occupied: 1 }, { available: 2, occupied: 1 }],
+    ];
+    for (const [wire, expected] of cases) {
+      const { client } = bulkClient({ maxAttempts: 2, calls: [],
+        respond: (call) => summaryResponse(call, wire) });
+      const results = await client.detailsBulk([1]);
+      const summary = results[0]?.response?.response.station?.summary;
+      expect(summary).not.toBeNull();
+      expect(summary!.statusCounts).toEqual(expected);
+      expect(summary!.statusCounts).not.toBeNull();
+    }
+  });
+
+  it('fails malformed or absent statusCounts closed without audits or settlement', async () => {
+    const bad: Array<{ label: string; statusCounts?: unknown; omit?: boolean }> = [
+      { label: 'scalar', statusCounts: 5 },
+      { label: 'array', statusCounts: [] },
+      { label: 'absent', omit: true },
+      { label: 'negative count', statusCounts: { available: -1 } },
+      { label: 'fractional count', statusCounts: { available: 1.5 } },
+      { label: 'string count', statusCounts: { available: '2' } },
+      { label: 'null count', statusCounts: { available: null } },
+      { label: 'array count', statusCounts: { available: [] } },
+      { label: 'object count', statusCounts: { available: {} } },
+      { label: 'nan count', statusCounts: { available: Number.NaN } },
+      { label: 'infinite count', statusCounts: { available: Number.POSITIVE_INFINITY } },
+    ];
+    for (const c of bad) {
+      const audit: UpstreamAuditEntry[] = [];
+      const { client, budget } = bulkClient({ maxAttempts: 2, calls: [],
+        respond: (call) => summaryResponse(call, c.statusCounts, undefined, c.omit),
+        onAudit: (e) => audit.push(e) });
+      const err = await client.detailsBulk([1]).catch((e: unknown) => e);
+      expect(err, c.label).toBeInstanceOf(StatiqProvenanceError);
+      expect((err as StatiqProvenanceError).reason, c.label).toBe('item_detail_summary');
+      expect(audit, c.label).toHaveLength(0);
+      expect(budget.attemptsMade, c.label).toBe(1);
+      expect(budget.reservedButUnknown, c.label).toBe(1);
+      expect(budget.completedAttempts, c.label).toBe(0);
+    }
   });
 });
