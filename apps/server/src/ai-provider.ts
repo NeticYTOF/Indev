@@ -42,11 +42,73 @@ export type AiToolCall = (
   maxCalls?: number,
 ) => Promise<{ content: string | null; toolCalls: ChatToolCall[] }>;
 
+export type AiFailureReason = 'provider' | 'cancelled' | 'headers_timeout' | 'body_timeout';
+
 export class AiProviderError extends Error {
-  constructor(message: string) {
+  constructor(message: string, readonly reason: AiFailureReason = 'provider') {
     super(message);
     this.name = 'AiProviderError';
   }
+}
+
+interface AbortWatch {
+  signal: AbortSignal;
+  promise: Promise<never>;
+  timedOut: () => boolean;
+  callerAborted: () => boolean;
+  failure: () => AiProviderError | null;
+  finish: () => void;
+}
+
+/** One deadline governs headers and body. A transport that ignores the
+ *  AbortSignal still cannot make the adapter wait forever or accept a late
+ *  result; no raw response body is ever included in the error. */
+function watchAbort(
+  external: AbortSignal | undefined,
+  timeoutMs: number,
+  phase: { value: 'headers' | 'body' },
+): AbortWatch {
+  const controller = new AbortController();
+  let timedOut = false;
+  let caller = false;
+  let failure: AiProviderError | null = null;
+  let reject!: (err: AiProviderError) => void;
+  const promise = new Promise<never>((_, rej) => { reject = rej; });
+  const fail = (err: AiProviderError): void => {
+    // Store and publish the FIRST terminal cause before aborting: native
+    // fetch listeners reject synchronously on abort and must not win the race.
+    if (failure !== null) return;
+    failure = err;
+    reject(err);
+    controller.abort();
+  };
+  const onTimer = () => {
+    timedOut = true;
+    fail(new AiProviderError(
+      phase.value === 'headers'
+        ? 'AI provider timed out before response headers.'
+        : 'AI provider timed out while reading the response body.',
+      phase.value === 'headers' ? 'headers_timeout' : 'body_timeout',
+    ));
+  };
+  const onCaller = () => {
+    caller = true;
+    fail(new AiProviderError('AI request cancelled by caller.', 'cancelled'));
+  };
+  const timer = setTimeout(onTimer, Math.max(1, timeoutMs));
+  if (external?.aborted) onCaller();
+  else external?.addEventListener('abort', onCaller, { once: true });
+  return {
+    signal: controller.signal,
+    promise,
+    timedOut: () => timedOut,
+    callerAborted: () => caller,
+    failure: () => failure,
+    finish: () => {
+      clearTimeout(timer);
+      external?.removeEventListener('abort', onCaller);
+    },
+  };
 }
 
 export async function chatCompletion(
@@ -54,35 +116,35 @@ export async function chatCompletion(
   messages: ChatMessage[],
   signal?: AbortSignal,
 ): Promise<{ content: string }> {
-  const fetchImpl = deps.fetchImpl ?? fetch;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 45_000);
-  const onExternalAbort = () => controller.abort();
-  if (signal) {
-    if (signal.aborted) onExternalAbort();
-    else signal.addEventListener('abort', onExternalAbort, { once: true });
-  }
+  if (signal?.aborted) throw new AiProviderError('AI request cancelled by caller.', 'cancelled');
+  const phase: { value: 'headers' | 'body' } = { value: 'headers' };
+  const watch = watchAbort(signal, deps.timeoutMs ?? 45_000, phase);
   try {
-    const res = await fetchImpl(`${deps.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${deps.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: deps.model,
-        temperature: 0.2,
-        messages,
-        response_format: { type: 'json_object' },
+    const res = await Promise.race([
+      (deps.fetchImpl ?? fetch)(`${deps.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${deps.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: deps.model,
+          temperature: 0.2,
+          messages,
+          response_format: { type: 'json_object' },
+        }),
+        signal: watch.signal,
       }),
-      signal: controller.signal,
-    });
-    if (!res.ok) {
-      throw new AiProviderError(`AI provider returned ${res.status}`);
-    }
-    const body = (await res.json()) as {
+      watch.promise,
+    ]);
+    if (!res.ok) throw new AiProviderError(`AI provider returned ${res.status}`);
+    phase.value = 'body';
+    const body = await Promise.race([res.json(), watch.promise]) as {
       choices?: Array<{ message?: { content?: string } }>;
     };
+    if (watch.callerAborted() || watch.timedOut()) {
+      throw new AiProviderError('AI request ended before completion.', 'cancelled');
+    }
     const content = body.choices?.[0]?.message?.content;
     if (typeof content !== 'string' || !content.trim()) {
       throw new AiProviderError('AI provider returned an empty message');
@@ -90,12 +152,11 @@ export async function chatCompletion(
     return { content };
   } catch (err) {
     if (err instanceof AiProviderError) throw err;
-    throw new AiProviderError(
-      `AI provider request failed: ${err instanceof Error ? err.message : 'unknown'}`,
-    );
+    const terminal = watch.failure();
+    if (terminal !== null) throw terminal;
+    throw new AiProviderError('AI provider request failed.');
   } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener('abort', onExternalAbort);
+    watch.finish();
   }
 }
 
@@ -108,29 +169,33 @@ export async function chatCompletionWithTools(
   signal?: AbortSignal,
   maxCalls = 4,
 ): Promise<{ content: string | null; toolCalls: ChatToolCall[] }> {
-  if (signal?.aborted) throw new AiProviderError('AI tool request cancelled');
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 45_000);
-  const onExternalAbort = () => controller.abort();
-  if (signal) signal.addEventListener('abort', onExternalAbort, { once: true });
-  const cancelled = (): AiProviderError => new AiProviderError('AI tool request cancelled');
+  if (signal?.aborted) throw new AiProviderError('AI request cancelled by caller.', 'cancelled');
+  const phase: { value: 'headers' | 'body' } = { value: 'headers' };
+  const watch = watchAbort(signal, deps.timeoutMs ?? 45_000, phase);
   try {
-    const res = await (deps.fetchImpl ?? fetch)(`${deps.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${deps.apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: deps.model, temperature: 0.2, messages,
-        ...(tools.length > 0
-          ? { tools, tool_choice: 'auto' }
-          : { tool_choice: 'none' }),
+    const res = await Promise.race([
+      (deps.fetchImpl ?? fetch)(`${deps.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${deps.apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: deps.model, temperature: 0.2, messages,
+          ...(tools.length > 0
+            ? { tools, tool_choice: 'auto' }
+            : { tool_choice: 'none' }),
+        }),
+        signal: watch.signal,
       }),
-      signal: controller.signal,
-    });
-    // A fetch that ignores abort must not let a post-cancel result through.
-    if (signal?.aborted || controller.signal.aborted) throw cancelled();
+      watch.promise,
+    ]);
+    if (watch.callerAborted() || watch.timedOut()) {
+      throw new AiProviderError('AI request ended before completion.', 'cancelled');
+    }
     if (!res.ok) throw new AiProviderError(`AI provider returned ${res.status}`);
-    const body: unknown = await res.json();
-    if (signal?.aborted || controller.signal.aborted) throw cancelled();
+    phase.value = 'body';
+    const body: unknown = await Promise.race([res.json(), watch.promise]);
+    if (watch.callerAborted() || watch.timedOut()) {
+      throw new AiProviderError('AI request ended before completion.', 'cancelled');
+    }
     if (typeof body !== 'object' || body === null || Array.isArray(body)) throw new AiProviderError('malformed tool response');
     const choices = (body as { choices?: unknown }).choices;
     if (!Array.isArray(choices) || choices.length === 0) throw new AiProviderError('malformed tool response');
@@ -162,10 +227,11 @@ export async function chatCompletionWithTools(
     return { content, toolCalls: calls };
   } catch (err) {
     if (err instanceof AiProviderError) throw err;
-    throw new AiProviderError(`AI tool request failed: ${err instanceof Error ? err.message : 'unknown'}`);
+    const terminal = watch.failure();
+    if (terminal !== null) throw terminal;
+    throw new AiProviderError('AI tool request failed.');
   } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener('abort', onExternalAbort);
+    watch.finish();
   }
 }
 
