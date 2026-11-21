@@ -232,3 +232,54 @@ describe('CountersStore', () => {
     expect((await store.load()).chargersSeen).toBe(42);
   });
 });
+describe('saved stopovers', () => {
+  function viaPlaces(count: number): NonNullable<TripPlan['via']> {
+    return Array.from({ length: count }, (_, index) => ({
+      label: `Stop ${index + 1}`,
+      lat: 20 + index,
+      lon: 70 + index,
+    }));
+  }
+
+  it.each([1, 5])('copies %i ordered stopovers without aliasing or extra properties', (count) => {
+    const via = viaPlaces(count);
+    const firstInput = via[0] as NonNullable<TripPlan['via']>[number];
+    Object.assign(firstInput, { unrelated: 'must not be saved' });
+    expect(Object.prototype.hasOwnProperty.call(firstInput, 'unrelated')).toBe(true);
+    const saved = toSavedTrip(fakePlan({ via }));
+    expect(saved.via).toEqual(via.map(({ label, lat, lon }) => ({ label, lat, lon })));
+    for (const place of saved.via ?? []) {
+      expect(Object.keys(place).sort()).toEqual(['label', 'lat', 'lon']);
+    }
+    firstInput.label = 'Mutated';
+    firstInput.lat = 1;
+    via.push({ label: 'Late', lat: 1, lon: 1 });
+    expect(saved.via).toHaveLength(count);
+    expect(saved.via?.[0]).toEqual({ label: 'Stop 1', lat: 20, lon: 70 });
+  });
+
+  it.each([
+    { name: 'undefined via', via: undefined },
+    { name: 'empty via', via: [] },
+  ])('omits the via key for ordinary A-B plans: $name', ({ via }) => {
+    const saved = toSavedTrip(fakePlan({ via }));
+    expect(Object.prototype.hasOwnProperty.call(saved, 'via')).toBe(false);
+  });
+
+  it.each([1, 5])('persists and reopens %i ordered stopovers with route facts intact', async (count) => {
+    const dir = await tempDir();
+    const filePath = join(dir, 'trips.json');
+    const store = new TripsStore({ filePath });
+    const via = viaPlaces(count);
+    const saved = await store.save(fakePlan({ via }));
+    const raw = JSON.parse(await readFile(filePath, 'utf8')) as Array<{ via?: NonNullable<TripPlan['via']> }>;
+    expect(raw[0]?.via).toEqual(via);
+    expect((await store.list())[0]).toEqual(saved);
+    const reopened = await new TripsStore({ filePath }).get(saved.id);
+    expect(reopened).toEqual(saved);
+    expect(reopened?.via).toEqual(via);
+    expect(reopened?.geometry).toEqual([[28.6, 77.2], [26.9, 75.8]]);
+    expect(reopened?.stations).toHaveLength(1);
+    expect(reopened?.totals).toEqual(fakePlan().totals);
+  });
+});

@@ -38,6 +38,8 @@ export interface SavedTrip {
   createdAt: string;
   origin: { label: string; lat: number; lon: number };
   destination: { label: string; lat: number; lon: number };
+  /** Ordered user stopovers; copied only when non-empty. */
+  via?: TripPlan['via'];
   vehicle: TripPlan['vehicle'];
   /** Scan integrity at planning time (degraded plans show visible holes). */
   status: TripPlan['status'];
@@ -59,6 +61,7 @@ export function toSavedTrip(plan: TripPlan, name?: string): SavedTrip {
     createdAt: plan.createdAt,
     origin: plan.origin,
     destination: plan.destination,
+    ...(plan.via?.length ? { via: plan.via.map(place => ({ label: place.label, lat: place.lat, lon: place.lon })) } : {}),
     vehicle: plan.vehicle,
     status: plan.status,
     source: plan.source,
