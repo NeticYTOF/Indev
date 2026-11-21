@@ -417,3 +417,32 @@ test('drawer keyboard open and close preserves expanded state and focus context'
   await page.keyboard.press('Escape');
   await expectClosedWithFocus(field);
 });
+
+for (const [caseName, pair, deleteName, survivors] of [
+  ['unrelated', ['Beta', 'Yankee'], 'Zulu', ['Yankee', 'Beta']],
+  ['selected', ['Beta', 'Zulu'], 'Zulu', ['Beta']],
+] as const) {
+  test(`successful ${caseName} DELETE refreshes with live selection`, async ({ page }) => {
+    await page.route(/^https?:\/\//, async route => { const h = new URL(route.request().url()).hostname; if (h === 'localhost' || h === '127.0.0.1') await route.continue(); else await route.abort(); });
+    let trips = [savedTrip('yankee', 'Yankee', '2026-01-03T00:00:00Z', 'Delhi', 'Jaipur'), savedTrip('beta', 'Beta', '2026-01-01T00:00:00Z', 'Pune', 'Goa'), savedTrip('zulu', 'Zulu', '2026-01-02T00:00:00Z', 'Chennai', 'Mumbai')];
+    let release!: () => void; const held = new Promise<void>(resolve => { release = resolve; });
+    let deletePath: string | null = null, tripGets = 0;
+    await page.route('**/api/trips', route => { if (route.request().method() === 'GET') tripGets += 1; return route.fulfill({ json: { trips } }); });
+    await page.route('**/api/trips/*', async route => {
+      if (route.request().method() !== 'DELETE') return route.continue();
+      deletePath = new URL(route.request().url()).pathname;
+      await held; trips = trips.filter(trip => trip.id !== deletePath?.split('/').at(-1));
+      await route.fulfill({ json: { ok: true } });
+    });
+    await page.goto('/'); await page.locator('#trips-button').click();
+    const row = (name: string) => page.locator('.trip-row').filter({ hasText: name });
+    const compare = page.locator('[data-compare-selected]');
+    for (const name of pair) await row(name).getByRole('button', { name: 'Select to compare' }).click();
+    await expect(compare).toHaveText('Compare selected (2/2)');
+    await row(deleteName).getByRole('button', { name: 'Delete', exact: true }).click();
+    await expect.poll(() => deletePath).toBe('/api/trips/zulu'); release(); await expect.poll(() => tripGets).toBe(2);
+    await expect(page.locator('.trip-row')).toHaveCount(2); await expect(row(deleteName)).toHaveCount(0);
+    for (const name of ['Yankee', 'Beta']) await expect(row(name).locator('[data-compare-toggle]')).toHaveAttribute('aria-pressed', survivors.some(id => id === name) ? 'true' : 'false');
+    await expect(compare).toHaveText(`Compare selected (${survivors.length}/2)`); if (survivors.length === 2) await expect(compare).toBeEnabled(); else await expect(compare).toBeDisabled();
+  });
+}

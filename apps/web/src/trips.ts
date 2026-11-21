@@ -62,6 +62,19 @@ const tripDrawerSession: {
   status: TripStatusFilter;
 } = { query: '', sort: 'newest', source: 'all', status: 'all' };
 
+interface DrawerSession {
+  selectedIds: () => string[];
+  refresh: (options?: { selectedIds?: string[]; focusKey?: string | null }) => void;
+}
+const drawerSessions = new WeakMap<HTMLElement, DrawerSession>();
+const STABLE_FOCUS_SELECTORS = ['data-trip-search', 'data-trip-sort', 'data-trip-source', 'data-trip-status', 'data-trip-search-clear', 'data-trip-filters-clear', 'data-close', 'data-compare-selected'];
+const activeStableFocus = (drawer: HTMLElement): string | null => {
+  const active = document.activeElement;
+  const key = active instanceof HTMLElement && drawer.contains(active)
+    ? STABLE_FOCUS_SELECTORS.find(selector => active.hasAttribute(selector)) : undefined;
+  return key ? `[${key}]` : null;
+};
+
 function sourceFilterValue(value: string): TripSourceFilter {
   return value === 'live' || value === 'synthetic' || value === 'unknown' ? value : 'all';
 }
@@ -153,8 +166,10 @@ export function renderTripsDrawer(
   drawer: HTMLElement,
   map: maplibregl.Map,
   loadSavedRoute: LoadSavedRoute,
+  options: { selectedIds?: string[]; focusKey?: string | null } = {},
 ): void {
   drawer.innerHTML = '';
+  const focusAfterReplacement = document.activeElement;
   const selected = new Set<number>();
   let loadedTrips: SavedTrip[] = [];
   let searchQuery = tripDrawerSession.query;
@@ -163,6 +178,13 @@ export function renderTripsDrawer(
   let statusFilter = tripDrawerSession.status;
   let loadState: 'loading' | 'ready' | 'unavailable' | 'error' = 'loading';
   let visibleIndices = new Set<number>();
+  const session: DrawerSession = {
+    selectedIds: () => [...selected]
+      .map(index => loadedTrips[index]?.id)
+      .filter((id): id is string => typeof id === 'string'),
+    refresh: next => renderTripsDrawer(drawer, map, loadSavedRoute, next),
+  };
+  drawerSessions.set(drawer, session);
   const head = el(`
     <div class="drawer-head">
       <div>
@@ -395,10 +417,15 @@ export function renderTripsDrawer(
     list.innerHTML = '<p class="hint">Loading…</p>';
     try {
       const { trips } = await api.trips();
+      if (!head.isConnected || drawerSessions.get(drawer) !== session) return;
       list.innerHTML = '';
       const tripsKnown = Array.isArray(trips);
       loadedTrips = tripsKnown ? trips : [];
       selected.clear();
+      for (const id of options.selectedIds ?? []) {
+        const index = loadedTrips.findIndex(trip => trip?.id === id);
+        if (index >= 0 && selected.size < 2) selected.add(index);
+      }
       if (!tripsKnown) {
         loadState = 'unavailable';
         if (searchInput) searchInput.disabled = true;
@@ -413,6 +440,10 @@ export function renderTripsDrawer(
       }
       loadState = 'ready';
       renderList();
+      if (options.focusKey && head.isConnected && drawerSessions.get(drawer) === session &&
+          !drawer.classList.contains('hidden') && document.activeElement === focusAfterReplacement) {
+        drawer.querySelector<HTMLElement>(options.focusKey)?.focus({ preventScroll: true });
+      }
     } catch (err) {
       loadState = 'error';
       if (searchInput) searchInput.disabled = true;
@@ -506,13 +537,13 @@ function renderTripRow(
       const body: unknown = await res.json().catch(() => null);
       const warning = storageWarningText(body);
       if (res.ok) {
-        // The refresh below replaces the drawer's DOM wholesale - the
-        // clicked button dies with it. Land focus on the stable owner
-        // control before that, instead of letting it fall to <body>.
-        if (document.activeElement === document.body || drawer.contains(document.activeElement)) {
+        const session = drawerSessions.get(drawer);
+        const selectedIds = (session?.selectedIds() ?? []).filter(id => id !== trip.id);
+        const focusKey = activeStableFocus(drawer);
+        if (!focusKey && (document.activeElement === document.body || drawer.contains(document.activeElement))) {
           document.getElementById('trips-button')?.focus();
         }
-        renderTripsDrawer(drawer, map, loadSavedRoute); // refresh list
+        if (session) session.refresh({ selectedIds, focusKey }); else renderTripsDrawer(drawer, map, loadSavedRoute);
         if (warning) drawer.querySelector('.drawer-head')?.after(storageWarningElement(`Trip deleted. ${warning}`));
         toast(warning ? `Trip deleted. ${warning}` : 'Trip deleted.', warning ? 'warn' : 'info', warning ? 12_000 : 4_200);
       } else {
