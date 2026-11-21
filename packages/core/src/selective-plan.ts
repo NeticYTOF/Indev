@@ -7,7 +7,7 @@
  * as typed warnings, never silently upgraded to a usable charger.
  */
 import { scanCorridor, type CorridorCandidate } from './corridor.js';
-import { certifyCappedCharger, summarizeCcs2 } from './plugs.js';
+import { certifyCappedCharger, classifyPlug, connectorSlug, summarizeCcs2 } from './plugs.js';
 import { toStationView } from './planner.js';
 import { hasFreshProvenance } from './provenance.js';
 import type { StatiqDetailsResponse } from './types.js';
@@ -67,9 +67,17 @@ export async function discoverSelective(
   };
 }
 
-interface Hydration {
+export type HydrationReason =
+  | 'invalid_cap' | 'not_fresh' | 'identity_mismatch' | 'missing_evidence' | 'schema_invalid'
+  | 'no_dc_charger' | 'no_ccs2_connector' | 'no_usable_ccs2'
+  | 'unknown_power' | 'not_within_cap';
+
+export interface Hydration {
   candidate: PlannerCandidate | null;
+  /** Sanitized generic text for AI tool replies. */
   warnings: string[];
+  /** Precise host-only codes; never sent to the model. */
+  reasons: HydrationReason[];
 }
 
 /** Hydrate one tool-selected candidate through legacy certification. */
@@ -79,43 +87,61 @@ export function hydrateSelective(
   fetchedAt: Date,
   maxChargerKw?: number,
 ): Hydration {
-  const warnings: string[] = [];
+  const generic = 'Station was not certified.';
+  const fail = (reasons: HydrationReason[]): Hydration =>
+    ({ candidate: null, warnings: [generic], reasons });
   if (maxChargerKw !== undefined &&
       !(typeof maxChargerKw === 'number' && Number.isFinite(maxChargerKw) && maxChargerKw > 0)) {
-    return { candidate: null, warnings: ['Invalid hard power cap; station not certified.'] };
+    return fail(['invalid_cap']);
   }
   if (!hasFreshProvenance(response) || response.ok !== true ||
       response.live === false || response.retained === true) {
-    return { candidate: null, warnings: ['Station evidence was not fresh live data.'] };
+    return fail(['not_fresh']);
   }
   const station = response.station;
   if (station == null || station.stationId !== candidate.stationId ||
       !Number.isFinite(station.lat) || !Number.isFinite(station.lon) ||
       Math.abs(station.lat - candidate.lat) > 0.001 ||
       Math.abs(station.lon - candidate.lon) > 0.001) {
-    return { candidate: null, warnings: ['Station identity or coordinates did not match the on-route candidate.'] };
+    return fail(['identity_mismatch']);
   }
-  if (!Array.isArray(station.chargers) ||
-      station.chargers.some((ch) => !Array.isArray(ch.connectors))) {
-    return { candidate: null, warnings: ['Charger or connector evidence was missing.'] };
+  if (!Array.isArray(station.chargers) || station.chargers.length === 0) {
+    return fail(['missing_evidence']);
   }
+  for (const raw of station.chargers as unknown[]) {
+    if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return fail(['schema_invalid']);
+    const ch = raw as { chargerId?: unknown; name?: unknown; type?: unknown; kw?: unknown; connectors?: unknown };
+    if (typeof ch.type !== 'string' || typeof ch.name !== 'string' ||
+        typeof ch.chargerId !== 'number' || !Number.isSafeInteger(ch.chargerId) || ch.chargerId <= 0) {
+      return fail(['schema_invalid']);
+    }
+    if (!(typeof ch.kw === 'number' || ch.kw === null)) return fail(['schema_invalid']);
+    if (!Array.isArray(ch.connectors)) return fail(['missing_evidence']);
+    for (const plug of ch.connectors) {
+      if (plug == null || typeof plug !== 'object' || Array.isArray(plug)) return fail(['schema_invalid']);
+      const p = plug as { type?: unknown; status?: unknown; note?: unknown };
+      if (typeof p.type !== 'string' || typeof p.status !== 'string') return fail(['schema_invalid']);
+      if (!(p.note === null || p.note === undefined || typeof p.note === 'string')) return fail(['schema_invalid']);
+    }
+  }
+  const dc = station.chargers.filter((ch) => connectorSlug(ch.type) === 'dc');
+  if (dc.length === 0) return fail(['no_dc_charger']);
+  const ccs2 = dc.flatMap((ch) => ch.connectors.filter((p) => connectorSlug(p.type) === 'ccs2'));
+  if (ccs2.length === 0) return fail(['no_ccs2_connector']);
+  const usable = ccs2.filter((p) => classifyPlug(p).health === 'working-free' ||
+    classifyPlug(p).health === 'working-occupied' || classifyPlug(p).health === 'finishing');
+  if (usable.length === 0) return fail(['no_usable_ccs2']);
   const cap = maxChargerKw ?? Number.MAX_VALUE;
   const certification = certifyCappedCharger(station, cap);
   if (certification.status !== 'selected' || !certification.selected) {
-    warnings.push(certification.status === 'incomplete'
-      ? 'Charger power evidence was incomplete; station remains unknown.'
-      : 'No certified charger within the active power cap; station excluded.');
-    return { candidate: null, warnings };
+    const reason: HydrationReason = certification.status === 'incomplete' ? 'unknown_power' : 'not_within_cap';
+    return fail([reason]);
   }
   const summary = summarizeCcs2(station);
   const view: StationLiveView = toStationView(station, fetchedAt);
   return {
-    candidate: {
-      candidate,
-      summary,
-      view,
-      selectedCharger: certification.selected,
-    },
-    warnings,
+    candidate: { candidate, summary, view, selectedCharger: certification.selected },
+    warnings: [],
+    reasons: [],
   };
 }

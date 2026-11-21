@@ -65,6 +65,11 @@ const app = createApp({
   onRunComplete: (outcome, upstreamCalls, providerFailures) => {
     console.log(JSON.stringify({ type: 'plan-run', outcome, upstreamCalls, providerFailures }));
   },
+  // Host-only diagnostic event: bounded reason codes and check counts.
+  // Never prompts, model output, headers, secrets or public API fields.
+  onPlanRunEvent: (event) => {
+    console.log(JSON.stringify({ type: 'selective-diagnostics', ...event }));
+  },
   // AI planning is OFF unless all three env vars are set.
   ...(aiEnabled(env)
     ? { ai: { baseUrl: env.aiBaseUrl as string, apiKey: env.aiApiKey as string, model: env.aiModel as string } }

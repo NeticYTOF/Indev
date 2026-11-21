@@ -37,7 +37,7 @@ const tool: ChatToolDefinition = {
     description: 'Fetch live details only for listed on-route station IDs.',
     parameters: {
       type: 'object',
-      properties: { ids: { type: 'array', items: { type: 'integer', minimum: 1 } } },
+      properties: { ids: { type: 'array', items: { type: 'integer', minimum: 1 }, maxItems: 5, minItems: 1 } },
       required: ['ids'],
       additionalProperties: false,
     },
@@ -71,6 +71,8 @@ export interface SelectiveRunResult {
     detailChecksStarted: number;
     detailChecksSettled: number;
     failures: ProviderFailureReport;
+    /** Host-only: station IDs and reason codes, never sent to the model. */
+    hostReasons: Array<{ stationId: number; reasons: string[] }>;
   };
 }
 
@@ -90,6 +92,7 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
     samplesOk: 0, samplesPlanned: 0, samplesFailed: 0,
     candidatesPlanned: 0, candidatesProcessed: 0, candidatesDetailed: 0,
     detailChecksStarted: 0, detailChecksSettled: 0,
+    hostReasons: [] as Array<{ stationId: number; reasons: string[] }>,
   };
   const diag = (): SelectiveRunResult['diagnostics'] => ({
     observedAttempts: runBudget.completedAttempts,
@@ -113,6 +116,8 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
   const factCache = new Map<number, unknown>();
   const warnings = [...discovery.warnings];
   let lastReason: string | null = null;
+  let toolFactsReady = false;
+  let reservedFinalConsumed = false;
   diagState.samplesOk = discovery.samplesOk;
   diagState.samplesPlanned = discovery.samplesPlanned;
   diagState.samplesFailed = discovery.samplesFailed;
@@ -148,16 +153,27 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
       request: deps.customRequest ?? null, candidates: light, warnings,
     }) },
   ];
-  while (ledger.nextRound(signal)) {
+  while (true) {
+    if (signal.aborted) break;
+    const forcedFinal = toolFactsReady && !reservedFinalConsumed && ledger.rounds >= ledger.limits.maxRounds;
+    if (!forcedFinal && !ledger.nextRound(signal)) break;
+    const closed = forcedFinal;
+    if (forcedFinal) reservedFinalConsumed = true;
+    const activeTools = closed ? [] : [tool];
     const reply = deps.aiToolCall
-      ? await deps.aiToolCall(messages, [tool], signal, ledger.limits.maxToolCalls)
-      : await chatCompletionWithTools(deps.ai, messages, [tool],
-        [TOOL_NAME], signal, ledger.limits.maxToolCalls);
+      ? await deps.aiToolCall(messages, activeTools, signal, ledger.limits.maxToolCalls)
+      : await chatCompletionWithTools(deps.ai, messages, activeTools,
+        closed ? [] : [TOOL_NAME], signal, ledger.limits.maxToolCalls);
     if (signal.aborted) break;
     const calls = reply.toolCalls;
+    if (closed && calls.length > 0) {
+      const protocol = 'Final answer turn must not request tools.';
+      throw new SelectiveRunError(lastReason ? `${lastReason} (${protocol})` : protocol, diag());
+    }
     if (calls.length === 0) {
-      if (reply.content == null) break;
-      const choice = parseArgs(reply.content) as { chosenStationIds?: unknown; notes?: unknown } | null;
+      const choice = typeof reply.content === 'string'
+        ? parseArgs(reply.content) as { chosenStationIds?: unknown; notes?: unknown } | null
+        : null;
       if (!choice || !Array.isArray(choice.chosenStationIds)) break;
       const usable = [...hydrated.values()];
       const totalKm = discovery.route.geometry.length > 0
@@ -205,38 +221,38 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
       const admitted = ledger.admit(parseArgs(call.function.arguments), signal);
       if (!admitted) {
         messages.push({ role: 'tool', tool_call_id: call.id,
-          content: JSON.stringify({ error: 'invalid or over-budget tool request' }) });
+          content: JSON.stringify({ error: 'invalid or over-budget tool request: ids must be 1..5 known on-route IDs' }) });
         continue;
       }
       for (const id of admitted.newIds) {
         const found = pool.get(id);
         if (!found) { factCache.set(id, { stationId: id, unknown: 'candidate unavailable' }); continue; }
         try {
-        ledger.recordFetches(1);
-        diagState.detailChecksStarted = ledger.actualFetches;
+          ledger.recordFetches(1);
+          diagState.detailChecksStarted = ledger.actualFetches;
           const fetched = await deps.statiq.detailsWithMeta(id, signal, {
             endpointClass: 'stations/details', phase: 'details', sampleOrdinal: null,
           });
           const h = hydrateSelective(found, fetched.response, fetched.fetchedAt, deps.planOptions.maxChargerKw);
+          diagState.hostReasons.push({ stationId: id, reasons: [...h.reasons] });
           warnings.push(...h.warnings);
           if (h.candidate) {
             hydrated.set(id, h.candidate);
             factCache.set(id, factsFromHydrated(h.candidate, fetched.response.source ?? null,
               typeof fetched.response.live === 'boolean' ? fetched.response.live : null));
           } else {
-            factCache.set(id, { stationId: id, unknown: h.warnings.join(' ') });
-        }
-        diagState.detailChecksSettled += 1;
-        diagState.candidatesProcessed = diagState.detailChecksSettled;
+            factCache.set(id, { stationId: id, unknown: 'not certified' });
+          }
         } catch (err) {
           if (isAbortLike(err) || err instanceof UpstreamRunStoppedError || err instanceof StatiqRunFatalError) throw err;
-          warnings.push(`Station ${id} detail check was unavailable; it remains unknown.`);
+          warnings.push('A detail check was unavailable; that station remains unknown.');
           factCache.set(id, { stationId: id, unknown: 'detail check unavailable' });
         }
         diagState.detailChecksSettled += 1;
         diagState.candidatesProcessed = diagState.detailChecksSettled;
       }
       diagState.candidatesDetailed = hydrated.size;
+      toolFactsReady = true;
       stage('details', ledger.actualFetches, ledger.plannedNewIds);
       messages.push({ role: 'tool', tool_call_id: call.id,
         content: JSON.stringify({

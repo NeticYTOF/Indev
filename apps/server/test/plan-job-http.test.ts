@@ -22,6 +22,26 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+
+async function waitTerminal(
+  app: Hono,
+  job: { jobId: string; capability: string },
+  expected: 'succeeded' | 'failed',
+): Promise<Response> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    await tick();
+    const res = await app.request(`/api/jobs/plan/${job.jobId}`, {
+      headers: { 'x-job-capability': job.capability },
+    });
+    const snapshot = res.clone();
+    const state = await res.json() as { state: string };
+    if (state.state !== 'queued' && state.state !== 'running') {
+      expect(state.state).toBe(expected);
+      return snapshot;
+    }
+  }
+  throw new Error(`job did not reach ${expected}`);
+}
 function depsWith(statiq: StatiqClient, overrides: Partial<AppDeps> = {}): AppDeps {
   return {
     createStatiq: () => statiq,
@@ -246,5 +266,50 @@ describe('process-local job endpoints', () => {
       headers: { 'x-job-capability': first.capability },
     });
     expect(stale.status).toBe(404);
+  });
+
+  it('emits bounded host diagnostics on success without exposing them in HTTP', async () => {
+    const events: Array<{ outcome: string; hostReasons: unknown[] }> = [];
+    const statiq = { markers: async () => emptyMarkers } as unknown as StatiqClient;
+    const app = createApp(depsWith(statiq, {
+      router: { route: async () => ({ distanceKm: 180, durationMin: 180,
+        geometry: [{ lat: 28.6, lon: 77.2 }, { lat: 27.3, lon: 76.0 }] }) } as never,
+      aiToolCall: toolFixture('{"chosenStationIds":[],"notes":"ok"}', []),
+      onPlanRunEvent: (event) => { events.push(event); },
+    }));
+    const job = await startJob(app);
+    const res = await waitTerminal(app, job, 'succeeded');
+    expect(res.status).toBe(200);
+    expect(events.length).toBe(1);
+    expect(events[0]?.outcome).toBe('ok');
+    expect(await res.text()).not.toContain('hostReasons');
+  });
+
+  it('logs host reason codes on failure but never in the response body', async () => {
+    const events: Array<{ outcome: string; hostReasons: Array<{ reasons: string[] }> }> = [];
+    const broken = {
+      markers: async () => ({
+        ok: true, live: true, retained: false, source: 'test', count: 1,
+        stations: [{ stationId: 42, name: 'Broken', lat: 28.6, lon: 77.2,
+          address: null, accessType: 1, isCommunityListed: false, stationUrl: '' }],
+      }),
+      detailsWithMeta: async () => ({
+        response: { ok: true, live: true, retained: false, source: 'test',
+          station: { stationId: 42, name: 'Broken', lat: 28.6, lon: 77.2, chargers: [null] } },
+        fetchedAt: new Date(),
+      }),
+    } as unknown as StatiqClient;
+    const app = createApp(depsWith(broken, {
+      aiToolCall: toolFixture(JSON.stringify({ chosenStationIds: [999999] }), [42]),
+      onPlanRunEvent: (event) => { events.push(event); },
+    }));
+    const job = await startJob(app);
+    const res = await waitTerminal(app, job, 'failed');
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain('hostReasons');
+    expect(text).not.toContain('schema_invalid');
+    expect(events.length).toBe(1);
+    expect(events[0]?.hostReasons.some((r) => r.reasons.includes('schema_invalid'))).toBe(true);
   });
 });

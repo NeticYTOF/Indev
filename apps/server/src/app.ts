@@ -69,6 +69,14 @@ export interface AppDeps {
     upstreamCalls: number,
     providerFailures?: ProviderFailureReport,
   ) => void;
+  /** Private host-only diagnostic sink. Carries bounded reason codes and
+   *  counts, never model output, prompts, headers or public API fields. */
+  onPlanRunEvent?: (event: {
+    outcome: string;
+    hostReasons: Array<{ stationId: number; reasons: string[] }>;
+    detailChecksStarted: number;
+    detailChecksSettled: number;
+  }) => void;
   /** AI planning config: all three set = enabled. Off by default. */
   ai?: { baseUrl: string; apiKey: string; model: string };
   /** Injectable for tests; defaults to the real provider call. */
@@ -186,6 +194,22 @@ function completeRun(
   try { deps.onRunComplete?.(outcome, upstreamCalls, evidence); } catch { /* ignored */ }
 }
 
+function emitPlanRunEvent(
+  deps: AppDeps,
+  outcome: string,
+  diagnostics: { hostReasons: Array<{ stationId: number; reasons: string[] }>;
+    detailChecksStarted: number; detailChecksSettled: number },
+): void {
+  try {
+    deps.onPlanRunEvent?.({
+      outcome,
+      hostReasons: diagnostics.hostReasons.slice(0, 25),
+      detailChecksStarted: diagnostics.detailChecksStarted,
+      detailChecksSettled: diagnostics.detailChecksSettled,
+    });
+  } catch { /* diagnostics never alter the run */ }
+}
+
 /** Validated, caller-owned inputs for one live AI-plan run. */
 interface LivePlanParams {
   origin: PlaceRef;
@@ -259,6 +283,7 @@ async function runLiveAiPlan(
     completeRun(deps, 'ok',
       Math.max(run.diagnostics.observedAttempts, safeUpstreamCalls(statiq)),
       run.diagnostics.failures);
+    emitPlanRunEvent(deps, 'ok', run.diagnostics);
     return { plan: run.plan, ai: { applied: true, ...(run.notes ? { notes: run.notes } : {}) } };
   } catch (err) {
     if (controls.signal?.aborted) throw new Error('aborted');
@@ -287,6 +312,7 @@ async function runLiveAiPlan(
     completeRun(deps, auditOutcomeFor(failure),
       diag?.observedAttempts ?? safeUpstreamCalls(statiq),
       diag?.failures ?? emptyProviderFailureReport());
+    if (diag) emitPlanRunEvent(deps, auditOutcomeFor(failure), diag);
     throw failure;
   }
 }

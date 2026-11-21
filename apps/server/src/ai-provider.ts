@@ -118,7 +118,12 @@ export async function chatCompletionWithTools(
     const res = await (deps.fetchImpl ?? fetch)(`${deps.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${deps.apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: deps.model, temperature: 0.2, messages, tools, tool_choice: 'auto' }),
+      body: JSON.stringify({
+        model: deps.model, temperature: 0.2, messages,
+        ...(tools.length > 0
+          ? { tools, tool_choice: 'auto' }
+          : { tool_choice: 'none' }),
+      }),
       signal: controller.signal,
     });
     // A fetch that ignores abort must not let a post-cancel result through.
