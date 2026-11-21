@@ -2171,6 +2171,12 @@ body {
     right: 12px;
     width: auto;
     max-height: calc(100% - 64px - var(--safe-t));
+    height: calc(100% - 64px - var(--safe-t));
+  }
+
+  body:has(#trips-drawer:not(.hidden)) #planner-panel,
+  body:has(#trips-drawer:not(.hidden)) #sheet-open {
+    visibility: hidden;
   }
 
   .trip-strip {

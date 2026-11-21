@@ -371,7 +371,17 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
       document.getElementById('sheet-open')?.setAttribute('aria-expanded', 'true');
       document.getElementById('sheet-open')?.classList.add('hidden');
     }
-    originField.input.focus();
+    const drawer = document.getElementById('trips-drawer');
+    if (window.innerWidth <= 720 && drawer && !drawer.classList.contains('hidden')) {
+      const input = originField.input;
+      queueMicrotask(() => {
+        if (input.isConnected && drawer.classList.contains('hidden')) {
+          input.focus({ preventScroll: true });
+        }
+      });
+    } else {
+      originField.input.focus();
+    }
     return true;
   };
 
