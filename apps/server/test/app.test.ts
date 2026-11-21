@@ -1206,7 +1206,8 @@ describe('ordered stopover API boundary', () => {
 });
 describe('saved trip stopover wire validation', () => {
   async function saveFixture() {
-    const dir = await tempDir();
+    const dir = await mkdtemp(join(tmpdir(), 'indev-server-save-via-test-'));
+    tempDirs.push(dir);
     const filePath = join(dir, 'trips.json');
     await writeFile(filePath, '[]');
     let providerCalls = 0;
