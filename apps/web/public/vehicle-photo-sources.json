@@ -1,0 +1,90 @@
+[
+  {
+    "id": "tata-harrier-ev-75",
+    "src": "/vehicles/tata-harrier-ev-75.webp",
+    "alt": "Tata Harrier EV",
+    "author": "Gpkp",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:4th_International_Auto_Show,_Bangalore_(2025)_110.jpg",
+    "license": "CC BY-SA 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+    "changes": "Resized and converted to WebP.",
+    "sha256": "8f5943e28672d926b5d16b37b9c3635531396ae7c5c5a674960319ad348d2fe7"
+  },
+  {
+    "id": "tata-punch-ev-lr-35",
+    "src": "/vehicles/tata-punch-ev-lr-35.webp",
+    "alt": "Tata Punch EV",
+    "author": "VideshiBhaktNRI",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Tata_punch.ev.jpg",
+    "license": "CC0",
+    "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+    "changes": "Resized and converted to WebP.",
+    "sha256": "500fa65107723e816649b49a6f68aa105481e36202d5baa29cbad7b8a98c18b0"
+  },
+  {
+    "id": "tata-curvv-ev-55",
+    "src": "/vehicles/tata-curvv-ev-55.webp",
+    "alt": "Tata Curvv EV",
+    "author": "VideshiBhaktNRI",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Tata_Curvv.EV.jpg",
+    "license": "CC0",
+    "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+    "changes": "Resized and converted to WebP.",
+    "sha256": "ceccff5d28950a789298045513546b2635646638ec6b2074554236d3e263332b"
+  },
+  {
+    "id": "tata-tiago-ev-24",
+    "src": "/vehicles/tata-tiago-ev-24.webp",
+    "alt": "Tata Tiago EV",
+    "author": "DriveSpark",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:2022_Tata_Tiago_EV_IB_XZ%2B_Tech_LR_front_view.png",
+    "license": "CC BY 3.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/3.0",
+    "changes": "Resized and converted to WebP.",
+    "sha256": "68655c0e14a59eb3f79fb987e856f31706377e7275ec057a85a5cad94e2ccd01"
+  },
+  {
+    "id": "mg-zs-ev-50",
+    "src": "/vehicles/mg-zs-ev-50.webp",
+    "alt": "MG ZS EV",
+    "author": "Alexander Migl",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:MG_ZS_EV_Facelift_1X7A5867.jpg",
+    "license": "CC BY-SA 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+    "changes": "Resized and converted to WebP.",
+    "sha256": "f7da09dfc4bedc1ea940116990505c6f3549bb3ac878adf53a77d9cb64df9249"
+  },
+  {
+    "id": "hyundai-ioniq5-72",
+    "src": "/vehicles/hyundai-ioniq5-72.webp",
+    "alt": "Hyundai Ioniq 5",
+    "author": "Alexander Migl",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Hyundai_Ioniq_5_IAA_2021_1X7A0189.jpg",
+    "license": "CC BY-SA 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+    "changes": "Resized and converted to WebP.",
+    "sha256": "90485254ac3784baf0a7034c4cf6ff1e2b6ed6dca054b78da4c96e3d51f8e13d"
+  },
+  {
+    "id": "mahindra-be6-79",
+    "src": "/vehicles/mahindra-be6-79.webp",
+    "alt": "Mahindra BE 6",
+    "author": "Cppfront",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Mahindra_BE6_pic_1_(cropped).jpg",
+    "license": "CC0",
+    "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+    "changes": "Resized and converted to WebP.",
+    "sha256": "0c902216de62485c13766252fdb635f0646febb2088480e2f387a20437fabab6"
+  },
+  {
+    "id": "mg-comet-ev-17",
+    "src": "/vehicles/mg-comet-ev-17.webp",
+    "alt": "MG Comet EV",
+    "author": "News18 Assam/Northeast",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:2023_MG_Comet_EV_Plush_(India).png",
+    "license": "CC BY 3.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/3.0",
+    "changes": "Resized and converted to WebP.",
+    "sha256": "92d07be8e770fe978b17705e1272bccfe01b565472d7fa9e5e6d42efdd6e0f7a"
+  }
+]
