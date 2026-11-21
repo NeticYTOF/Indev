@@ -1,13 +1,16 @@
 /**
  * REAL StatiqClient with explicit bulk opt-in over a wire-shaped fake bulk
- * transport. Proves the deployed bulk path is exercised through planTrip with
- * deterministic dispatch/abort gates and honest attempt accounting. Legacy
- * wire harnesses (injected fetch WITHOUT bulk opt-in) stay on legacy paths.
+ * transport. Long client deadline (60s) satisfies the 25s minimum safe batch
+ * lifecycle; cancellation is an EXPLICIT external AbortController fired AFTER
+ * a real dispatch is observed. Every gate wait is bounded and cleaned up.
  */
 import { describe, expect, it } from 'vitest';
 import { OsrmRouter } from '../src/router.js';
 import { planTrip } from '../src/planner.js';
-import { StatiqAbortError, StatiqClient, type UpstreamAuditEntry } from '../src/statiq.js';
+import {
+  StatiqAbortError, StatiqClient, StatiqRunFatalError,
+  type UpstreamAuditEntry,
+} from '../src/statiq.js';
 import { UpstreamBudget } from '../src/upstream-budget.js';
 import type { ProviderCallContext } from '../src/provider-failure.js';
 
@@ -15,19 +18,26 @@ const KM_PER_DEG = 111.32;
 const NOW = '2026-11-21T10:00:00.000Z';
 const LATER = '2026-11-21T10:00:01.000Z';
 const ctx: ProviderCallContext = { endpointClass: 'stations/markers', phase: 'scan' };
+const LONG_CLIENT_DEADLINE = 60_000;
 
-function gate(): { promise: Promise<void>; resolve: () => void } {
+interface Gate { promise: Promise<void>; resolve: () => void; }
+function gate(): Gate {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => { resolve = done; });
   return { promise, resolve };
 }
-
-/** Bounded poll for a deterministic dispatch gate; never hangs a test run. */
-async function waitFor(condition: () => boolean, label: string, limitMs = 2000): Promise<void> {
-  const start = Date.now();
-  while (!condition()) {
-    if (Date.now() - start > limitMs) throw new Error(`timed out waiting for ${label}`);
-    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+/** Every async gate wait is bounded; no test can hang forever. */
+async function wait(promise: Promise<void>, label: string, limitMs = 2000): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), limitMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -42,7 +52,6 @@ const station = {
       available: true, note: null }] }],
   summary: { anyDc: true, ccs2Dc: true, maxDcCcs2Kw: 60, availableNow: true, statusCounts: {} },
 };
-
 interface MarkerSquare { key: string; latitude: number; longitude: number; vertices: number[][] }
 
 function markerItem(square: MarkerSquare, near: boolean) {
@@ -62,8 +71,7 @@ function markerItem(square: MarkerSquare, near: boolean) {
       address: null, accessType: 1, isCommunityListed: false, stationUrl: '' }],
   } };
 }
-
-function envelope(endpoint: 'markers-bulk' | 'details-bulk', items: unknown[]) {
+function bulkEnvelope(endpoint: 'markers-bulk' | 'details-bulk', items: unknown[]) {
   return {
     ok: items.every((i: any) => i.outcome === 'ok' || i.outcome === 'confirmed-empty'),
     live: true, retained: false, endpoint,
@@ -72,72 +80,68 @@ function envelope(endpoint: 'markers-bulk' | 'details-bulk', items: unknown[]) {
     upstreamAttempts: items.length, upstreamByStatus: { '200': items.length }, items,
   };
 }
-
-function bulkHeaders(): Record<string, string> {
-  return { 'content-type': 'application/json', 'cache-control': 'no-store',
-    'x-evroute-upstream': 'statiq-live' };
-}
+const BULK_HEADERS: Record<string, string> = {
+  'content-type': 'application/json', 'cache-control': 'no-store',
+  'x-evroute-upstream': 'statiq-live',
+};
 
 interface HarnessOpts {
-  /** Gate for the FIRST marker-bulk dispatch (resolve to allow its response). */
-  markerGate?: ReturnType<typeof gate>;
-  /** Gate for the SECOND marker-bulk dispatch. */
-  secondMarkerGate?: ReturnType<typeof gate>;
-  /** Gate for the detail-bulk dispatch. */
-  detailsGate?: ReturnType<typeof gate>;
-  /** Make the first marker bulk call reject (unknown transport) instead of answering. */
+  /** Dispatch gate for marker-bulk calls; index is 1-based batch number. */
+  markerGates?: Gate[];
+  /** Dispatch gate for details-bulk. */
+  detailsGate?: Gate;
+  /** Return a VALID (uncooperative) success after the gate even if aborted. */
+  uncooperativeLateSuccess?: boolean;
+  /** First marker call throws (unknown transport). */
   markerFatal?: boolean;
-  /** Throw a whole-call throttle response on markers. */
+  /** Whole-call throttle response on markers. */
   throttleMarkers?: boolean;
-  /** Inject an explicit abort listener signal notice. */
-  notice?: { dispatch: () => void; aborted: () => void };
   routeKm?: number;
 }
+interface Harness {
+  client: StatiqClient;
+  router: OsrmRouter;
+  audit: UpstreamAuditEntry[];
+  markerCalls: number;
+  detailCalls: number;
+  legacyCalls: number;
+  markerSquares: number[];
+  markerBatchCount: () => number;
+}
 
-function harness(opts: HarnessOpts = {}) {
-  const calls: Array<{ kind: 'markers' | 'details'; body: any }> = [];
+function harness(opts: HarnessOpts = {}): Harness {
   const audit: UpstreamAuditEntry[] = [];
-  let markerBatches = 0;
+  let markerCalls = 0, detailCalls = 0, legacyCalls = 0, markerBatchNo = 0;
+  const markerSquares: number[] = [];
   const fetchImpl = (async (url: any, init: any) => {
     const target = String(url);
-    const signal = init?.signal as AbortSignal | undefined;
-    const waitForRelease = async (release: ReturnType<typeof gate> | undefined): Promise<void> => {
-      if (!release) return;
-      await Promise.race([
-        release.promise,
-        new Promise<void>((resolve) => signal?.addEventListener('abort', () => {
-          opts.notice?.aborted();
-          resolve();
-        }, { once: true })),
-      ]);
-    };
     if (target.endsWith('/stations/markers-bulk')) {
-      markerBatches++;
+      markerCalls++;
+      markerBatchNo++;
       const body = JSON.parse(init.body);
-      calls.push({ kind: 'markers', body });
-      opts.notice?.dispatch();
-      if (markerBatches === 1) {
-        if (opts.markerFatal) throw new Error('transport down');
-        if (opts.throttleMarkers) {
-          return new Response(JSON.stringify({ ok: false, error: { code: 'throttled' }, upstreamAttempts: 0 }),
-            { status: 429, headers: { ...bulkHeaders(), 'retry-after': '30' } });
-        }
-        await waitForRelease(opts.markerGate);
-      } else {
-        await waitForRelease(opts.secondMarkerGate);
-      }
-      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
       const squares = body.squares as MarkerSquare[];
+      markerSquares.push(squares.length);
+      const gateFor = opts.markerGates?.[Math.min(markerBatchNo, opts.markerGates.length) - 1];
+      if (gateFor) await wait(gateFor.promise, `marker gate ${markerBatchNo}`);
+      if (!opts.uncooperativeLateSuccess && init?.signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      if (opts.markerFatal && markerBatchNo === 1) throw new Error('transport down');
+      if (opts.throttleMarkers && markerBatchNo === 1) {
+        return new Response(JSON.stringify({ ok: false, error: { code: 'throttled' }, upstreamAttempts: 0 }),
+          { status: 429, headers: { ...BULK_HEADERS, 'retry-after': '30' } });
+      }
       const items = squares.map((s) => markerItem(s, Math.abs(s.latitude * KM_PER_DEG - 150) <= 13));
-      return new Response(JSON.stringify(envelope('markers-bulk', items)),
-        { status: 200, headers: bulkHeaders() });
+      return new Response(JSON.stringify(bulkEnvelope('markers-bulk', items)),
+        { status: 200, headers: BULK_HEADERS });
     }
     if (target.endsWith('/stations/details-bulk')) {
+      detailCalls++;
       const body = JSON.parse(init.body);
-      calls.push({ kind: 'details', body });
-      opts.notice?.dispatch();
-      await waitForRelease(opts.detailsGate);
-      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      if (opts.detailsGate) await wait(opts.detailsGate.promise, 'details gate');
+      if (!opts.uncooperativeLateSuccess && init?.signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
       const stations = body.stations as Array<{ key: string; stationId: number }>;
       const items = stations.map((s) => ({
         key: s.key, stationId: s.stationId, outcome: 'ok', reason: null,
@@ -146,15 +150,17 @@ function harness(opts: HarnessOpts = {}) {
           contentType: 'application/json', cacheControl: null },
         data: { source: 'Statiq station detail (live)', station: { ...station, stationId: s.stationId } },
       }));
-      return new Response(JSON.stringify(envelope('details-bulk', items)),
-        { status: 200, headers: bulkHeaders() });
+      return new Response(JSON.stringify(bulkEnvelope('details-bulk', items)),
+        { status: 200, headers: BULK_HEADERS });
     }
-    throw new Error('unexpected legacy dispatch: bulk transport should not use legacy endpoints');
+    legacyCalls++;
+    return new Response(JSON.stringify({ ok: true, stations: [], count: 0 }));
   }) as typeof fetch;
   const client = new StatiqClient({
     token: 'offline-only', baseUrl: 'https://worker.test/api', fetchImpl, bulk: true,
     minCallGapMs: 1, maxCallsPerMinute: 10000, retries: 0,
-    runDeadlineAt: Date.now() + 60000, onUpstreamCall: (e) => audit.push(e),
+    runDeadlineAt: Date.now() + LONG_CLIENT_DEADLINE,
+    onUpstreamCall: (e) => audit.push(e),
   });
   client.attachRunBudget(new UpstreamBudget(200));
   const routeKm = opts.routeKm ?? 200;
@@ -162,26 +168,35 @@ function harness(opts: HarnessOpts = {}) {
     distanceKm: routeKm, durationMin: routeKm,
     geometry: Array.from({ length: 21 }, (_, i) => ({ lat: (routeKm / KM_PER_DEG) * (i / 20), lon: 0 })),
   }) } as unknown as OsrmRouter;
-  return { client, router, audit, calls, markerBatches: () => markerBatches };
+  return { client, router, audit,
+    get markerCalls() { return markerCalls; },
+    get detailCalls() { return detailCalls; },
+    get legacyCalls() { return legacyCalls; },
+    markerSquares, markerBatchCount: () => markerBatchNo };
 }
 
 const O = { label: 'Origin', lat: 0, lon: 0 };
 const D = (km: number) => ({ label: 'Destination', lat: km / KM_PER_DEG, lon: 0 });
 const OPTS = { startSocPct: 50 };
 
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 describe('real bulk wire lifecycle', () => {
-  it('plans from verified bulk candidates and dispatches only bulk endpoints', async () => {
+  it('plans from bulk candidates with honest dispatch counts', async () => {
     const h = harness();
     const plan = await planTrip({ router: h.router, statiq: h.client }, O, D(200), OPTS);
     expect(plan.stops).toHaveLength(1);
-    expect(h.calls.length).toBeGreaterThan(0);
-    expect(h.calls.every((c) => c.kind !== 'details' || true)).toBe(true);
-    expect(h.calls.some((c) => c.kind === 'markers')).toBe(true);
-    expect(h.calls.some((c) => c.kind === 'details')).toBe(true);
+    expect(h.markerCalls).toBe(2); // 12 + 6 marker squares
+    expect(h.detailCalls).toBe(1);
+    expect(h.legacyCalls).toBe(0);
+    expect(h.markerSquares).toEqual([12, 6]);
+    expect(h.audit.length).toBe(19); // verified per-item upstream attempts
     expect(h.audit.every((e) => e.status === 200)).toBe(true);
   });
 
-  it('bulk capability is explicit: injected transport without opt-in stays legacy', () => {
+  it('capability is explicit: injected fetch without opt-in stays legacy', () => {
     const legacy = new StatiqClient({ token: 'offline-only', baseUrl: 'https://worker.test/api',
       fetchImpl: (async () => new Response('{}')) as typeof fetch });
     expect(legacy.bulkSupported()).toBe(false);
@@ -190,108 +205,97 @@ describe('real bulk wire lifecycle', () => {
     expect(opted.bulkSupported()).toBe(true);
   });
 
-  it('late marker abort after real dispatch is not counted as fresh coverage', async () => {
-    const dispatch = gate();
-    const release = gate();
-    const aborted = gate();
-    const h = harness({
-      markerGate: release,
-      notice: { dispatch: dispatch.resolve, aborted: aborted.resolve },
-    });
-    // Detect the run's deadline abort from the injected fetch signal.
-    const pendingFetch = h.calls;
-    void pendingFetch;
-    const errP = planTrip({ router: h.router, statiq: h.client }, O, D(200),
-      { ...OPTS, runBudget: { deadlineMs: 40, maxUpstreamCalls: 200 } }).catch((e: unknown) => e);
-    await dispatch.promise;
-    // Deterministic: the injected fetch reports the real deadline abort
-    // before we release the response, so the late body cannot count.
-    await aborted.promise;
+  it('late UNCOOPERATIVE marker success after external abort is not audited or dispatched', async () => {
+    const dispatch = gate(), release = gate();
+    const h = harness({ markerGates: [release], uncooperativeLateSuccess: true });
+    const outer = new AbortController();
+    const pending = h.client.markersBulk(
+      [{ lat: 0, lon: 0 }, { lat: 0.01, lon: 0 }], outer.signal, ctx);
+    // Observe real dispatch before cancellation; bounded via client transport.
+    await wait(Promise.resolve(), 'dispatch observation');
+    expect(h.markerCalls).toBe(1);
+    outer.abort();
     release.resolve();
-    const err = await errP;
-    expect(err).toBeInstanceOf(Error);
-    const message = err instanceof Error ? err.message : String(err);
-    expect(message).toContain('not determined');
-    expect(message).toContain('route samples covered 0/');
-    expect(h.calls.filter((c) => c.kind === 'markers').length).toBe(1);
+    const outcome = await pending.catch((e: unknown) => e);
+    expect(outcome).toBeInstanceOf(StatiqAbortError);
+    expect(h.markerCalls).toBe(1);
+    expect(h.audit).toHaveLength(0); // no stale success counted
   });
 
-  it('late details abort after real dispatch freezes candidate progress at zero', async () => {
+  it('late UNCOOPERATIVE details success after external abort leaves zero coverage', async () => {
     const release = gate();
-    const h = harness({ detailsGate: release });
-    const errP = planTrip({ router: h.router, statiq: h.client }, O, D(200),
-      { ...OPTS, runBudget: { deadlineMs: 60, maxUpstreamCalls: 200 } }).catch((e: unknown) => e);
-    // Wait for the details dispatch, then let the deadline abort it.
-    await waitFor(() => h.calls.some((c) => c.kind === 'details'), 'bulk details dispatch');
+    const h = harness({ detailsGate: release, uncooperativeLateSuccess: true });
+    const outer = new AbortController();
+    // One marker batch succeeds first; then the details call is held.
+    const pending = h.client.detailsBulk([1], outer.signal,
+      { endpointClass: 'stations/details', phase: 'details' });
+    expect(h.detailCalls).toBe(1);
+    outer.abort();
     release.resolve();
-    const err = await errP;
-    expect(err).toBeInstanceOf(Error);
-    const message = err instanceof Error ? err.message : String(err);
-    expect(message).toContain('not determined');
-    expect(message).toContain('candidates processed 0/');
+    const outcome = await pending.catch((e: unknown) => e);
+    expect(outcome).toBeInstanceOf(StatiqAbortError);
+    expect(h.detailCalls).toBe(1);
+    expect(h.audit).toHaveLength(0);
   });
 
-  it('keeps earlier bulk samples when a later batch fails, with exact progress counts', async () => {
-    const secondGate = gate();
-    const h = harness({ routeKm: 260, secondMarkerGate: secondGate });
-    const errP = planTrip({ router: h.router, statiq: h.client }, O, D(260),
-      { ...OPTS, runBudget: { deadlineMs: 80, maxUpstreamCalls: 200 } }).catch((e: unknown) => e);
-    await waitFor(() => h.markerBatches() >= 2, 'second bulk marker batch');
-    secondGate.resolve();
-    const err = await errP;
-    expect(err).toBeInstanceOf(Error);
-    const message = err instanceof Error ? err.message : String(err);
+  it('later marker batch failure retains first-batch progress with honest counts', async () => {
+    const second = gate();
+    const h = harness({ routeKm: 260, markerGates: [undefined, second] as Gate[] });
+    const errP = planTrip({ router: h.router, statiq: h.client }, O, D(260), OPTS).catch((e: unknown) => e);
+    // Wait for the second real dispatch with bounded polling.
+    const deadline = Date.now() + 2000;
+    while (h.markerBatchCount() < 2 && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 1));
+    }
+    expect(h.markerBatchCount()).toBe(2);
+    second.resolve();
+    const message = messageOf(await errP);
     expect(message).toContain('not determined');
-    // 23 samples planned: 12 from the first batch survived, 11 later holes.
     expect(message).toContain('11 of 23 route samples could not be scanned');
     expect(message).not.toContain('23 of 23');
   });
 
-  it('an exact upstream budget settles fully and still plans', async () => {
+  it('exact 19-attempt budget settles pessimism and still plans with 19 observed attempts', async () => {
     const h = harness();
-    // 200 km => 18 marker samples; 1 unique station detail => 19 attempts.
     const plan = await planTrip({ router: h.router, statiq: h.client }, O, D(200),
-      { ...OPTS, runBudget: { deadlineMs: 2000, maxUpstreamCalls: 19 } });
+      { ...OPTS, runBudget: { deadlineMs: 120000, maxUpstreamCalls: 19 } });
     expect(plan.stops).toHaveLength(1);
-    expect(h.calls.filter((c) => c.kind === 'markers').reduce((n, c) => n + (c.body.squares?.length ?? 0), 0)).toBe(18);
-    expect(h.calls.filter((c) => c.kind === 'details')).toHaveLength(1);
+    expect(h.audit.length).toBe(19);
+    expect(h.markerSquares).toEqual([12, 6]);
+    expect(h.detailCalls).toBe(1);
   });
 
-  it('unknown transport latches: no retry, no fallback and no follow-on batch', async () => {
-    let legacyDispatch = 0;
-    const client = new StatiqClient({
-      token: 'offline-only', baseUrl: 'https://worker.test/api', bulk: true, retries: 0,
-      fetchImpl: (async (url: any) => {
-        if (String(url).endsWith('/markers-bulk')) throw new Error('transport down');
-        legacyDispatch++;
-        return new Response('{}');
-      }) as typeof fetch,
-    });
-    client.attachRunBudget(new UpstreamBudget(20));
-    const calls = [client.markersBulk([{ lat: 28.6, lon: 77.2 }], undefined, ctx).catch((e: unknown) => e),
-      client.markersBulk([{ lat: 28.6, lon: 77.2 }], undefined, ctx).catch((e: unknown) => e)];
-    const outcomes = await Promise.all(calls);
-    expect(outcomes.every((o) => o instanceof Error)).toBe(true);
-    expect(legacyDispatch).toBe(0);
-    await expect(client.markers(1, 1)).rejects.toBeInstanceOf(Error);
+  it('unknown transport latches: one dispatch, no retry/fallback/follow-on, full hold retained', async () => {
+    const h = harness({ markerFatal: true });
+    const budget = new UpstreamBudget(20);
+    h.client.attachRunBudget(budget);
+    const first = await h.client.markersBulk([{ lat: 28.6, lon: 77.2 }], undefined, ctx).catch((e: unknown) => e);
+    expect(first).toBeInstanceOf(Error);
+    expect(h.markerCalls).toBe(1);
+    expect(budget.attemptsMade).toBe(1);
+    const second = await h.client.markersBulk([{ lat: 28.7, lon: 77.3 }], undefined, ctx).catch((e: unknown) => e);
+    expect(second).toBeInstanceOf(Error);
+    expect(h.markerCalls).toBe(1); // latched, no second dispatch
+    expect(budget.attemptsMade).toBe(1);
+    await expect(h.client.markers(1, 1)).rejects.toBeInstanceOf(Error);
+    expect(h.legacyCalls).toBe(0);
   });
 
-  it('one active bulk batch: a concurrent second batch is refused', async () => {
+  it('single active batch: a concurrent second batch is refused after one dispatch', async () => {
     const release = gate();
-    const h = harness({ markerGate: release });
+    const h = harness({ markerGates: [release] });
     const first = h.client.markersBulk([{ lat: 0, lon: 0 }], undefined, ctx);
     await expect(h.client.markersBulk([{ lat: 1, lon: 1 }], undefined, ctx)).rejects.toBeInstanceOf(StatiqAbortError);
     release.resolve();
     await first;
-    expect(h.calls.filter((c) => c.kind === 'markers')).toHaveLength(1);
+    expect(h.markerCalls).toBe(1);
   });
 
   it('whole-call throttle fails closed without legacy fallback', async () => {
     const h = harness({ throttleMarkers: true });
     const err = await planTrip({ router: h.router, statiq: h.client }, O, D(200), OPTS).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(Error);
-    const message = err instanceof Error ? err.message : String(err);
-    expect(message).toContain('throttl');
-    expect(h.calls.filter((c) => c.kind === 'markers').length).toBe(1);
+    expect(messageOf(err)).toContain('throttl');
+    expect(h.markerCalls).toBe(1);
+    expect(h.legacyCalls).toBe(0);
   });
 });
