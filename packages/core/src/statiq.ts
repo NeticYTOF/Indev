@@ -52,6 +52,49 @@ import {
 
 export const DEFAULT_STATIQ_BASE_URL =
   'https://harrier-evroute.aaravnirajsingh.workers.dev/api';
+const TRUSTED_RAW_MARKERS_URL =
+  'https://harrier-evroute.aaravnirajsingh.workers.dev/station/v1/markers';
+const RAW_EMPTY_MESSAGE = 'No stations found with selected filters';
+type MarkerVertex = readonly [number, number];
+interface RawEmptyConfirmation {
+  readonly lat: number;
+  readonly lon: number;
+  readonly vertices: readonly MarkerVertex[];
+}
+interface PostJsonOptions {
+  readonly fetchUrl?: string;
+  readonly rawEmptyConfirmation?: RawEmptyConfirmation;
+  readonly rawEmptyCheck?: boolean;
+}
+function markerSquareVertices(lat: number, lon: number): MarkerVertex[] {
+  const west = lon - 0.1, east = lon + 0.1, south = lat - 0.1, north = lat + 0.1;
+  return [[west, south], [east, south], [east, north], [west, north], [west, south]];
+}
+function ownDataValue(value: unknown, key: string): unknown {
+  if (value === null || typeof value !== 'object') return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+}
+function ownRecord(value: unknown): boolean {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+function confirmedRawEmpty(res: Response, parsed: unknown): boolean {
+  if (res.status !== 200 || !hasFreshProvenance(parsed)) return false;
+  const contentType = res.headers?.get('content-type');
+  const isJson = typeof contentType === 'string' &&
+    contentType.split(';', 1)[0]?.trim().toLowerCase() === 'application/json';
+  const cacheControl = res.headers?.get('cache-control');
+  const noStore = typeof cacheControl === 'string' &&
+    cacheControl.split(',').map(part => part.trim().toLowerCase()).includes('no-store');
+  if (!isJson || !noStore || res.headers?.get('x-evroute-upstream') !== 'statiq-live') return false;
+  const meta = ownDataValue(parsed, 'meta');
+  const data = ownDataValue(parsed, 'data');
+  const stations = ownDataValue(data, 'stations');
+  return ownRecord(meta) && ownDataValue(meta, 'status_code') === 1001 &&
+    ownDataValue(meta, 'success') === false &&
+    ownDataValue(meta, 'message') === RAW_EMPTY_MESSAGE &&
+    ownRecord(data) && Array.isArray(stations) && stations.length === 0;
+}
 
 /**
  * How long dispatch stamps are retained by the rolling-window limiter
@@ -232,7 +275,15 @@ export class StatiqClient {
     signal?: AbortSignal,
     context?: ProviderCallContext,
   ): Promise<StatiqMarkersResponse> {
-    return this.postJson('/stations/markers', { latitude: lat, longitude: lon }, signal, context);
+    const vertices = markerSquareVertices(lat, lon);
+    const rawEmptyConfirmation = this.base === DEFAULT_STATIQ_BASE_URL ? { lat, lon, vertices } : undefined;
+    return this.postJson<StatiqMarkersResponse>(
+      '/stations/markers',
+      { latitude: lat, longitude: lon, vertices },
+      signal,
+      context,
+      { rawEmptyConfirmation },
+    );
   }
 
   /** Nearest station cards around a point. */
@@ -431,6 +482,7 @@ export class StatiqClient {
     body: unknown,
     signal?: AbortSignal,
     context?: ProviderCallContext,
+    options: PostJsonOptions = {},
   ): Promise<T> {
     let lastError: unknown;
     let lastRetryAfterMs: number | undefined;
@@ -514,7 +566,7 @@ export class StatiqClient {
       const onOuterAbort = () => controller.abort();
       signal?.addEventListener('abort', onOuterAbort, { once: true });
       try {
-        const res = await this.fetchImpl(this.base + path, {
+        const res = await this.fetchImpl(options.fetchUrl ?? this.base + path, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${this.token}`,
@@ -617,7 +669,29 @@ export class StatiqClient {
             lastRetryAfterMs = retryAfter;
             continue;
           }
-          throw new StatiqApiError(res.status, path, text, retryAfter);
+          const initialError = new StatiqApiError(res.status, path, text, retryAfter);
+          const candidate = options.rawEmptyConfirmation;
+          if (!options.rawEmptyCheck && candidate && this.base === DEFAULT_STATIQ_BASE_URL &&
+              res.status === 400 && gatewayFailureCode === 'upstream_contract' &&
+              gatewayUpstreamStatus === 200 && gatewayContractReason === 'success_false' &&
+              gatewayContractData === 'stations_empty') {
+            recordAttempt(statusCodeForHttp(res.status), res.status);
+            try {
+              return await this.postJson<StatiqMarkersResponse>(
+                '/station/v1/markers',
+                { latitude: candidate.lat, longitude: candidate.lon, all_chargers: 0, connector_id: [], vertices: candidate.vertices },
+                signal,
+                context,
+                { fetchUrl: TRUSTED_RAW_MARKERS_URL, rawEmptyCheck: true },
+              ) as T;
+            } catch (err) {
+              if (err instanceof StatiqRunFatalError || err instanceof UpstreamRunStoppedError || signal?.aborted ||
+                  (err instanceof StatiqApiError &&
+                    (err.status === 401 || err.status === 403 || err.status === 429 || err.status >= 500))) throw err;
+              throw initialError;
+            }
+          }
+          throw initialError;
         }
         let parsed: T;
         try {
@@ -631,6 +705,20 @@ export class StatiqClient {
         if (!hasFreshProvenance(parsed)) {
           recordAttempt('nonfresh_provenance', res.status);
           throw new StatiqProvenanceError(path);
+        }
+        if (options.rawEmptyCheck) {
+          if (!confirmedRawEmpty(res, parsed)) {
+            recordAttempt('invalid_marker_list', res.status);
+            throw new StatiqProvenanceError(path);
+          }
+          return {
+            ok: true,
+            live: true,
+            retained: false,
+            source: 'raw-confirmed-empty',
+            count: 0,
+            stations: [],
+          } as T;
         }
         return parsed;
       } catch (err) {
