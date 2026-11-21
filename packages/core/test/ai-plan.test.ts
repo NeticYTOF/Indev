@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { planTripDetailed, finalize } from '../src/planner.js';
+import { planTripDetailed, finalize, type PlanBundle, type PlannerCandidate } from '../src/planner.js';
 import { assembleAiPlan, validateAiChoice } from '../src/ai-plan.js';
 import { DEFAULT_PLAN_OPTIONS, type TripPlan } from '../src/plan-types.js';
 import { HARIER_EV_75, chargeTimeMin, kwhForSocDelta, socAfterDriving, socRequiredForArrival } from '../src/vehicle.js';
@@ -353,9 +353,9 @@ function idAt(chainage: number): number {
  * Build a bundle-shaped object with candidates at the given chainages —
  * for testing validation without the greedy planner needing to succeed.
  */
-function handBuiltBundle(chainages: number[], totalKm: number) {
+function handBuiltBundle(chainages: number[], totalKm: number): PlanBundle {
   const route = makeRoute(totalKm);
-  const usableCandidates = chainages.map((ch) => {
+  const usableCandidates: PlannerCandidate[] = chainages.map((ch) => {
     const id = idAt(ch);
     return {
       candidate: {

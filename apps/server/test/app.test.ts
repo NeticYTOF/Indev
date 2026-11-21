@@ -1250,7 +1250,7 @@ describe('maximum charger power wire validation', () => {
     });
     const res = await createApp(deps).request(path, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ origin: ORIGIN, destination: DEST, startSocPct: 20, maxChargerKw: 100 }),
+      body: JSON.stringify({ origin: ORIGIN, destination: DEST, startSocPct: 50, maxChargerKw: 100 }),
     });
     expect(res.status).toBe(200);
     const body = await res.json() as { plan: { stops: Array<{
