@@ -19,6 +19,7 @@ import { buildReturnRouteDraft, buildSavedRouteDraft } from './saved-route.js';
 import type { SavedRouteDraft } from './saved-route.js';
 import { renderStationEvidencePanel, wireStationEvidence } from './station-evidence-panel.js';
 import { safeStationId } from './station-evidence.js';
+import { markTripDeleted } from './plan-panel.js';
 import { storageWarningText, storageWarningElement } from './storage-warning.js';
 import { formatDuration } from './format.js';
 import { savedRouteGeometry } from './safe-url.js';
@@ -544,6 +545,7 @@ function renderTripRow(
           document.getElementById('trips-button')?.focus();
         }
         if (session) session.refresh({ selectedIds, focusKey }); else renderTripsDrawer(drawer, map, loadSavedRoute);
+        markTripDeleted(trip.id);
         if (warning) drawer.querySelector('.drawer-head')?.after(storageWarningElement(`Trip deleted. ${warning}`));
         toast(warning ? `Trip deleted. ${warning}` : 'Trip deleted.', warning ? 'warn' : 'info', warning ? 12_000 : 4_200);
       } else {

@@ -144,13 +144,28 @@ export function renderPlanPanel(
   });
 }
 
+export function markTripDeleted(id: string): void {
+  if (typeof id !== 'string' || !id) return;
+  for (const button of document.querySelectorAll<HTMLButtonElement>('.plan-results [data-save][data-saved-trip-id]')) {
+    if (button.dataset.savedTripId !== id) continue;
+    button.disabled = false;
+    button.textContent = button.dataset.unsavedLabel ?? 'Trip is not saved yet — click to save';
+    delete button.dataset.savedTripId;
+    delete button.dataset.unsavedLabel;
+  }
+}
+
 function wirePlanActions(actions: HTMLElement, plan: TripPlan): void {
   actions.querySelector('[data-save]')?.addEventListener('click', async () => {
     const btn = actions.querySelector<HTMLButtonElement>('[data-save]');
     if (!btn || btn.disabled) return;
+    const originalLabel = btn.textContent ?? 'Trip is not saved yet — click to save';
     btn.disabled = true;
     try {
       const response = await api.saveTrip(plan);
+      const candidateId = record(response)?.trip && record(record(response)?.trip)?.id;
+      const savedTripId = typeof candidateId === 'string' && candidateId.trim().length > 0 ? candidateId : null;
+      if (savedTripId) { btn.dataset.savedTripId = savedTripId; btn.dataset.unsavedLabel = originalLabel; }
       btn.textContent = 'Saved to your trips';
       const warning = storageWarningText(response);
       if (warning) actions.after(storageWarningElement(`Trip saved. ${warning}`));
