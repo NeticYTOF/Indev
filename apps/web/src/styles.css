@@ -736,7 +736,7 @@ body {
 }
 
 .suggestion-item.empty {
-  color: var(--ink-4);
+  color: var(--ink-2);
   cursor: default;
 }
 

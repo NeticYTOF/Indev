@@ -90,6 +90,11 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
     const list = page.locator('[data-field=origin] .suggestions');
     await from.fill('Town');
     await expect(list.locator('.suggestion-item.empty')).toBeVisible();
+    await expect(list.locator('.suggestion-item.empty')).toHaveCSS('color', 'rgb(184, 180, 173)');
+    await expect(list).toHaveCSS('background-color', 'rgb(29, 29, 32)');
+    await list.locator('.suggestion-item.empty').hover();
+    await expect(list.locator('.suggestion-item.empty')).toHaveCSS('color', 'rgb(184, 180, 173)');
+    await expect(list.locator('.suggestion-item.empty')).toHaveCSS('background-color', 'rgb(37, 23, 14)');
     await expect(list.getByRole('option')).toHaveCount(0);
     await expect(from).toHaveAttribute('aria-expanded', 'true');
     for (const key of ['ArrowDown', 'ArrowUp', 'Enter']) {
