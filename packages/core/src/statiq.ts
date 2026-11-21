@@ -864,10 +864,17 @@ export class StatiqClient {
         if (upstream.attempts > 0) stagedAudits.push(...upstream.statuses);
         if (outcome !== 'ok' && outcome !== 'confirmed-empty') {
           const provenanceStatus = ownDataValue(ownDataValue(item, 'provenance'), 'httpStatus');
+          // The bulk endpoint type determines the real class/phase when a
+          // caller (e.g. corridor scan) supplies no context. Do NOT collapse
+          // to 'none'/'scan' and silently drop the global ordinal.
+          const fallbackClass: ProviderCallContext['endpointClass'] =
+            endpoint === 'markers-bulk' ? 'stations/markers' : 'stations/details';
+          const fallbackPhase: ProviderCallContext['phase'] =
+            endpoint === 'markers-bulk' ? 'scan' : 'details';
           stagedFailures.push({
             ctx: {
-              endpointClass: context?.endpointClass ?? 'none',
-              phase: context?.phase ?? 'scan',
+              endpointClass: context?.endpointClass ?? fallbackClass,
+              phase: context?.phase ?? fallbackPhase,
               sampleOrdinal: endpoint === 'markers-bulk' ? ordinalBase + i + 1 : null,
             },
             code: bulkFailureCode(outcome, reason, endpoint),

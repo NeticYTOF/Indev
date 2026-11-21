@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { StatiqAbortError, StatiqClient, type UpstreamAuditEntry } from '../src/statiq.js';
 import { UpstreamBudget, UpstreamRunStoppedError } from '../src/upstream-budget.js';
 import { scanCorridor, type BulkMarkerSource } from '../src/corridor.js';
+import { createProviderFailureCollector, type ProviderFailureCollector } from '../src/provider-failure.js';
 
 const NOW = '2026-11-21T10:00:00.000Z';
 const LATER = '2026-11-21T10:00:01.000Z';
@@ -135,6 +136,7 @@ function bulkClient(opts: {
   respond: (call: { url: string; body: any }) => { status?: number; body?: string; throw?: Error };
   onAudit?: (entry: UpstreamAuditEntry) => void;
   deadlineOffsetMs?: number;
+  collector?: ProviderFailureCollector;
 }) {
   const fetchImpl = (async (url: any, init: any) => {
     const body = init?.body ? JSON.parse(init.body) : null;
@@ -157,6 +159,7 @@ function bulkClient(opts: {
   });
   const budget = new UpstreamBudget(opts.maxAttempts);
   client.attachRunBudget(budget);
+  if (opts.collector) client.attachFailureCollector(opts.collector);
   return { client, budget };
 }
 
@@ -259,6 +262,41 @@ describe('strict bulk marker transport', () => {
     await expect(client.markersBulk(points)).rejects.toBeTruthy();
     await expect(client.markers(1, 1)).rejects.toBeTruthy();
     expect(calls).toHaveLength(1); // latch blocks every later dispatch
+  });
+
+  it('records bulk failure evidence with real endpoint class, global ordinal and null not-attempted dispatch', async () => {
+    const collector = createProviderFailureCollector();
+    const calls: any[] = [];
+    const manyPoints = Array.from({ length: 13 }, (_, i) => ({ lat: 28.60 + i / 100, lon: 77.20 + i / 100 }));
+    const { client } = bulkClient({ maxAttempts: 20, calls, collector,
+      respond: (call) => {
+        const squares = (call.body.squares ?? []) as SquareEcho[];
+        const specs = squares.map((_sq, i) => i === 5
+          ? { outcome: 'unknown' as const, reason: 'upstream_timeout', statuses: ['timeout'] }
+          : i === 12
+            ? { outcome: 'not-attempted' as const, reason: 'budget_exhausted' }
+            : {});
+        return { body: JSON.stringify(markersResponse(call.body, specs)) };
+      } });
+    // NO context argument: the transport must derive class/phase from endpoint.
+    const results = await client.markersBulk(manyPoints);
+    expect(results).toHaveLength(13);
+    const failures = collector.snapshot().failures;
+    // index 5 is in the first batch, index 12 is in the second (global 6 and 13).
+    expect(failures.some((f) => f.endpointClass === 'none')).toBe(false);
+    const ordinals = failures.map((f) => f.sampleOrdinal).filter((n) => n != null);
+    expect(ordinals).toContain(6);
+    expect(ordinals).toContain(13);
+    const notAttempted12 = failures.find((f) => f.sampleOrdinal === 13);
+    expect(notAttempted12).toMatchObject({
+      endpointClass: 'stations/markers',
+      phase: 'scan',
+      sampleOrdinal: 13,
+      dispatchSeq: null,
+      httpStatus: null,
+    });
+    const unknown6 = failures.find((f) => f.sampleOrdinal === 6);
+    expect(unknown6).toMatchObject({ endpointClass: 'stations/markers', phase: 'scan' });
   });
 
   it('accepts only the exact one-fetch raw empty proof', async () => {
