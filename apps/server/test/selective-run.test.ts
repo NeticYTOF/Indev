@@ -262,4 +262,32 @@ describe('final-answer host contract', () => {
     expect(err.cause?.reason).toBe('output_limit');
     expect(err.diagnostics.finalAnswerEvents).toHaveLength(0);
   });
+  it('keeps every candidate visible while adding advisory reachability only', async () => {
+    let firstMessages: Array<{ role: string; content: string | null }> = [];
+    const aiToolCall = (async (messages: Array<{ role: string; content: string | null }>) => {
+      if (firstMessages.length === 0) firstMessages = messages;
+      throw new Error('stop after prompt capture');
+    }) as never;
+    const base = makeDeps(285, 1, aiToolCall);
+    const deps = { ...base, statiq: {
+      markers: async () => ({ ok: true, live: true, retained: false, source: 'test', count: 3,
+        stations: [0.2, 1.2, 2.4].map((lat, i) => ({
+          stationId: 42 + i, name: `Station ${i}`, lat, lon: 0,
+          address: null, accessType: 1, isCommunityListed: false, stationUrl: '',
+        })) }),
+      detailsWithMeta: async () => ({ response: { ok: true, live: true,
+        retained: false, source: 'test', station }, fetchedAt: new Date() }),
+    } as never };
+    await runSelective(deps).catch(() => undefined);
+    const user = JSON.parse(String(firstMessages[1]?.content)) as {
+      candidates: { rows: Array<[number, ...unknown[]]> };
+      reachability: { advisoryOnly: boolean; caveat: string };
+    };
+    expect(user.candidates.rows.map((row) => row[0])).toEqual([42, 43, 44]);
+    expect(user.candidates.rows.every((row) => row.length === 7)).toBe(true);
+    expect(user.reachability.advisoryOnly).toBe(true);
+    expect(user.reachability.caveat).toMatch(/not proof/i);
+    expect(JSON.stringify(user.reachability)).not.toMatch(/occupied|working-free|available|status/i);
+  });
+
 });
