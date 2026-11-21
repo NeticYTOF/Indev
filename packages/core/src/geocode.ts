@@ -117,7 +117,7 @@ export class PhotonGeocoder {
 }
 
 function toHit(p: PhotonProperties, coords: [number, number]): GeocodeHit {
-  const name = p.name ?? p.street ?? 'Unnamed place';
+  const name = [p.name, p.street].find((v) => typeof v === 'string' && v.trim().length > 0)?.trim() ?? 'Unnamed place';
   const parts = [name, p.city, p.state, p.country].filter(
     (s): s is string => Boolean(s && s.trim()),
   );

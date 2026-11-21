@@ -53,6 +53,24 @@ describe('PhotonGeocoder', () => {
     expect(calls[0]).toContain('lat=22.5'); // India bias
   });
 
+  it.each([
+    [{ name: '', street: 'Main Street' }, 'Main Street'],
+    [{ name: '   ', street: 'Main Street' }, 'Main Street'],
+    [{ name: '', street: '', city: '', state: '', country: '' }, 'Unnamed place'],
+    [{ name: '   ', street: '   ', city: '   ', state: '   ', country: '   ' }, 'Unnamed place'],
+    [{}, 'Unnamed place'],
+  ])('uses the first nonblank name for %j', async (properties, expected) => {
+    const impl = (async () => new Response(JSON.stringify({ features: [
+      { geometry: { coordinates: [75.5, 26.5] }, properties },
+    ] }), { status: 200 })) as typeof fetch;
+    const geocoder = new PhotonGeocoder({ fetchImpl: impl, retries: 0 });
+    const hit = (await geocoder.search('Town'))[0];
+    expect(hit?.name).toBe(expected);
+    expect(hit?.label).toBe(expected);
+    expect(hit?.lat).toBe(26.5);
+    expect(hit?.lon).toBe(75.5);
+  });
+
   it('returns empty array when there are no features', async () => {
     const impl = (async () =>
       new Response(JSON.stringify({ features: [] }), { status: 200 })) as typeof fetch;
