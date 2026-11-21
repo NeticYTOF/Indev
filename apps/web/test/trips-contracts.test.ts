@@ -61,13 +61,13 @@ describe('saved-trip delete: single flight + focus that survives both outcomes',
     expect((deleteSrc.match(/if \(document\.activeElement === document\.body\) btn\.focus\(\);/g) ?? []).length).toBe(2);
   });
 
-  it('lands focus on the stable owner control before the refresh destroys the row', () => {
-    // renderTripsDrawer clears innerHTML wholesale - the clicked button
-    // dies with it; the owner control is the only stable target, and it
-    // must receive focus BEFORE refresh when focus would be destroyed.
-    // Deliberate focus outside the drawer must be left alone.
-    expect(deleteSrc).toContain('document.activeElement === document.body || drawer.contains(document.activeElement)');
-    expect(tripsSrc)
-      .toMatch(/document\.getElementById\('trips-button'\)\?\.focus\(\);\s+}\s+renderTripsDrawer\(drawer, map, loadSavedRoute\); \/\/ refresh list/);
+  it('preserves live drawer intent and owner fallback before the deletion refresh', () => {
+    // The response-time session owns current selection/focus; owner focus
+    // remains the fallback only when no stable drawer control has focus.
+    expect(deleteSrc).toContain('drawerSessions.get(drawer)');
+    expect(deleteSrc).toContain('activeStableFocus(drawer)');
+    expect(deleteSrc).toContain('!focusKey && (document.activeElement === document.body || drawer.contains(document.activeElement))');
+    expect(deleteSrc)
+      .toMatch(/if \(!focusKey && \(document\.activeElement === document\.body \|\| drawer\.contains\(document\.activeElement\)\)\) \{\s+document\.getElementById\('trips-button'\)\?\.focus\(\);\s+}\s+if \(session\) session\.refresh\(\{ selectedIds, focusKey \}\); else renderTripsDrawer\(drawer, map, loadSavedRoute\);/);
   });
 });
