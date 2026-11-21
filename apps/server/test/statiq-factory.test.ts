@@ -130,4 +130,30 @@ describe('production StatiqClient factory wiring (config-review repair)', () => 
     expect(h.calls).toHaveLength(3); // initial + 2 default retries
     expect(h.audit).toHaveLength(3); // one sanitized entry per dispatch
   });
+
+  it('job deadline override (30m) beats the 4m launch default on the built client', async () => {
+    // A 600s Retry-After fits inside 30m but not inside the 4m default.
+    // Without the opts deadline the client would fail fast after one call.
+    const h = harness(4 * 60_000);
+    h.respondWith((i) => i === 0
+      ? { status: 429, body: '{"error":"wait"}', retryAfter: '600' }
+      : { status: 200 });
+    const client = h.factory({ deadlineMs: 30 * 60_000 });
+    const res = await client.markers(1, 1);
+    expect(res.ok).toBe(true);
+    expect(h.calls).toHaveLength(2);
+    expect(h.clock.nowMs()).toBeGreaterThanOrEqual(600_000);
+  });
+
+  it('absent deadline opt keeps the 4m launch default for sync callers', async () => {
+    const h = harness(4 * 60_000);
+    h.respondWith(() => ({
+      status: 429, body: '{"error":"wait"}', retryAfter: '600',
+    }));
+    const client = h.factory({ retries: 0 });
+    const err = await client.markers(1, 1).catch((e) => e);
+    expect(err).toBeInstanceOf(StatiqApiError);
+    expect(h.calls).toHaveLength(1);
+    expect(h.clock.nowMs()).toBe(0);
+  });
 });

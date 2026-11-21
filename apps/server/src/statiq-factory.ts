@@ -41,7 +41,7 @@ export interface StatiqFactoryConfig {
 }
 
 /** The AppDeps.createStatiq signature (an opts-carrying factory). */
-export type CreateStatiq = (opts?: { retries?: number }) => StatiqClient;
+export type CreateStatiq = (opts?: { retries?: number; deadlineMs?: number }) => StatiqClient;
 
 export function buildStatiqFactory(config: StatiqFactoryConfig): CreateStatiq {
   return (opts) => {
@@ -51,7 +51,7 @@ export function buildStatiqFactory(config: StatiqFactoryConfig): CreateStatiq {
       // EFFECTIVE deadline, not the source-code default. The injectable
       // clock keeps the bound and the client's own timing consistent under
       // tests; production defaults to real time exactly as before.
-      runDeadlineAt: clock() + config.deadlineMs,
+      runDeadlineAt: clock() + (opts?.deadlineMs ?? config.deadlineMs),
       // Per-launch explicit override forwarded through the factory opts;
       // absent = undefined = the client's own default (2) - absent
       // defaults are preserved byte-identically.

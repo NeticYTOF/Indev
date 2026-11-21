@@ -52,9 +52,10 @@ import { chatCompletion, parseChoiceJson, safeEvidenceUrl, AiProviderError } fro
 
 export interface AppDeps {
   /** Creates a fresh Statiq client for one planning run. The optional
-   *  opts carry an EXPLICIT per-launch retry override (env-configured);
-   *  implementations accept and ignore extras for compatibility. */
-  createStatiq: (opts?: { retries?: number }) => StatiqClient;
+   *  opts carry an EXPLICIT per-launch retry override (env-configured)
+   *  and, for long jobs, the run's own deadline. Sync callers omit the
+   *  deadline so the launch default remains unchanged. */
+  createStatiq: (opts?: { retries?: number; deadlineMs?: number }) => StatiqClient;
   router: OsrmRouter;
   geocoder: PhotonGeocoder;
   trips: TripsStore;
@@ -208,7 +209,7 @@ async function runLiveAiPlan(
   controls: PlanJobControls,
 ): Promise<AiPlanEnvelope> {
   const providerFailures = createProviderFailureCollector();
-  const statiq = deps.createStatiq({ retries: statiqRetries });
+  const statiq = deps.createStatiq({ retries: statiqRetries, deadlineMs: controls.budget.deadlineMs });
   const planOptions: PlanOptions = {
     runBudget: controls.budget,
     via: params.via,
