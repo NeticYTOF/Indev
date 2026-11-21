@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { planTrip } from '../src/planner.js';
 import type { OsrmRouter, RouteResult } from '../src/router.js';
 import { StatiqRunFatalError, type StatiqClient, type BulkItemResult, type StationDetailsWithMeta } from '../src/statiq.js';
-import type { StatiqStationDetail } from '../src/types.js';
+import type { StatiqStationDetail, StatiqMarkersResponse } from '../src/types.js';
 
 const KM_PER_DEG = 111.32;
 const LATER = new Date('2026-11-21T10:00:01.000Z');
@@ -145,5 +145,100 @@ describe('planTrip bulk adoption', () => {
     // candidate is NOT counted as processed/detailed.
     expect(message).toContain('candidates processed 2/3');
     expect(message).toContain('2 detailed, 1 remaining');
+  });
+
+
+  it('does not double-count when a bulk marker double both calls back and returns', async () => {
+    let summaries = 0;
+    const statiq = {
+      markers: async () => { throw new Error('legacy markers'); },
+      detailsWithMeta: async () => { throw new Error('legacy details'); },
+      attachRunBudget: () => {},
+      markersBulk: async (
+        points: readonly { lat: number; lon: number }[],
+        _signal?: AbortSignal,
+        _context?: import('../src/provider-failure.js').ProviderCallContext,
+        onItem?: (result: BulkItemResult<StatiqMarkersResponse>, index: number) => void,
+      ): Promise<BulkItemResult<StatiqMarkersResponse>[]> => {
+        summaries++;
+        return points.map((_p, i) => {
+          // One unknown sample in an 18-sample scan => real failedFrac 1/18.
+          const item: BulkItemResult<StatiqMarkersResponse> = i === points.length - 1
+            ? { outcome: 'unknown', reason: 'upstream_error',
+                upstream: { attempts: 1, statuses: [500], fetchedAt: LATER.toISOString() } }
+            : { outcome: 'confirmed-empty', reason: null,
+                upstream: { attempts: 1, statuses: [200], fetchedAt: LATER.toISOString() },
+                response: { ok: true, live: true, retained: false,
+                  source: 'raw-confirmed-empty', count: 0, stations: [] } };
+          // Both callback AND returned list, like the real StatiqClient.
+          onItem?.(item, i);
+          return item;
+        });
+      },
+      detailsBulk: async (ids: readonly number[]) => ids.map((id) => ({
+        outcome: 'ok' as const, reason: null,
+        upstream: { attempts: 1, statuses: [200], fetchedAt: LATER.toISOString() },
+        response: { response: { ok: true, live: true, retained: false,
+          source: 'bulk', station: detail(id, 150) }, fetchedAt: LATER },
+      })),
+    } as unknown as StatiqClient;
+    const router = { route: async (): Promise<RouteResult> => {
+      const geometry = Array.from({ length: 21 }, (_, i) => ({ lat: (200 / KM_PER_DEG) * (i / 20), lon: 0 }));
+      return { distanceKm: 200, durationMin: 200, geometry };
+    } } as unknown as OsrmRouter;
+    const error = await planTrip({ router, statiq },
+      { label: 'Origin', lat: 0, lon: 0 }, { label: 'Destination', lat: 200 / KM_PER_DEG, lon: 0 },
+      { startSocPct: 50 }).catch((e: unknown) => e);
+    expect(summaries).toBe(1);
+    const message = error instanceof Error ? error.message : String(error);
+    // Exactly ONE failure record, not two from callback+return double ingestion.
+    expect(message).toContain('(1 failed)');
+    expect(message).not.toContain('(2 failed)');
+  });
+
+  it('retains earlier sample progress when a later bulk marker batch fails through the wrapper', async () => {
+    let summaryCalls = 0;
+    const statiq = {
+      markers: async () => { throw new Error('legacy markers'); },
+      detailsWithMeta: async () => { throw new Error('legacy details'); },
+      attachRunBudget: () => {},
+      markersBulk: async (
+        points: readonly { lat: number; lon: number }[],
+        _signal?: AbortSignal,
+        _context?: import('../src/provider-failure.js').ProviderCallContext,
+        onItem?: (result: BulkItemResult<StatiqMarkersResponse>, index: number) => void,
+      ): Promise<BulkItemResult<StatiqMarkersResponse>[]> => {
+        summaryCalls++;
+        // First batch items are verified via the forwarded callback; the
+        // later batch fails before any return value reaches corridor.
+        const firstBatch = Math.min(12, points.length);
+        for (let i = 0; i < firstBatch; i++) {
+          onItem?.({
+            outcome: 'confirmed-empty', reason: null,
+            upstream: { attempts: 1, statuses: [200], fetchedAt: LATER.toISOString() },
+            response: { ok: true, live: true, retained: false,
+              source: 'raw-confirmed-empty', count: 0, stations: [] },
+          }, i);
+        }
+        throw new Error('later marker batch failed');
+      },
+      detailsBulk: async (ids: readonly number[]) => ids.map((id) => ({
+        outcome: 'ok' as const, reason: null,
+        upstream: { attempts: 1, statuses: [200], fetchedAt: LATER.toISOString() },
+        response: { response: { ok: true, live: true, retained: false,
+          source: 'bulk', station: detail(id, 150) }, fetchedAt: LATER },
+      })),
+    } as unknown as StatiqClient;
+    const router = { route: async (): Promise<RouteResult> => {
+      const geometry = Array.from({ length: 27 }, (_, i) => ({ lat: (260 / KM_PER_DEG) * (i / 26), lon: 0 }));
+      return { distanceKm: 260, durationMin: 260, geometry };
+    } } as unknown as OsrmRouter;
+    const error = await planTrip({ router, statiq },
+      { label: 'Origin', lat: 0, lon: 0 }, { label: 'Destination', lat: 260 / KM_PER_DEG, lon: 0 },
+      { startSocPct: 50 }).catch((e: unknown) => e);
+    expect(summaryCalls).toBe(1);
+    const message = error instanceof Error ? error.message : String(error);
+    // 12 early samples survived; the remaining planned samples are honest holes.
+    expect(message).toContain('route samples covered 12/');
   });
 });

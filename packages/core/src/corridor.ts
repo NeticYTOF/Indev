@@ -241,11 +241,16 @@ export async function scanCorridor(
   if (typeof bulkSource.markersBulk === 'function') {
     // One ordered bulk batch path. Every planned sample still gets exactly
     // one verdict; no candidate is pruned and route geometry is unchanged.
-    let processed = 0;
-    const onBulkItem = (
+    const processed = new Set<number>();
+    const ingestBulkItem = (
       item: BulkItemResult<StatiqMarkersResponse> | undefined,
       index: number,
     ): void => {
+      // Callback-and-return clients must not double-count a sample.
+      if (processed.has(index)) return;
+      const chainage = sampleChainages[index];
+      if (chainage === undefined) return;
+      processed.add(index);
       if (!item || (item.outcome !== 'ok' && item.outcome !== 'confirmed-empty')) {
         recordSampleFailure(index, item?.reason === 'upstream_throttled' ? 'throttled' : 'error');
       } else if (ingestSample(item.response, index + 1, null)) {
@@ -253,15 +258,16 @@ export async function scanCorridor(
       } else {
         recordSampleFailure(index, 'error');
       }
-      processed++;
       report();
     };
+    let returned: readonly BulkItemResult<StatiqMarkersResponse>[] = [];
+    let batchFailed = false;
     try {
-      await bulkSource.markersBulk(
+      returned = await bulkSource.markersBulk(
         samplePoints.map((p) => ({ lat: p.lat, lon: p.lon })),
         signal,
-        undefined,
-        onBulkItem,
+        { endpointClass: 'stations/markers', phase: 'scan' },
+        ingestBulkItem,
       );
     } catch (err) {
       if (
@@ -273,8 +279,21 @@ export async function scanCorridor(
       }
       // A later-batch failure leaves earlier completed samples intact; only
       // the samples that never received a verified item become holes.
-      for (let i = processed; i < samplePoints.length; i++) recordSampleFailure(i, 'error');
+      for (let i = 0; i < samplePoints.length; i++) {
+        if (!processed.has(i)) ingestBulkItem(undefined, i);
+      }
       report();
+      batchFailed = true;
+    }
+    if (!batchFailed) {
+      // Callback+return clients: the Set prevents double ingestion. Return-only
+      // doubles (no callback) are now covered by this loop. No re-fetch.
+      for (let i = 0; i < returned.length; i++) ingestBulkItem(returned[i], i);
+      // Any planned sample with neither a callback nor a returned item is an
+      // honest coverage hole (never silently dropped).
+      for (let i = 0; i < samplePoints.length; i++) {
+        if (!processed.has(i)) ingestBulkItem(undefined, i);
+      }
     }
   } else {
     await pMap(samplePoints, concurrency, async (p, i) => {

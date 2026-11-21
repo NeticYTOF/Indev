@@ -476,11 +476,21 @@ async function planCore(
       });
     },
     ...(bulkScan ? {
-      markersBulk: (points: readonly { lat: number; lon: number }[]) =>
-        deps.statiq.markersBulk(points, hooks.signal, {
-          endpointClass: 'stations/markers' as const,
-          phase: 'scan' as const,
-        }),
+      // Forward ALL four args: corridor's fourth onItem callback carries
+      // incremental scan progress/ordinals. Dropping it made the real plan
+      // path ingest zero markers even though direct-source tests passed.
+      markersBulk: (
+        points: readonly { lat: number; lon: number }[],
+        _signal?: AbortSignal,
+        context?: ProviderCallContext,
+        onItem?: (
+          result: import('./statiq.js').BulkItemResult<import('./types.js').StatiqMarkersResponse>,
+          index: number,
+        ) => void,
+      ) => deps.statiq.markersBulk(points, hooks.signal, context ?? {
+        endpointClass: 'stations/markers' as const,
+        phase: 'scan' as const,
+      }, onItem),
     } : {}),
   };
 
