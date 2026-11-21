@@ -16,6 +16,7 @@ import { formatElapsedMs, planFailureGuidance, type PlanFailureGuidance } from '
 import { SubmitGate } from './submit-gate.js';
 import { GeocodeSession } from './geocode-session.js';
 import { savedRouteDraftReady, type SavedRouteDraft } from './saved-route.js';
+import { renderVehiclePhoto } from './vehicle-photo.js';
 
 export interface PlannerController {
   /** Copy a saved route into the composer for manual review; no network calls. */
@@ -674,10 +675,20 @@ function buildVehicleSelect(vehicleRow: HTMLElement, catalog: VehicleCatalogEntr
   `) as unknown as HTMLSelectElement;
   vehicleRow.append(label, select);
 
+  const photoPanel = el(`<div class="vehicle-photo-panel" data-vehicle-photo></div>`);
   const claimNote = el(`<p class="hint vehicle-claim hidden"></p>`);
   const rangeWrap = el(`<div class="real-world-range hidden"></div>`);
   const customWrap = el(`<div class="custom-vehicle hidden"></div>`);
-  vehicleRow.append(claimNote, rangeWrap, customWrap);
+  vehicleRow.append(photoPanel, claimNote, rangeWrap, customWrap);
+  const updatePhoto = (): void => {
+    if (select.value === 'custom') renderVehiclePhoto(photoPanel, 'custom', 'Custom vehicle');
+    else if (select.value === 'default') renderVehiclePhoto(photoPanel, defaultId, 'Tata Harrier EV (75 kWh)');
+    else {
+      const entry = catalog.find(c => c.id === select.value);
+      renderVehiclePhoto(photoPanel, entry?.id ?? null, entry ? `${entry.make} ${entry.model}` : 'Selected vehicle');
+    }
+  };
+  updatePhoto();
 
   select.addEventListener('change', () => {
     claimNote.classList.add('hidden');
@@ -686,6 +697,7 @@ function buildVehicleSelect(vehicleRow: HTMLElement, catalog: VehicleCatalogEntr
     claimNote.textContent = '';
     rangeWrap.innerHTML = '';
     customWrap.innerHTML = '';
+    updatePhoto();
 
     if (select.value === 'default') {
       return;
