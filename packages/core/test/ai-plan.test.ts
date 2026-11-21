@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { planTripDetailed, finalize } from '../src/planner.js';
 import { assembleAiPlan, validateAiChoice } from '../src/ai-plan.js';
 import { DEFAULT_PLAN_OPTIONS, type TripPlan } from '../src/plan-types.js';
-import { HARIER_EV_75, kwhForSocDelta, socAfterDriving, socRequiredForArrival } from '../src/vehicle.js';
+import { HARIER_EV_75, chargeTimeMin, kwhForSocDelta, socAfterDriving, socRequiredForArrival } from '../src/vehicle.js';
 import type { OsrmRouter, RouteResult } from '../src/router.js';
 import type { StatiqClient } from '../src/statiq.js';
 import type { StatiqDetailsResponse, StatiqMarkersResponse, StatiqStationDetail, StatiqCharger } from '../src/types.js';
@@ -240,6 +240,30 @@ describe('validateAiChoice', () => {
     }
     expect(plan.totals.finalSocPct).toBeGreaterThanOrEqual(10);
     expect(plan.warnings.some((w) => w.includes('AI'))).toBe(true);
+  });
+
+  it('rejects an AI candidate whose selected charger violates the hard kW cap', async () => {
+    const bundle = handBuiltBundle([50], 300);
+    const candidate = bundle.usableCandidates[0]!;
+    candidate.selectedCharger = { chargerId: 8, name: '180 kW', kw: 180, pricePerKwh: 99 };
+    const v = validateAiChoice(bundle, { stationIds: [candidate.candidate.stationId] }, { maxChargerKw: 100 }, HARIER_EV_75);
+    expect(v.ok).toBe(false);
+    if (v.ok) return;
+    expect(v.reason).toContain('kW cap');
+  });
+
+  it('uses the capped selected charger for AI-rebuilt charge time and tariff', async () => {
+    const bundle = handBuiltBundle([50], 300);
+    const candidate = bundle.usableCandidates[0]!;
+    candidate.selectedCharger = { chargerId: 8, name: '60 kW', kw: 60, pricePerKwh: 22 };
+    candidate.summary.maxKw = 180; candidate.summary.pricePerKwh = 999;
+    const v = validateAiChoice(bundle, { stationIds: [candidate.candidate.stationId] }, { startSocPct: 20, maxChargerKw: 100 }, HARIER_EV_75);
+    expect(v.ok).toBe(true); if (!v.ok) return;
+    const opts = { ...DEFAULT_PLAN_OPTIONS, startSocPct: 20, maxChargerKw: 100 };
+    const stop = finalize(v.seq, 300, bundle.route, opts, HARIER_EV_75, [])[0]!;
+    expect(stop.pricePerKwh).toBe(22);
+    expect(stop.selectedCharger).toEqual(candidate.selectedCharger);
+    expect(stop.chargeTimeMin).toBe(Math.round(chargeTimeMin(stop.arriveSocPct, stop.leaveSocPct, 60, HARIER_EV_75)));
   });
 
   it('rejects unknown ids', async () => {

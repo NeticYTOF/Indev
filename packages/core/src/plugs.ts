@@ -9,6 +9,7 @@
  * - Unknown vocabulary falls back to uncertain (never "working").
  */
 import type { PlugHealth, StatiqCharger, StatiqConnector, StatiqStationDetail } from './types.js';
+import type { PlanSelectedCharger } from './plan-types.js';
 import { classifyPlugValues, connectorSlug as slug, type PlugClassification } from './plug-classifier.js';
 
 export type { PlugClassification } from './plug-classifier.js';
@@ -122,4 +123,24 @@ export function summarizeCcs2(station: StatiqStationDetail): Ccs2Summary {
   }
   s.isUsable = s.usable > 0;
   return s;
+}
+
+/** Select the fastest usable CCS2 DC charger known to satisfy a hard kW cap. */
+export function selectedCappedCharger(
+  station: StatiqStationDetail,
+  maxChargerKw: number,
+): PlanSelectedCharger | null {
+  let best: PlanSelectedCharger | null = null;
+  for (const ch of station.chargers ?? []) {
+    const usableConnector = (ch.connectors ?? []).some(c => isCcs2Dc(ch, c) && USABLE.includes(classifyPlug(c).health));
+    if (!usableConnector) continue;
+    if (typeof ch.kw !== 'number' || !Number.isFinite(ch.kw) || ch.kw <= 0) continue;
+    if (ch.kw > maxChargerKw) continue;
+    const tariff = ch.pricePerKwh;
+    const pricePerKwh = typeof tariff === 'number' && Number.isFinite(tariff) && tariff >= 0 ? tariff : null;
+    const candidate = { chargerId: ch.chargerId, name: ch.name, kw: ch.kw, pricePerKwh };
+    if (!best || candidate.kw > best.kw ||
+        (candidate.kw === best.kw && candidate.chargerId < best.chargerId)) best = candidate;
+  }
+  return best;
 }

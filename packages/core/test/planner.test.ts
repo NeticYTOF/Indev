@@ -1159,3 +1159,9 @@ it.each([
   await expect(planTrip(countingPlannerDeps(counts), O, D(450), { via: via as never })).rejects.toMatchObject({ name: "RouterError", code: "InvalidWaypoints" });
   expect(counts).toEqual({ router: 0, statiq: 0 });
 });
+
+it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, '60', null])("rejects invalid maxChargerKw %s before dispatch", async (maxChargerKw) => {
+  const counts = { router: 0, statiq: 0 };
+  await expect(planTrip(countingPlannerDeps(counts), O, D(450), { maxChargerKw: maxChargerKw as never })).rejects.toMatchObject({ name: "RouterError", code: "InvalidWaypoints" });
+  expect(counts).toEqual({ router: 0, statiq: 0 });
+});

@@ -86,6 +86,10 @@ export function validateAiChoice(
   const seq: ChosenStop[] = [];
 
   for (const c of picked) {
+    if (Number.isFinite(opts.maxChargerKw) && opts.maxChargerKw > 0 &&
+        (c.selectedCharger?.kw ?? c.summary.maxKw) > opts.maxChargerKw) {
+      return fail(`Station ${c.candidate.stationId} has no selected charger within the ${opts.maxChargerKw} kW cap.`);
+    }
     const legKm =
       c.candidate.chainageKm - cursorChain + cursorDetour + c.candidate.offRouteKm;
     if (legKm > opts.maxLegKm + 1e-6) {

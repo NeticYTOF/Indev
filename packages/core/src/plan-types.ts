@@ -56,8 +56,17 @@ export interface StationLiveView {
   chargers: ChargerView[];
 }
 
+export interface PlanSelectedCharger {
+  chargerId: number;
+  name: string;
+  kw: number;
+  pricePerKwh: number | null;
+}
+
 export interface PlanStop {
   station: StationLiveView;
+  /** Actual capped charger used for this stop's time and tariff. */
+  selectedCharger?: PlanSelectedCharger;
   /** km from trip start along the route. */
   chainageKm: number;
   /** km driven on this leg (route chainage delta + detour both ways). */
@@ -119,6 +128,7 @@ export interface PlanCandidate {
   reviewCount: number | null;
   maxKw: number | null;
   pricePerKwh: number | null;
+  selectedCharger?: PlanSelectedCharger;
 }
 
 export interface TripPlan {
@@ -167,6 +177,8 @@ export interface PlanOptions {
   absoluteMaxSocPct?: number;
   /** Hard cap on the gap between charging stops, km. */
   maxLegKm?: number;
+  /** Hard ceiling for a selected charger's rated kW; absent preserves old behavior. */
+  maxChargerKw?: number;
   /** Preferred leg window, km. */
   preferredLegMinKm?: number;
   preferredLegMaxKm?: number;
@@ -187,6 +199,7 @@ export const DEFAULT_PLAN_OPTIONS: Required<PlanOptions> = {
   maxSocPerStopPct: 80, // working estimate (DC taper knee)
   absoluteMaxSocPct: 95, // working estimate
   maxLegKm: 300, // OWNER-SUPPLIED: 300 km safe running range
+  maxChargerKw: Number.POSITIVE_INFINITY,
   preferredLegMinKm: 250, // owner preference: legs of 250-300 km
   preferredLegMaxKm: 300, // owner preference: legs of 250-300 km
   primaryDetourKm: 2,

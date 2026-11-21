@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyPlug, summarizeCcs2 } from '../src/plugs.js';
+import { classifyPlug, selectedCappedCharger, summarizeCcs2 } from '../src/plugs.js';
 import { classifyPlugValues, connectorSlug } from '../src/plug-classifier.js';
 import type { StatiqConnector, StatiqStationDetail } from '../src/types.js';
 
@@ -295,4 +295,29 @@ it.each([false, true])('keeps valid same-charger connector sibling and counts no
   const summary = summarizeCcs2(station([{ type: 'DC', kw: 60, price: 20, connectors: invalidFirst ? [bad, good] : [good, bad] }]));
   expect(summary.usable).toBe(1); expect(summary.free).toBe(0); expect(summary.occupied).toBe(1); expect(summary.uncertain).toBe(1);
   expect(summary.maxKw).toBe(60); expect(summary.pricePerKwh).toBe(20);
+});
+
+describe('hard maximum charger power', () => {
+  it('selects the mixed-site 60 kW CCS2 charger and its own tariff', () => {
+    const input = station([
+      { type: 'DC', kw: 180, price: 999, connectors: [conn('available', true, null)] },
+      { type: 'DC', kw: 60, price: 22, connectors: [conn('charging', false, 'Charging')] },
+    ]);
+    const chosen = selectedCappedCharger(input, 100);
+    expect(chosen).toMatchObject({ chargerId: 1, kw: 60, pricePerKwh: 22 });
+    expect(chosen?.name).toBe('c1');
+  });
+  it('never certifies absent or malformed power against a cap', () => {
+    const input = station([{ type: 'DC', kw: 60, price: 20, connectors: [conn('available', true, null)] }]);
+    delete (input.chargers[0] as Partial<import('../src/types.js').StatiqCharger>).kw;
+    expect(selectedCappedCharger(input, 100)).toBeNull();
+  });
+  it('preserves the uncapped maximum and tariff', () => {
+    const input = station([
+      { type: 'DC', kw: 60, price: 22, connectors: [conn('available', true, null)] },
+      { type: 'DC', kw: 180, price: 18, connectors: [conn('available', true, null)] },
+    ]);
+    expect(summarizeCcs2(input).maxKw).toBe(180);
+    expect(summarizeCcs2(input).pricePerKwh).toBe(18);
+  });
 });
