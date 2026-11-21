@@ -498,7 +498,12 @@ describe('AI-safe candidates', () => {
     expect(evidence.hours).toBe('00:00 To 23:59');
     expect(evidence.openText).toBe('Open Now');
     const projected50 = JSON.stringify((bundle.plan.candidates ?? []).find(c => c.stationId === 50));
-    expect(projected50).toBe(baselineProjection);
+    // Two sequential live runs legitimately carry fetchedAt values a few ms
+    // apart. Normalize ONLY that timestamp; every other nested field stays an
+    // exact deep-invariance assertion (no production freshness change).
+    const withoutFetchedAt = (raw: string): string =>
+      raw.replace(/"fetchedAt":"[^"]*"/g, '"fetchedAt":"<normalized>"');
+    expect(withoutFetchedAt(projected50)).toBe(withoutFetchedAt(baselineProjection));
     const chargers = evidence.chargers as Array<Record<string, unknown>>;
     expect(chargers[0]?.lastUsedOn).toBe('19/11/2026');
     expect(evidence.accessType).toBe('public');

@@ -64,7 +64,11 @@ export class UpstreamBudget {
     this.maxAttempts = Math.floor(maxAttempts);
   }
 
-  /** Attempts reserved so far (== dispatched; reserves precede fetches). */
+  /** Reservation slots consumed so far. Legacy: == dispatched (reserves
+   *  precede fetches). Bulk: includes pessimistically held attempts that are
+   *  NOT yet observed dispatches until settleBatch reconciles them. Use
+   *  `completedAttempts` for observed actual attempts and `reservedButUnknown`
+   *  for unresolved holds. The cap is enforced against this worst-case count. */
   get attemptsMade(): number {
     return this.attempts;
   }
@@ -84,12 +88,16 @@ export class UpstreamBudget {
     return this.attempts >= this.maxAttempts;
   }
 
-  /** Reserved but not yet confirmed by a verified bulk envelope. */
+  /** Reserved but not yet confirmed by a verified bulk envelope. Unknown
+   *  transports never settle, so these remain held and the run fails closed;
+   *  they are NOT completed or observed upstream dispatches. */
   get reservedButUnknown(): number {
     return this.pendingReservations;
   }
 
-  /** Actually observed upstream attempts (excludes unresolved holds). */
+  /** Truthful observed upstream attempts, excluding unresolved holds.
+   *  Planner coverage/error evidence uses this, never `attemptsMade`, when
+   *  describing ACTUAL dispatches. */
   get completedAttempts(): number {
     return this.attempts - this.pendingReservations;
   }

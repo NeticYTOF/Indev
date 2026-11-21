@@ -96,6 +96,22 @@ const BULK_DETAIL_UPSTREAM_PATH = '/station/v1/details';
 const BULK_MARKERS_CHUNK = 12; // live verified at the worker hard cap
 const BULK_DETAILS_CHUNK = 2;  // live verified bound (worker allows 25)
 const BULK_DEADLINE_CAP_MS = 150_000;
+/** Minimum worker work window: one paced upstream fetch (2s gap + up to 15s
+ *  fetch timeout) plus scheduling headroom. Below this no batch is dispatched. */
+const BULK_MIN_WORK_MS = 20_000;
+/** Bounded margin for the worker's honest deadline envelope to be drained and
+ *  parsed BEFORE the client transport abort fires. */
+const BULK_DRAIN_MARGIN_MS = 5_000;
+
+/** One batch lifecycle derived from the SINGLE authoritative outer deadline.
+ *  `workerMs` is sent to the worker as its work window; `transportMs` is the
+ *  client abort window = worker window + drain margin, never above the outer
+ *  deadline. The worker therefore gets to answer with its honest deadline
+ *  envelope before the client gives up. */
+interface BulkBatchTiming {
+  readonly workerMs: number;
+  readonly transportMs: number;
+}
 const BULK_EMPTY_MESSAGE = 'No stations found with selected filters';
 const BULK_OUTCOMES = new Set(['ok', 'confirmed-empty', 'unknown', 'not-attempted']);
 const BULK_REASONS = new Set([
@@ -275,28 +291,39 @@ function parseBulkEnvelope(value: unknown, endpoint: BulkEndpoint, path: string)
 }
 
 function markerResponseFromBulkData(data: unknown): StatiqMarkersResponse | null {
-  if (!ownRecord(data)) return null;
+  if (!ownRecord(data) || !hasFreshProvenance(data)) return null;
+  if (ownDataValue(data, 'live') === false || ownDataValue(data, 'retained') === true) return null;
+  if (ownDataValue(data, 'source') !== 'Statiq station markers (live)') return null;
   const raw = ownDataValue(data, 'stations');
-  if (!Array.isArray(raw)) return null;
+  const declaredCount = ownDataValue(data, 'count');
+  if (!Array.isArray(raw) || !bulkInt(declaredCount) || declaredCount !== raw.length) return null;
+  // Ordinary ok with an empty list is NOT the strict raw-confirmed-empty proof.
+  // Only a confirmed-empty item may claim zero stations (see build callback).
+  if (raw.length === 0) return null;
   const stations: StatiqMarker[] = [];
   for (const value of raw) {
-    if (!ownRecord(value)) return null;
+    if (!ownRecord(value) || !hasFreshProvenance(value)) return null;
+    if (ownDataValue(value, 'live') === false || ownDataValue(value, 'retained') === true) return null;
     const stationId = ownDataValue(value, 'stationId');
     const name = ownDataValue(value, 'name');
     const lat = ownDataValue(value, 'lat');
     const lon = ownDataValue(value, 'lon');
-    if (!bulkInt(stationId) || typeof name !== 'string' ||
-        typeof lat !== 'number' || !Number.isFinite(lat) ||
-        typeof lon !== 'number' || !Number.isFinite(lon)) return null;
+    if (!(bulkInt(stationId) && Number.isSafeInteger(stationId) && (stationId as number) > 0) ||
+        typeof name !== 'string' ||
+        typeof lat !== 'number' || !Number.isFinite(lat) || Math.abs(lat) > 90 ||
+        typeof lon !== 'number' || !Number.isFinite(lon) || Math.abs(lon) > 180) return null;
     const address = ownDataValue(value, 'address');
     const accessType = ownDataValue(value, 'accessType');
     const stationUrl = ownDataValue(value, 'stationUrl');
+    if ((address !== undefined && address !== null && typeof address !== 'string') ||
+        (accessType !== undefined && accessType !== null && !bulkInt(accessType)) ||
+        (stationUrl !== undefined && stationUrl !== null && typeof stationUrl !== 'string')) return null;
     stations.push({
-      stationId, name, lat, lon,
-      address: typeof address === 'string' ? address : null,
-      accessType: bulkInt(accessType) ? accessType : 0,
+      stationId: stationId as number, name, lat, lon,
+      address: address === undefined || address === null ? null : address as string,
+      accessType: accessType === undefined || accessType === null ? 0 : accessType as number,
       isCommunityListed: ownDataValue(value, 'isCommunityListed') === true,
-      stationUrl: typeof stationUrl === 'string' ? stationUrl : '',
+      stationUrl: stationUrl === undefined || stationUrl === null ? '' : stationUrl as string,
     });
   }
   return {
@@ -707,6 +734,21 @@ export class StatiqClient {
    * reproduces the same 25/62s + 2s pacing server-side; the client does NOT
    * re-pace batches. One client HTTP envelope may cover many upstream fetches.
    */
+  /** Derive worker work window and client transport window TOGETHER from the
+   *  absolute outer run deadline. Null => not enough room for a safe batch. */
+  private bulkBatchTiming(): BulkBatchTiming | null {
+    const absoluteRemaining = this.runDeadlineAt != null
+      ? this.runDeadlineAt - this.now()
+      : BULK_DEADLINE_CAP_MS;
+    if (absoluteRemaining < BULK_MIN_WORK_MS + BULK_DRAIN_MARGIN_MS) return null;
+    const workerMs = Math.max(BULK_MIN_WORK_MS, Math.min(
+      BULK_DEADLINE_CAP_MS - BULK_DRAIN_MARGIN_MS,
+      absoluteRemaining - BULK_DRAIN_MARGIN_MS,
+    ));
+    const transportMs = Math.min(absoluteRemaining, workerMs + BULK_DRAIN_MARGIN_MS);
+    return { workerMs, transportMs };
+  }
+
   private auditBulkItem(endpoint: string, status: BulkStatus): void {
     this.upstreamAttempts += 1;
     if (this.onUpstreamCall) {
@@ -729,6 +771,7 @@ export class StatiqClient {
     reserved: number,
     echoes: readonly BulkItemEcho[],
     ordinalBase: number,
+    transportMs: number,
     signal: AbortSignal | undefined,
     context: ProviderCallContext | undefined,
     build: (item: Record<string, unknown>) => T | null,
@@ -746,9 +789,10 @@ export class StatiqClient {
       if (signal?.aborted) throw new StatiqAbortError();
       budget.reserveBatch(reserved);
       const seqBase = this.dispatchAttempts;
-      const remainingHold = this.runDeadlineAt != null ? this.runDeadlineAt - this.now() : BULK_DEADLINE_CAP_MS;
-      const deadlineMs = Math.max(1, Math.min(BULK_DEADLINE_CAP_MS, remainingHold));
-      timer = setTimeout(() => controller.abort(), deadlineMs);
+      // Single authoritative lifecycle: transport window = worker work
+      // window + drain margin; the worker can return its honest deadline
+      // envelope before this abort can race it out.
+      timer = setTimeout(() => controller.abort(), transportMs);
       const res = await this.fetchImpl(this.base + path, {
         method: 'POST',
         headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' },
@@ -763,6 +807,10 @@ export class StatiqClient {
         const retryAfter = cause === 'throttled'
           ? this.parseRetryAfterMs(res.headers?.get('retry-after'))
           : undefined;
+        // Whole-call auth/throttle is a real wire status; never report it
+        // as status 0 or an invented dispatch sequence.
+        this.reportFailure(context, path,
+          cause === 'throttled' ? 'fatal_throttled' : 'fatal_auth', null, res.status);
         budget.stop(cause, retryAfter);
         throw new StatiqRunFatalError(cause, res.status, path, '', retryAfter);
       }
@@ -783,7 +831,19 @@ export class StatiqClient {
           envelope.requestedItems !== echoes.length) {
         throw new StatiqProvenanceError(path);
       }
+      // PHASE 1: validate and build EVERY item/echo/identity into a local
+      // staging area. NO counter, audit, evidence record or budget mutation
+      // happens here: one bad late item must leave an entirely untouched
+      // accounting state, never partial audits with a full held reservation.
       const results: BulkItemResult<T>[] = [];
+      const stagedAudits: BulkStatus[] = [];
+      interface StagedFailure {
+        ctx: ProviderCallContext;
+        code: ProviderFailureCode;
+        dispatchSeq: number | null;
+        httpStatus: number | null;
+      }
+      const stagedFailures: StagedFailure[] = [];
       for (let i = 0; i < envelope.items.length; i++) {
         const item = envelope.items[i] as Record<string, unknown>;
         const echo = echoes[i] as BulkItemEcho;
@@ -791,7 +851,7 @@ export class StatiqClient {
         const outcome = ownDataValue(item, 'outcome') as BulkItemResult<T>['outcome'];
         const reason = ownDataValue(item, 'reason') as string | null;
         const up = ownDataValue(item, 'upstream') as Record<string, unknown>;
-        const upstream = {
+        const upstream: BulkItemResult<T>['upstream'] = {
           attempts: ownDataValue(up, 'attempts') as number,
           statuses: ownDataValue(up, 'statuses') as BulkStatus[],
           fetchedAt: ownDataValue(up, 'fetchedAt') as string | null,
@@ -801,27 +861,29 @@ export class StatiqClient {
           throw new StatiqProvenanceError(path);
         }
         results.push({ outcome, reason, upstream, ...(built != null ? { response: built } : {}) });
-        if (upstream.attempts > 0) {
-          for (const status of upstream.statuses) this.auditBulkItem(upstreamPath, status);
-        }
+        if (upstream.attempts > 0) stagedAudits.push(...upstream.statuses);
         if (outcome !== 'ok' && outcome !== 'confirmed-empty') {
-          this.reportFailure(
-            { endpointClass: context?.endpointClass ?? 'none',
+          const provenanceStatus = ownDataValue(ownDataValue(item, 'provenance'), 'httpStatus');
+          stagedFailures.push({
+            ctx: {
+              endpointClass: context?.endpointClass ?? 'none',
               phase: context?.phase ?? 'scan',
-              sampleOrdinal: endpoint === 'markers-bulk' ? ordinalBase + i + 1 : null },
-            path,
-            bulkFailureCode(outcome, reason, endpoint),
-            seqBase + i + 1,
-            typeof ownDataValue(ownDataValue(item, 'provenance'), 'httpStatus') === 'number'
-              ? ownDataValue(ownDataValue(item, 'provenance'), 'httpStatus') as number
-              : null,
-          );
+              sampleOrdinal: endpoint === 'markers-bulk' ? ordinalBase + i + 1 : null,
+            },
+            code: bulkFailureCode(outcome, reason, endpoint),
+            // No fabricated dispatch seq for an item that dispatched nothing.
+            dispatchSeq: upstream.attempts > 0 ? seqBase + i + 1 : null,
+            httpStatus: typeof provenanceStatus === 'number' ? provenanceStatus : null,
+          });
         }
       }
-      // Dispatch/accounting counters track the VERIFIED actual attempts, not
-      // the pessimistic reservation. Settlement happens only now, after every
-      // item, echo, identity, count and histogram cross-check passed.
+      // PHASE 2: the whole envelope is verified; reconcile atomically. Audit
+      // seq, dispatch count and reservation settlement all move together.
       this.dispatchAttempts += envelope.upstreamAttempts;
+      for (const status of stagedAudits) this.auditBulkItem(upstreamPath, status);
+      for (const failure of stagedFailures) {
+        this.reportFailure(failure.ctx, path, failure.code, failure.dispatchSeq, failure.httpStatus);
+      }
       try { context?.onDispatch?.(seqBase + envelope.upstreamAttempts); } catch { /* evidence only */ }
       budget.settleBatch(reserved, envelope.upstreamAttempts);
       return results;
@@ -882,18 +944,19 @@ export class StatiqClient {
         throw new UpstreamRunStoppedError('budget-exhausted',
           this.runBudget?.attemptsMade ?? 0, this.runBudget?.maxAttempts ?? 0);
       }
-      const deadlineMs = Math.max(1, Math.min(BULK_DEADLINE_CAP_MS,
-        this.runDeadlineAt != null ? this.runDeadlineAt - this.now() : BULK_DEADLINE_CAP_MS));
+      const timing = this.bulkBatchTiming();
+      if (!timing) throw new StatiqAbortError('insufficient remaining deadline for a safe bulk batch');
       const items = await this.bulkFetch<StatiqMarkersResponse>(
         BULK_MARKERS_PATH,
         'markers-bulk',
         BULK_MARKER_UPSTREAM_PATH,
-        { squares, budget: { maxUpstreamAttempts: reserved }, deadlineMs },
+        { squares, budget: { maxUpstreamAttempts: reserved }, deadlineMs: timing.workerMs },
         reserved,
         squares.map((s, j) => ({
           key: s.key, latitude: slice[j]!.lat, longitude: slice[j]!.lon, vertices: s.vertices,
         })),
         i,
+        timing.transportMs,
         signal,
         context,
         (item) => ownDataValue(item, 'outcome') === 'confirmed-empty'
@@ -924,6 +987,7 @@ export class StatiqClient {
     stationIds: readonly number[],
     signal?: AbortSignal,
     context?: ProviderCallContext,
+    onItem?: (result: BulkItemResult<StationDetailsWithMeta>, index: number) => void,
   ): Promise<BulkItemResult<StationDetailsWithMeta>[]> {
     const results: BulkItemResult<StationDetailsWithMeta>[] = [];
     for (let i = 0; i < stationIds.length; i += BULK_DETAILS_CHUNK) {
@@ -935,16 +999,17 @@ export class StatiqClient {
         throw new UpstreamRunStoppedError('budget-exhausted',
           this.runBudget?.attemptsMade ?? 0, this.runBudget?.maxAttempts ?? 0);
       }
-      const deadlineMs = Math.max(1, Math.min(BULK_DEADLINE_CAP_MS,
-        this.runDeadlineAt != null ? this.runDeadlineAt - this.now() : BULK_DEADLINE_CAP_MS));
+      const timing = this.bulkBatchTiming();
+      if (!timing) throw new StatiqAbortError('insufficient remaining deadline for a safe bulk batch');
       const items = await this.bulkFetch<StationDetailsWithMeta>(
         BULK_DETAILS_PATH,
         'details-bulk',
         BULK_DETAIL_UPSTREAM_PATH,
-        { stations, budget: { maxUpstreamAttempts: reserved }, deadlineMs },
+        { stations, budget: { maxUpstreamAttempts: reserved }, deadlineMs: timing.workerMs },
         reserved,
         stations.map((s, j) => ({ key: s.key, stationId: slice[j]! })),
         0,
+        timing.transportMs,
         signal,
         context,
         (item) => {
@@ -960,8 +1025,12 @@ export class StatiqClient {
         },
       );
       let stopCause: 'throttled' | 'auth' | undefined;
-      for (const item of items) {
+      for (let j = 0; j < items.length; j++) {
+        const item = items[j] as BulkItemResult<StationDetailsWithMeta>;
         results.push(item);
+        // Incremental detail progress: ingest as each batch resolves so a
+        // later batch failure cannot erase earlier verified candidates.
+        try { onItem?.(item, i + j); } catch { /* progress evidence only */ }
         if (item.outcome === 'unknown' &&
             (item.reason === 'upstream_auth' || item.reason === 'upstream_throttled')) {
           stopCause = item.reason === 'upstream_auth' ? 'auth' : 'throttled';
@@ -1006,8 +1075,8 @@ export class StatiqClient {
     if (!collector) return;
     try {
       const endpointClass =
-        path === '/stations/markers' ? 'stations/markers' :
-        path === '/stations/details' ? 'stations/details' : 'none';
+        path === '/stations/markers' || path === '/stations/markers-bulk' ? 'stations/markers' :
+        path === '/stations/details' || path === '/stations/details-bulk' ? 'stations/details' : 'none';
       collector.record({
         endpointClass: context?.endpointClass ?? endpointClass,
         phase: context?.phase ?? (endpointClass === 'stations/markers' ? 'scan' : 'details'),
@@ -1114,12 +1183,17 @@ export class StatiqClient {
     }
   }
 
-  /** Total upstream attempts made through this client (per run). */
+  /** Verified upstream attempts audited through this client (per run).
+   *  Legacy: one audit per dispatched attempt. Bulk: one audit per VERIFIED
+   *  per-item upstream attempt, emitted only after the whole envelope passed;
+   *  this is also the audit seq source, never the pessimistic reservation. */
   upstreamCallsMade(): number {
     return this.upstreamAttempts;
   }
 
-  /** Dispatched attempts after successful reservation, not completions. */
+  /** Dispatched attempts after successful reservation, not completions.
+   *  Legacy counts reservations (== dispatches); bulk counts the VERIFIED
+   *  actual per-item attempts after the envelope reconciles. */
   dispatchedAttemptsMade(): number {
     return this.dispatchAttempts;
   }
