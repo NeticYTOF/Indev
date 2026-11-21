@@ -350,6 +350,50 @@ describe('process-local job endpoints', () => {
     expect(await res.text()).not.toContain('invalid_final_json');
   });
 
+
+  it('keeps a typed no-fit terminal as a failed not-determined job', async () => {
+    const events: Array<{ outcome: string; noFitDeclared: boolean }> = [];
+    let n = 0;
+    const statiq = {
+      markers: async () => ({
+        ok: true, live: true, retained: false, source: 'test', count: 1,
+        stations: [{ stationId: 42, name: 'NoFit', lat: 28.6, lon: 77.2,
+          address: null, accessType: 1, isCommunityListed: false, stationUrl: '' }],
+      }),
+      detailsWithMeta: async () => ({
+        response: { ok: true, live: true, retained: false, source: 'test',
+          station: { stationId: 42, name: 'NoFit', lat: 28.6, lon: 77.2, chargers: [{
+            chargerId: 420, name: 'DC', type: 'DC', kw: 60, pricePerKwh: 20,
+            connectors: [{ displayId: 1, connectorId: 421, type: 'CCS-2',
+              status: 'faulted', available: false, note: 'PRIVATE_NOTE_SENTINEL' }],
+          }] } },
+        fetchedAt: new Date(),
+      }),
+    } as unknown as StatiqClient;
+    const app = createApp(depsWith(statiq, {
+      aiToolCall: async () => {
+        n += 1;
+        return n === 1
+          ? { content: null, toolCalls: [{ id: 'c1', type: 'function',
+            function: { name: 'get_station_details', arguments: '{"ids":[42]}' } }] }
+          : { content: JSON.stringify({ chosenStationIds: [], notes: '',
+            status: 'not_determined' }), toolCalls: [] };
+      },
+      onPlanRunEvent: (event) => { events.push(event); },
+    }));
+    const started = await app.request('/api/jobs/plan', { method: 'POST', headers,
+      body: JSON.stringify({ origin: ORIGIN, destination: DEST, startSocPct: 50 }) });
+    expect(started.status).toBe(202);
+    const job = await started.json() as { jobId: string; capability: string };
+    const res = await waitTerminal(app, job, 'failed');
+    const failed = await res.json() as { error?: { code?: string } };
+    expect(failed.error?.code).toBe('not_determined');
+    const text = JSON.stringify(failed);
+    expect(text).not.toContain('PRIVATE_NOTE_SENTINEL');
+    expect(text).not.toMatch(/toolAdmission|stationDiagnostics|matchedRuleCounts|noFitDeclared/i);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.noFitDeclared).toBe(true);
+  });
   it('keeps the job outcome intact when the private observer throws', async () => {
     const app = createApp(depsWith({ markers: async () => emptyMarkers } as unknown as StatiqClient, {
       router: { route: async () => ({ distanceKm: 20, durationMin: 20,

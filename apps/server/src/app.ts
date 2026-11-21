@@ -46,7 +46,8 @@ import {
 import { PlanJobRegistry, type PlanJobControls } from './plan-job.js';
 import { runSelective, SelectiveRunError, type FinalAnswerDiagnostic } from './selective-run.js';
 import { SingleRunSlot } from './run-slot.js';
-import { SELECTIVE_TOOL_BUDGETS, type SelectiveCoverageProfile } from './selective-tools.js';
+import { SELECTIVE_TOOL_BUDGETS,
+  type SelectiveCoverageProfile, type ToolAdmissionAggregate } from './selective-tools.js';
 import type { AiToolCall } from './ai-provider.js';
 import type { HostStationEvidence } from './host-connector-evidence.js';
 import { DEFAULT_ALLOWED_WEB_ORIGINS } from './env.js';
@@ -85,6 +86,10 @@ export interface AppDeps {
     matchedRuleCounts: Record<string, number>;
     capStateCounts: Record<string, number>;
     hostReasonsOmitted: number;
+    toolAdmission: ToolAdmissionAggregate;
+    coverage: { normalTurns: number; finalTurns: number;
+      maxUniqueIds: number; admittedUniqueIds: number; unusedUniqueIds: number };
+    noFitDeclared: boolean;
   }) => void;
   selectiveProfile?: SelectiveCoverageProfile;
   /** AI planning config: all three set = enabled. Off by default. */
@@ -216,7 +221,11 @@ function emitPlanRunEvent(
     stationEvidence: { total: number; sampled: number; omitted: number; sampleLimit: number };
     matchedRuleCounts: Record<string, number>;
     capStateCounts: Record<string, number>;
-    hostReasonsOmitted: number },
+    hostReasonsOmitted: number;
+    toolAdmission: ToolAdmissionAggregate;
+    coverage: { normalTurns: number; finalTurns: number;
+      maxUniqueIds: number; admittedUniqueIds: number; unusedUniqueIds: number };
+    noFitDeclared: boolean },
 ): void {
   try {
     deps.onPlanRunEvent?.({
@@ -229,6 +238,9 @@ function emitPlanRunEvent(
       capStateCounts: diagnostics.capStateCounts,
       hostReasonsOmitted: diagnostics.hostReasonsOmitted,
       detailChecksStarted: diagnostics.detailChecksStarted,
+      toolAdmission: diagnostics.toolAdmission,
+      coverage: diagnostics.coverage,
+      noFitDeclared: diagnostics.noFitDeclared,
       detailChecksSettled: diagnostics.detailChecksSettled,
       ...(diagnostics.finalAnswerEvents && diagnostics.finalAnswerEvents.length > 0
         ? { finalAnswerEvents: diagnostics.finalAnswerEvents.slice(0, 5) } : {}),

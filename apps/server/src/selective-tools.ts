@@ -25,6 +25,28 @@ export const SELECTIVE_TOOL_BUDGETS: Record<SelectiveCoverageProfile, SelectiveT
   progressive40: { maxRounds: 8, maxToolCalls: 12, maxIdsPerCall: 5, maxTotalIds: 40 },
 };
 
+export type ToolAdmissionRejectReason =
+  'aborted' | 'call_cap' | 'invalid_shape' | 'invalid_id' |
+  'duplicate_id' | 'unknown_id' | 'total_cap';
+export interface ToolAdmissionAggregate {
+  attemptedCalls: number;
+  admittedCalls: number;
+  rejectedCalls: number;
+  rejectedByReason: Record<ToolAdmissionRejectReason, number>;
+  requestedIds: number;
+  newIds: number;
+  memoIds: number;
+}
+export function emptyAdmissionAggregate(): ToolAdmissionAggregate {
+  return {
+    attemptedCalls: 0, admittedCalls: 0, rejectedCalls: 0,
+    rejectedByReason: {
+      aborted: 0, call_cap: 0, invalid_shape: 0, invalid_id: 0,
+      duplicate_id: 0, unknown_id: 0, total_cap: 0,
+    },
+    requestedIds: 0, newIds: 0, memoIds: 0,
+  };
+}
 export interface AdmittedToolCall {
   ids: number[];
   newIds: number[];
@@ -44,6 +66,7 @@ export class SelectiveToolLedger {
   readonly admitted = new Set<number>();
   private readonly pool: ReadonlySet<number>;
   readonly limits: SelectiveToolBudget;
+  readonly admission: ToolAdmissionAggregate = emptyAdmissionAggregate();
 
   constructor(allowed: ReadonlySet<number>, budget: SelectiveToolBudget = DEFAULT_SELECTIVE_TOOL_BUDGET) {
     for (const value of [budget.maxRounds, budget.maxToolCalls, budget.maxIdsPerCall, budget.maxTotalIds]) {
@@ -63,25 +86,40 @@ export class SelectiveToolLedger {
   }
 
   admit(raw: unknown, signal?: AbortSignal): AdmittedToolCall | null {
-    if (signal?.aborted || this.calls >= this.limits.maxToolCalls) return null;
-    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
-    if (Object.getPrototypeOf(raw) !== Object.prototype) return null;
+    const reject = (reason: ToolAdmissionRejectReason): null => {
+      this.admission.rejectedCalls += 1;
+      this.admission.rejectedByReason[reason] += 1;
+      return null;
+    };
+    this.admission.attemptedCalls += 1;
+    if (signal?.aborted) return reject('aborted');
+    if (this.calls >= this.limits.maxToolCalls) return reject('call_cap');
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw) ||
+        Object.getPrototypeOf(raw) !== Object.prototype) return reject('invalid_shape');
     const keys = Object.keys(raw);
-    if (keys.length !== 1 || keys[0] !== 'ids') return null;
-    const ids = (raw as { ids?: unknown }).ids;
-    if (!Array.isArray(ids) || ids.length === 0 || ids.length > this.limits.maxIdsPerCall) return null;
+    if (keys.length !== 1 || keys[0] !== 'ids') return reject('invalid_shape');
+    const ids = 'ids' in raw ? raw.ids : undefined;
+    if (!Array.isArray(ids) || ids.length === 0 || ids.length > this.limits.maxIdsPerCall) {
+      return reject('invalid_shape');
+    }
+    this.admission.requestedIds += ids.length;
     const seen = new Set<number>();
     const newIds: number[] = [];
     const memoIds: number[] = [];
     for (const id of ids) {
-      if (!positiveInt(id) || seen.has(id) || !this.pool.has(id)) return null;
+      if (!positiveInt(id)) return reject('invalid_id');
+      if (seen.has(id)) return reject('duplicate_id');
+      if (!this.pool.has(id)) return reject('unknown_id');
       seen.add(id);
       if (this.admitted.has(id)) memoIds.push(id); else newIds.push(id);
     }
-    if (this.admitted.size + newIds.length > this.limits.maxTotalIds) return null;
+    if (this.admitted.size + newIds.length > this.limits.maxTotalIds) return reject('total_cap');
     for (const id of seen) this.admitted.add(id);
     this.calls += 1;
     this.plannedNewIds += newIds.length;
+    this.admission.admittedCalls += 1;
+    this.admission.newIds += newIds.length;
+    this.admission.memoIds += memoIds.length;
     return { ids: [...seen], newIds, memoIds };
   }
 

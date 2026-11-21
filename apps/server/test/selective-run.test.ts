@@ -349,6 +349,106 @@ describe('final-answer host contract', () => {
   });
 
 
+
+describe('typed no-fit final contract', () => {
+  const overcapDeps = (aiToolCall: never) => {
+    const base = makeDeps(285, 1, aiToolCall);
+    return { ...base,
+      planOptions: { startSocPct: 50, maxChargerKw: 60 },
+      statiq: {
+        markers: async () => ({ ok: true, live: true, retained: false, source: 'test', count: 1,
+          stations: [{ stationId: 42, name: station.name, lat: 1.347, lon: 0,
+            address: null, accessType: 1, isCommunityListed: false, stationUrl: '' }] }),
+        detailsWithMeta: async () => ({ response: { ok: true, live: true, retained: false,
+          source: 'test', station: { ...station, chargers: [{ ...station.chargers[0], kw: 120 }] } },
+          fetchedAt: new Date() }),
+      } as never };
+  };
+  const noFit = JSON.stringify({ chosenStationIds: [], notes: '', status: 'not_determined' });
+
+  it('terminates honestly after a checked over-cap station', async () => {
+    let n = 0;
+    const replies = [
+      { content: null, toolCalls: [{ id: 'c1', type: 'function',
+        function: { name: 'get_station_details', arguments: '{"ids":[42]}' } }] },
+      { content: noFit, toolCalls: [] },
+    ];
+    const err = await runSelective(overcapDeps((async () => replies[n++]) as never)).catch((e: unknown) => e) as Error & {
+      diagnostics: { noFitDeclared: boolean; finalAnswerEvents: unknown[];
+        coverage: { normalTurns: number; finalTurns: number; unusedUniqueIds: number };
+        toolAdmission: { attemptedCalls: number; admittedCalls: number } };
+    };
+    expect(n).toBe(2);
+    expect(err.name).toBe('SelectiveRunError');
+    expect(err.message).toMatch(/not determined/i);
+    expect(err.message).toMatch(/not a verdict that the route is impossible/i);
+    expect(err.diagnostics.noFitDeclared).toBe(true);
+    expect(err.diagnostics.finalAnswerEvents).toHaveLength(0);
+    expect(err.diagnostics.coverage).toMatchObject({ normalTurns: 2, finalTurns: 0, unusedUniqueIds: 19 });
+    expect(err.diagnostics.toolAdmission).toMatchObject({ attemptedCalls: 1, admittedCalls: 1 });
+  });
+
+  it('keeps a format error separately diagnosed from the no-fit terminal reason', async () => {
+    let n = 0;
+    const replies = [
+      { content: null, toolCalls: [{ id: 'c1', type: 'function',
+        function: { name: 'get_station_details', arguments: '{"ids":[42]}' } }] },
+      { content: '{bad json', toolCalls: [] },
+      { content: noFit, toolCalls: [] },
+    ];
+    const err = await runSelective(overcapDeps((async () => replies[n++]) as never)).catch((e: unknown) => e) as Error & {
+      diagnostics: { noFitDeclared: boolean; finalAnswerEvents: Array<{ reason: string }> };
+    };
+    expect(n).toBe(3);
+    expect(err.message).toMatch(/not determined/i);
+    expect(err.diagnostics.noFitDeclared).toBe(true);
+    expect(err.diagnostics.finalAnswerEvents.map((e) => e.reason)).toContain('invalid_final_json');
+  });
+
+  it('does not accept premature no-fit while unchecked IDs and budget remain', async () => {
+    let n = 0;
+    const replies = [
+      { content: noFit, toolCalls: [] },
+      { content: null, toolCalls: [{ id: 'c2', type: 'function',
+        function: { name: 'get_station_details', arguments: '{"ids":[42]}' } }] },
+      { content: '{"chosenStationIds":[42]}', toolCalls: [] },
+    ];
+    const result = await runSelective(makeDeps(285, 1, (async () => replies[n++]) as never));
+    expect(n).toBe(3);
+    expect(result.plan.stops.map((s) => s.station.stationId)).toEqual([42]);
+    expect(result.diagnostics.finalAnswerEvents.map((e) => e.reason)).toContain('premature_no_fit');
+    expect(result.diagnostics.noFitDeclared).toBe(false);
+  });
+
+  it('rejects no-fit mixed with station IDs as an invalid shape', async () => {
+    let n = 0;
+    const bad = JSON.stringify({ chosenStationIds: [42], status: 'not_determined', notes: '' });
+    const replies = [
+      { content: bad, toolCalls: [] },
+      { content: null, toolCalls: [{ id: 'c5', type: 'function',
+        function: { name: 'get_station_details', arguments: '{"ids":[42]}' } }] },
+      { content: '{"chosenStationIds":[42]}', toolCalls: [] },
+    ];
+    const result = await runSelective(makeDeps(285, 1, (async () => replies[n++]) as never));
+    expect(n).toBe(3);
+    expect(result.plan.stops.map((s) => s.station.stationId)).toEqual([42]);
+    expect(result.diagnostics.finalAnswerEvents.map((e) => e.reason)).toContain('invalid_final_shape');
+    expect(result.diagnostics.noFitDeclared).toBe(false);
+  });
+
+  it('rejects no-fit when host physics already permits zero stops', async () => {
+    let n = 0;
+    const replies = [
+      { content: noFit, toolCalls: [] },
+      { content: '{"chosenStationIds":[]}', toolCalls: [] },
+    ];
+    const result = await runSelective(makeDeps(20, 0, (async () => replies[n++]) as never));
+    expect(n).toBe(2);
+    expect(result.plan.stops).toHaveLength(0);
+    expect(result.diagnostics.finalAnswerEvents.map((e) => e.reason)).toContain('premature_no_fit');
+    expect(result.diagnostics.noFitDeclared).toBe(false);
+  });
+});
 describe('progressive40 detail coverage', () => {
   const lats = Array.from({ length: 40 }, (_, i) => 0.18 + i * 0.45);
   const markerStations = lats.map((lat, i) => ({

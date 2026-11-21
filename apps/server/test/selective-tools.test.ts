@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DEFAULT_SELECTIVE_TOOL_BUDGET, SELECTIVE_TOOL_BUDGETS, SelectiveToolLedger } from '../src/selective-tools.js';
+import { DEFAULT_SELECTIVE_TOOL_BUDGET, SELECTIVE_TOOL_BUDGETS, SelectiveToolLedger, emptyAdmissionAggregate } from '../src/selective-tools.js';
 import { chatCompletionWithTools, AiProviderError } from '../src/ai-provider.js';
 
 const deps = {
@@ -85,4 +85,42 @@ describe('selective coverage profiles', () => {
     expect(ledger.calls).toBe(8);
     expect(ledger.admit({ ids: [41] })).toBeNull();
   });
+
+describe('tool admission aggregate accounting', () => {
+  it('distinguishes admitted calls, memoized IDs, and typed rejections', () => {
+    const ledger = new SelectiveToolLedger(new Set([1, 2, 3]), SELECTIVE_TOOL_BUDGETS.standard20);
+    expect(ledger.admit({ ids: [1, 2] })?.newIds).toEqual([1, 2]);
+    expect(ledger.admit({ ids: [2, 1] })?.memoIds).toEqual([2, 1]);
+    expect(ledger.admit({ ids: [2, 2] })).toBeNull();
+    expect(ledger.admit({ ids: [99] })).toBeNull();
+    expect(ledger.admit({ ids: 'bad' })).toBeNull();
+    expect(ledger.admit({ ids: [0] })).toBeNull();
+    expect(ledger.admission).toEqual({
+      attemptedCalls: 6, admittedCalls: 2, rejectedCalls: 4,
+      rejectedByReason: {
+        aborted: 0, call_cap: 0, invalid_shape: 1, invalid_id: 1,
+        duplicate_id: 1, unknown_id: 1, total_cap: 0,
+      },
+      requestedIds: 8, newIds: 2, memoIds: 2,
+    });
+  });
+
+  it('counts the call-cap rejection without changing native behavior', () => {
+    const ledger = new SelectiveToolLedger(new Set([1, 2]), {
+      maxRounds: 1, maxToolCalls: 1, maxIdsPerCall: 1, maxTotalIds: 1,
+    });
+    expect(ledger.admit({ ids: [1] })).not.toBeNull();
+    expect(ledger.admit({ ids: [2] })).toBeNull();
+    expect(ledger.admission.attemptedCalls).toBe(2);
+    expect(ledger.admission.rejectedByReason.call_cap).toBe(1);
+  });
+
+describe('diagnostic aggregate snapshots', () => {
+  it('returns independent nested reason maps', () => {
+    const first = emptyAdmissionAggregate();
+    first.rejectedByReason.invalid_shape = 99;
+    expect(emptyAdmissionAggregate().rejectedByReason.invalid_shape).toBe(0);
+  });
+});
+});
 });

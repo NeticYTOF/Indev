@@ -6,13 +6,14 @@
 import {
   DEFAULT_PLAN_OPTIONS, UpstreamBudget, assembleAiPlan, computeTotals, cumulativeKm, finalize,
   createProviderFailureCollector, isAbortLike, StatiqRunFatalError, UpstreamRunStoppedError,
-  discoverSelective, hydrateSelective, validateAiChoice,
+  discoverSelective, hydrateSelective, validateAiChoice, socAfterDriving,
   type CorridorCandidate, type OsrmRouter, type PlanOptions, type PlanRunBudget, type PlannerCandidate, type ProviderFailureReport,
   type ResolvedVehicle, type StatiqClient, type TripPlan,
 } from '@indeev/core';
 import { chatCompletionWithTools, type AiToolCall, type ChatToolMessage, type ChatToolDefinition } from './ai-provider.js';
 import { factsFromHydrated, SelectiveToolLedger, SELECTIVE_TOOL_BUDGETS,
-  type SelectiveCoverageProfile, type SelectiveToolBudget } from './selective-tools.js';
+  type SelectiveCoverageProfile, type SelectiveToolBudget,
+  emptyAdmissionAggregate, type ToolAdmissionAggregate } from './selective-tools.js';
 import { buildHostStationEvidence, type HostStationEvidence } from './host-connector-evidence.js';
 import { buildReachabilityGuidance } from './reachability-guidance.js';
 import { observedPowerFromEvidence } from './observed-power.js';
@@ -63,10 +64,11 @@ function parseFinalAnswer(raw: string | null | undefined):
 }
 const FINAL_SCHEMA_REMINDER =
   'Final answer must be one JSON object with chosenStationIds (an array of integer station IDs, ' +
-  'possibly empty) and optional notes (string). No markdown or prose. ' +
-  'Call get_station_details first if live facts are needed.';
+  'possibly empty), optional notes (string), and optional status ("ok" or "not_determined"). ' +
+  'status "not_determined" requires an empty ID array and is allowed only when the allowed checks are exhausted. ' +
+  'No markdown, prose, extra fields, or route-infeasibility claims.';
 export type FinalAnswerDiagnostic = {
-  reason: 'invalid_final_json' | 'invalid_final_shape';
+  reason: 'invalid_final_json' | 'invalid_final_shape' | 'premature_no_fit';
   contentType: string;
   contentLength: number;
 };
@@ -106,6 +108,10 @@ export interface SelectiveRunResult {
     matchedRuleCounts: Record<string, number>;
     capStateCounts: Record<string, number>;
     hostReasonsOmitted: number;
+    toolAdmission: ToolAdmissionAggregate;
+    coverage: { normalTurns: number; finalTurns: number;
+      maxUniqueIds: number; admittedUniqueIds: number; unusedUniqueIds: number };
+    noFitDeclared: boolean;
   };
 };
 type CandidateRow = [number, string, number, number, string | null, number | null, boolean | null];
@@ -151,6 +157,8 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
     stationEvidenceTotal: 0,
     matchedRuleCounts: {} as Record<string, number>,
     capStateCounts: {} as Record<string, number>,
+    toolAdmission: emptyAdmissionAggregate(),
+    normalTurns: 0, finalTurns: 0, admittedUniqueIds: 0, noFitDeclared: false,
   };
   const diag = (): SelectiveRunResult['diagnostics'] => ({
     observedAttempts: runBudget.completedAttempts,
@@ -170,6 +178,16 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
     matchedRuleCounts: { ...diagState.matchedRuleCounts },
     capStateCounts: { ...diagState.capStateCounts },
     hostReasonsOmitted: Math.max(0, diagState.hostReasons.length - 25),
+    toolAdmission: {
+      ...diagState.toolAdmission,
+      rejectedByReason: { ...diagState.toolAdmission.rejectedByReason },
+    },
+    coverage: {
+      normalTurns: diagState.normalTurns, finalTurns: diagState.finalTurns,
+      maxUniqueIds: toolBudget.maxTotalIds, admittedUniqueIds: diagState.admittedUniqueIds,
+      unusedUniqueIds: Math.max(0, toolBudget.maxTotalIds - diagState.admittedUniqueIds),
+    },
+    noFitDeclared: diagState.noFitDeclared,
   });
   try {
   stage('discovery');
@@ -206,8 +224,8 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
       'If the route is already reachable at the required arrival charge, choose no stops and skip detail fetches. ' +
       'If no certified charger is available and both unique checks and tool rounds remain, and unchecked on-route IDs exist, inspect different unchecked IDs in batches of at most five. ' +
       'Never retry memoized IDs, never stop at the first unsuitable shortlist, and never claim the route is infeasible. ' +
-      'Finish with one JSON object and no tool call: {"chosenStationIds":[],"notes":""}. ' +
-      'Replace the empty array with positive integer IDs only after live facts are verified; no markdown or prose.' },
+      'Finish with one JSON object and no tool call: {"chosenStationIds":[],"notes":"","status":"ok"}. ' +
+      'Only after the allowed checks are exhausted, if no certified feasible plan exists, use status "not_determined" with an empty ID array; never claim the route is impossible.' },
     { role: 'user', content: JSON.stringify({
       vehicle: deps.resolved.config,
       resolved: {
@@ -236,6 +254,7 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
     if (!forcedFinal && !ledger.nextRound(signal)) break;
     const closed = forcedFinal;
     if (forcedFinal) reservedFinalConsumed = true;
+    if (closed) diagState.finalTurns += 1; else diagState.normalTurns += 1;
     const activeTools = closed ? [] : [tool];
     const reply = deps.aiToolCall
       ? await deps.aiToolCall(messages, activeTools, signal, ledger.limits.maxToolCalls)
@@ -253,7 +272,13 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
         !Array.isArray(parsed.value) ? parsed.value : null;
       const ids = finalObject && 'chosenStationIds' in finalObject ? finalObject.chosenStationIds : undefined;
       const notes = finalObject && 'notes' in finalObject ? finalObject.notes : undefined;
-      if (!Array.isArray(ids) || (notes !== undefined && typeof notes !== 'string')) {
+      const status = finalObject && 'status' in finalObject ? finalObject.status : undefined;
+      const extraField = finalObject != null &&
+        Object.keys(finalObject).some((key) => key !== 'chosenStationIds' && key !== 'notes' && key !== 'status');
+      const noFit = status === 'not_determined';
+      if (!Array.isArray(ids) || (notes !== undefined && typeof notes !== 'string') ||
+          (status !== undefined && status !== 'ok' && !noFit) || extraField ||
+          (noFit && ids.length > 0)) {
         const reason = !parsed.ok ? 'invalid_final_json' : 'invalid_final_shape';
         const raw = reply.content;
         diagState.finalAnswerEvents.push({
@@ -266,6 +291,33 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
         messages.push({ role: 'assistant', content: 'final answer withheld: contract violation' });
         messages.push({ role: 'user', content: FINAL_SCHEMA_REMINDER });
         continue;
+      }
+      if (noFit) {
+        const remainingUnique = toolBudget.maxTotalIds - ledger.admitted.size;
+        const remainingRounds = ledger.limits.maxRounds - ledger.rounds;
+        const remainingCalls = ledger.limits.maxToolCalls - ledger.calls;
+        const unexamined = pool.size - ledger.admitted.size;
+        const noFitKm = discovery.route.geometry.length > 0
+          ? cumulativeKm(discovery.route.geometry).at(-1) ?? discovery.route.distanceKm
+          : discovery.route.distanceKm;
+        const directReachable = noFitKm <= opts.maxLegKm + 1e-6 &&
+          socAfterDriving(noFitKm, opts.startSocPct, deps.resolved.config) >= opts.minArrivalSocPct - 1e-6;
+        if (directReachable ||
+            (remainingUnique > 0 && remainingRounds > 0 && remainingCalls > 0 && unexamined > 0)) {
+          diagState.finalAnswerEvents.push({ reason: 'premature_no_fit',
+            contentType: 'string', contentLength: reply.content?.length ?? 0 });
+          if (diagState.finalAnswerEvents.length > 5) diagState.finalAnswerEvents.shift();
+          lastReason = 'premature_no_fit';
+          messages.push({ role: 'assistant', content: 'final answer withheld: no-fit premature' });
+          messages.push({ role: 'user', content: FINAL_SCHEMA_REMINDER });
+          continue;
+        }
+        diagState.noFitDeclared = true;
+        lastReason = 'no_fit';
+        throw new SelectiveRunError(
+          `No certified feasible plan was found in ${diagState.detailChecksStarted} detail checks; ` +
+          `${hydrated.size} certified. This is not determined and is not a verdict that the route is impossible.`,
+          diag());
       }
       const choice = { chosenStationIds: ids, notes };
       const usable = [...hydrated.values()];
@@ -312,6 +364,11 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
     messages.push({ role: 'assistant', content: reply.content, tool_calls: calls });
     for (const call of calls) {
       const admitted = ledger.admit(parseArgs(call.function.arguments), signal);
+      diagState.toolAdmission = {
+        ...ledger.admission,
+        rejectedByReason: { ...ledger.admission.rejectedByReason },
+      };
+      diagState.admittedUniqueIds = ledger.admitted.size;
       if (!admitted) {
         messages.push({ role: 'tool', tool_call_id: call.id,
           content: JSON.stringify({ error: 'invalid or over-budget tool request: ids must be 1..5 known on-route IDs' }) });
