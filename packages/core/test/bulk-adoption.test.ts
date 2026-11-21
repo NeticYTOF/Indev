@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { planTrip } from '../src/planner.js';
 import type { OsrmRouter, RouteResult } from '../src/router.js';
-import type { StatiqClient } from '../src/statiq.js';
+import { StatiqRunFatalError, type StatiqClient, type BulkItemResult, type StationDetailsWithMeta } from '../src/statiq.js';
 import type { StatiqStationDetail } from '../src/types.js';
 
 const KM_PER_DEG = 111.32;
@@ -71,12 +71,79 @@ describe('planTrip bulk adoption', () => {
       }));
       return { distanceKm: 200, durationMin: 200, geometry };
     } } as unknown as OsrmRouter;
+    // At 50% start the car can reach the 150 km station (~13% left, above the
+    // 10% reserve) but cannot finish 200 km (~1% left): one charge is required.
+    // Physics is the existing flat-consumption model, unmodified.
     const plan = await planTrip({ router, statiq },
-      { label: 'Origin', lat: 0, lon: 0 }, { label: 'Destination', lat: 200 / KM_PER_DEG, lon: 0 });
+      { label: 'Origin', lat: 0, lon: 0 }, { label: 'Destination', lat: 200 / KM_PER_DEG, lon: 0 },
+      { startSocPct: 50 });
     expect(plan.stops).toHaveLength(1);
     expect(bulkMarkerCalls).toBeGreaterThan(0);
     expect(bulkDetailCalls).toBe(1);
     expect(legacyMarkerCalls).toBe(0);
     expect(legacyDetailCalls).toBe(0);
+  });
+
+
+  it('retains earlier verified detail progress when a later batch fails', async () => {
+    const specs = [
+      { id: 1, km: 100 },
+      { id: 2, km: 150 },
+      { id: 3, km: 200 },
+    ];
+    const statiq = {
+      markers: async () => { throw new Error('legacy markers'); },
+      detailsWithMeta: async () => { throw new Error('legacy details'); },
+      attachRunBudget: () => {},
+      markersBulk: async (points: readonly { lat: number; lon: number }[]) =>
+        points.map((p) => {
+          const near = specs.find((s) => Math.abs(p.lat * KM_PER_DEG - s.km) <= 13);
+          if (!near) {
+            return { outcome: 'confirmed-empty' as const, reason: null,
+              upstream: { attempts: 1, statuses: [200], fetchedAt: LATER.toISOString() },
+              response: { ok: true, live: true, retained: false, source: 'raw-confirmed-empty',
+                count: 0, stations: [] } };
+          }
+          return { outcome: 'ok' as const, reason: null,
+            upstream: { attempts: 1, statuses: [200], fetchedAt: LATER.toISOString() },
+            response: { ok: true, live: true, retained: false, source: 'bulk', count: 1,
+              stations: [{ stationId: near.id, name: `Bulk ${near.id}`,
+                lat: near.km / KM_PER_DEG, lon: 0, address: null, accessType: 1,
+                isCommunityListed: false, stationUrl: '' }] } };
+        }),
+      detailsBulk: async (
+        _ids: readonly number[],
+        _signal: AbortSignal | undefined,
+        _context: import('../src/provider-failure.js').ProviderCallContext | undefined,
+        onItem?: (result: BulkItemResult<StationDetailsWithMeta>, index: number) => void,
+      ): Promise<BulkItemResult<StationDetailsWithMeta>[]> => {
+        // First two detail lookups succeed and are ingested incrementally;
+        // the later batch then fails fatally before the third is returned.
+        for (let i = 0; i < 2; i++) {
+          onItem?.({
+            outcome: 'ok', reason: null,
+            upstream: { attempts: 1, statuses: [200], fetchedAt: LATER.toISOString() },
+            response: { response: { ok: true, live: true, retained: false,
+              source: 'bulk', station: detail(specs[i]!.id, specs[i]!.km) }, fetchedAt: LATER },
+          }, i);
+        }
+        throw new StatiqRunFatalError('auth', 403, '/stations/details-bulk', 'late batch failure');
+      },
+    } as unknown as StatiqClient;
+    const router = { route: async (): Promise<RouteResult> => {
+      const geometry = Array.from({ length: 21 }, (_, i) => ({
+        lat: (200 / KM_PER_DEG) * (i / 20), lon: 0,
+      }));
+      return { distanceKm: 200, durationMin: 200, geometry };
+    } } as unknown as OsrmRouter;
+    const error = await planTrip({ router, statiq },
+      { label: 'Origin', lat: 0, lon: 0 }, { label: 'Destination', lat: 200 / KM_PER_DEG, lon: 0 },
+      { startSocPct: 50 }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    const message = error instanceof Error ? error.message : String(error);
+    // Earlier detail work survives the late fatal stop; the never-completed
+    // candidate is NOT counted as processed/detailed.
+    expect(message).toContain('candidates processed 2/3');
+    expect(message).toContain('2 detailed, 1 remaining');
   });
 });

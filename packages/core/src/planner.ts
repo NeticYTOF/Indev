@@ -314,7 +314,7 @@ export interface RunProgressStats {
 }
 
 /** Human-readable aggregate for not_determined evidence (run level). */
-function coverageEvidence(stats: RunProgressStats): string {
+function coverageEvidence(stats: RunProgressStats, budget?: UpstreamBudget): string {
   const bits: string[] = [];
   if (stats.samplesCompleted > 0 || stats.samplesPlanned > 0) {
     // Mid-scan stops carry the partially-completed plan honestly: the
@@ -334,6 +334,15 @@ function coverageEvidence(stats: RunProgressStats): string {
     bits.push(
       `candidates processed ${stats.candidatesProcessed}/${stats.candidatesPlanned}` +
         ` (${stats.candidatesDetailed} detailed, ${remaining} remaining)`,
+    );
+  }
+  if (budget && budget.reservedButUnknown > 0) {
+    const held = budget.reservedButUnknown;
+    // Unknown bulk transport state is NOT an observed dispatch. Surface the
+    // worst-case hold distinctly so no reservation is presented as completed.
+    bits.push(
+      `${held} upstream attempt reservation${held === 1 ? '' : 's'} held unconfirmed` +
+        ' (fail-closed; not counted as observed dispatches)',
     );
   }
   // DERIVED WORK ESTIMATE (ADVISORY REPORTING ONLY - never gates
@@ -369,8 +378,10 @@ function coverageEvidence(stats: RunProgressStats): string {
  * reserved work was never cancelled, the run simply found no room).
  */
 function notDeterminedFromStop(budget: UpstreamBudget, stats: RunProgressStats): PlanningError {
-  const coverage = coverageEvidence(stats);
-  const attempts = `after ${budget.attemptsMade} of ${budget.maxAttempts} upstream attempts`;
+  const coverage = coverageEvidence(stats, budget);
+  const held = budget.reservedButUnknown;
+  const attempts = `after ${budget.completedAttempts} of ${budget.maxAttempts} observed upstream attempts` +
+    (held > 0 ? ` (${held} unconfirmed reservation${held === 1 ? '' : 's'} held, not counted as dispatched)` : '');
   if (budget.stopped === 'throttled') {
     const wait =
       budget.retryAfterMs != null
@@ -407,9 +418,12 @@ function notDeterminedFromStop(budget: UpstreamBudget, stats: RunProgressStats):
 /** Deadline expiry (cancellation) is also an honest not_determined. */
 function notDeterminedDeadline(budget: UpstreamBudget, stats: RunProgressStats): PlanningError {
   return new PlanningError(
-    `Plan not determined: the run exceeded its time budget (${budget.attemptsMade}` +
-      ` of ${budget.maxAttempts} upstream attempts used) and was cancelled before the route could be verified.` +
-      `${coverageEvidence(stats)} No plan was produced and no trip was saved; nothing here is verified.`,
+    `Plan not determined: the run exceeded its time budget (${budget.completedAttempts}` +
+      ` of ${budget.maxAttempts} observed upstream attempts used` +
+      (budget.reservedButUnknown > 0
+        ? `; ${budget.reservedButUnknown} unconfirmed reservation(s) held` : '') +
+      ') and was cancelled before the route could be verified.' +
+      `${coverageEvidence(stats, budget)} No plan was produced and no trip was saved; nothing here is verified.`,
     'not_determined',
     'deadline',
   );
@@ -685,18 +699,23 @@ async function planCore(
     hooks.stats.candidatesProcessed += 1;
   };
 
-  /** Ordered bulk-details path. Every unique candidate still gets exactly
-   *  one lookup; per-item unknown/not-attempted holes are recorded honestly. */
+  /** Ordered bulk-details path. Every unique candidate gets exactly one
+   *  lookup, ingested incrementally as each batch resolves. A later fatal /
+   *  unknown transport therefore CANNOT erase earlier verified detail work:
+   *  processed/detailed counters stay truthful for the retained progress. */
   const fetchAllBulk = async (): Promise<void> => {
-    const items = await deps.statiq.detailsBulk(
-      corridor.candidates.map((c) => c.stationId), hooks.signal,
-      { endpointClass: 'stations/details', phase: 'details' });
-    for (let i = 0; i < corridor.candidates.length; i++) {
-      const c = corridor.candidates[i] as CorridorCandidate;
+    const processed = new Set<number>();
+    const ingestBulkItem = (
+      item: import('./statiq.js').BulkItemResult<import('./statiq.js').StationDetailsWithMeta> | undefined,
+      index: number,
+    ): void => {
+      if (processed.has(index)) return;
+      const c = corridor.candidates[index];
+      if (!c) return;
+      processed.add(index);
       const seq: { value: number | null } = { value: null };
       const recordDetail = recordDetailFor(seq);
       try {
-        const item = items[i];
         if (!item) throw new Error('Bulk detail result missing');
         if (item.outcome !== 'ok' || !item.response) {
           recordDetail('unknown');
@@ -707,7 +726,28 @@ async function planCore(
         if (isRunFatal(err)) throw err;
         markUnknown(c, err);
       }
+      // processed counts every COMPLETED lookup (fetched, empty or unknown
+      // hole); only a successful ingest reaches candidatesDetailed/detailed.
       hooks.stats.candidatesProcessed += 1;
+    };
+
+    let returned: readonly import('./statiq.js').BulkItemResult<import('./statiq.js').StationDetailsWithMeta>[] = [];
+    try {
+      returned = await deps.statiq.detailsBulk(
+        corridor.candidates.map((c) => c.stationId), hooks.signal,
+        { endpointClass: 'stations/details', phase: 'details' }, ingestBulkItem);
+    } catch (err) {
+      // Retain every callback-ingested item; remaining candidates are NOT
+      // counted as processed (they never completed) and the fatal stop runs
+      // a truthful not_determined with the partial coverage evidence.
+      for (let i = 0; i < returned.length; i++) ingestBulkItem(returned[i], i);
+      throw err;
+    }
+    // Dual coverage: doubles without a callback still return a complete list.
+    // The Set prevents any double-ingest for clients that did call back.
+    for (let i = 0; i < returned.length; i++) ingestBulkItem(returned[i], i);
+    for (let i = 0; i < corridor.candidates.length; i++) {
+      if (!processed.has(i)) ingestBulkItem(undefined, i);
     }
   };
 
