@@ -35,7 +35,11 @@ import { hasFreshProvenance } from './provenance.js';
 import type {
   StatiqCardsResponse,
   StatiqDetailsResponse,
+  StatiqCharger,
+  StatiqConnector,
+  StatiqMarker,
   StatiqMarkersResponse,
+  StatiqStationDetail,
 } from './types.js';
 import { sleep as defaultSleep } from './utils.js';
 import { UpstreamBudget, UpstreamRunStoppedError } from './upstream-budget.js';
@@ -47,6 +51,7 @@ import {
   statusCodeForHttp,
   transportCodeForCause,
   type ProviderCallContext,
+  type ProviderFailureCode,
   type ProviderFailureCollector,
 } from './provider-failure.js';
 
@@ -66,6 +71,369 @@ interface PostJsonOptions {
   readonly rawEmptyConfirmation?: RawEmptyConfirmation;
   readonly rawEmptyCheck?: boolean;
 }
+
+/** Ordered corridor sample for one bulk marker batch. The client builds the
+ *  exact closed square itself so the worker's echoed vertices are controlled. */
+export interface BulkMarkerPoint {
+  readonly lat: number;
+  readonly lon: number;
+}
+
+/** Strictly validated per-item outcome from one bulk batch. `response` is
+ *  present only for `ok`/`confirmed-empty`; every hole stays visible. */
+export interface BulkItemResult<T> {
+  readonly outcome: 'ok' | 'confirmed-empty' | 'unknown' | 'not-attempted';
+  readonly reason: string | null;
+  readonly upstream: { attempts: number; statuses: readonly (number | 'timeout' | 'network' | 'deadline')[]; fetchedAt: string | null };
+  readonly response?: T;
+}
+
+type BulkEndpoint = 'markers-bulk' | 'details-bulk';
+const BULK_MARKERS_PATH = '/stations/markers-bulk';
+const BULK_DETAILS_PATH = '/stations/details-bulk';
+const BULK_MARKER_UPSTREAM_PATH = '/station/v1/markers';
+const BULK_DETAIL_UPSTREAM_PATH = '/station/v1/details';
+const BULK_MARKERS_CHUNK = 12; // live verified at the worker hard cap
+const BULK_DETAILS_CHUNK = 2;  // live verified bound (worker allows 25)
+const BULK_DEADLINE_CAP_MS = 150_000;
+const BULK_EMPTY_MESSAGE = 'No stations found with selected filters';
+const BULK_OUTCOMES = new Set(['ok', 'confirmed-empty', 'unknown', 'not-attempted']);
+const BULK_REASONS = new Set([
+  'budget_exhausted', 'deadline', 'upstream_throttled', 'upstream_timeout',
+  'upstream_error', 'upstream_auth', 'contract_invalid',
+]);
+
+/** Actual upstream status values: HTTP integers or the documented disposition
+ *  markers. No synthesized integer is invented for a timeout/network/deadline. */
+export type BulkStatus = number | 'timeout' | 'network' | 'deadline';
+const BULK_STATUS_MARKERS = new Set(['timeout', 'network', 'deadline']);
+function bulkStatus(value: unknown): value is BulkStatus {
+  if (typeof value === 'string') return BULK_STATUS_MARKERS.has(value);
+  return bulkInt(value) && (value as number) >= 0 && (value as number) <= 599;
+}
+function bulkStatusKey(value: BulkStatus): string {
+  return typeof value === 'string' ? value : String(value);
+}
+interface BulkItemEcho {
+  readonly key: string;
+  readonly latitude?: number;
+  readonly longitude?: number;
+  readonly vertices?: readonly MarkerVertex[];
+  readonly stationId?: number;
+}
+
+function bulkInt(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value);
+}
+function bulkJsonMediaType(value: unknown): boolean {
+  return typeof value === 'string' && value.split(';', 1)[0]?.trim().toLowerCase() === 'application/json';
+}
+function bulkNoStore(value: unknown): boolean {
+  return typeof value === 'string' &&
+    value.split(',').some((part) => part.trim().toLowerCase() === 'no-store');
+}
+function bulkStamp(value: unknown): boolean {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value));
+}
+function bulkFailureCode(outcome: string, reason: string | null, endpoint: BulkEndpoint): ProviderFailureCode {
+  if (outcome === 'ok' || outcome === 'confirmed-empty') return 'unknown';
+  switch (reason) {
+    case 'budget_exhausted': return 'budget_exhausted';
+    case 'deadline': return 'deadline';
+    case 'upstream_throttled': return 'http_429';
+    case 'upstream_timeout': return 'transport_timeout';
+    case 'upstream_error': return 'transport_network';
+    case 'upstream_auth': return 'fatal_auth';
+    case 'contract_invalid':
+      return endpoint === 'markers-bulk' ? 'invalid_marker_list' : 'invalid_details_shape';
+    default: return 'unknown';
+  }
+}
+
+interface BulkEnvelopeView {
+  requestedItems: number;
+  upstreamAttempts: number;
+  items: readonly Record<string, unknown>[];
+}
+
+/** Strict whole-call + per-item validation. A partial envelope (ok:false)
+ *  is valid: every item stays an independent honest outcome. Settlement is
+ *  allowed only after ALL cross-checks below pass, so fake unused counts can
+ *  never release a reservation. */
+function parseBulkEnvelope(value: unknown, endpoint: BulkEndpoint, path: string): BulkEnvelopeView | null {
+  if (!ownRecord(value)) return null;
+  const ok = ownDataValue(value, 'ok');
+  const live = ownDataValue(value, 'live');
+  const retained = ownDataValue(value, 'retained');
+  const ep = ownDataValue(value, 'endpoint');
+  const startedAt = ownDataValue(value, 'startedAt');
+  const completedAt = ownDataValue(value, 'completedAt');
+  const deadline = ownDataValue(value, 'deadline');
+  const requested = ownDataValue(value, 'requestedItems');
+  const attempted = ownDataValue(value, 'attemptedItems');
+  const completed = ownDataValue(value, 'completedItems');
+  const attempts = ownDataValue(value, 'upstreamAttempts');
+  const byStatus = ownDataValue(value, 'upstreamByStatus');
+  const items = ownDataValue(value, 'items');
+  if (typeof ok !== 'boolean' || live !== true || retained !== false || ep !== endpoint) return null;
+  if (!bulkStamp(startedAt) || !bulkStamp(completedAt) ||
+      Date.parse(completedAt as string) < Date.parse(startedAt as string)) return null;
+  if (!ownRecord(deadline) || !bulkInt(ownDataValue(deadline, 'ms')) ||
+      (ownDataValue(deadline, 'ms') as number) <= 0 ||
+      typeof ownDataValue(deadline, 'hit') !== 'boolean') return null;
+  if (!bulkInt(requested) || !bulkInt(attempted) || !bulkInt(completed) || !bulkInt(attempts) ||
+      (attempts as number) < 0 || (attempted as number) < 0 || (completed as number) < 0) return null;
+  if (!ownRecord(byStatus)) return null;
+  const declaredHistogram = new Map<string, number>();
+  let declaredStatusSum = 0;
+  for (const key of Object.keys(byStatus)) {
+    const numericKey = Number(key);
+    const validKey = BULK_STATUS_MARKERS.has(key) ||
+      (bulkInt(numericKey) && numericKey >= 0 && numericKey <= 599 && String(numericKey) === key);
+    const count = ownDataValue(byStatus, key);
+    if (!validKey || !bulkInt(count) || (count as number) < 0) return null;
+    declaredHistogram.set(key, count as number);
+    declaredStatusSum += count as number;
+  }
+  if (declaredStatusSum !== attempts) return null;
+  if (!Array.isArray(items) || items.length !== requested) return null;
+
+  let attemptedCount = 0;
+  let completedCount = 0;
+  let itemAttemptSum = 0;
+  const observedHistogram = new Map<string, number>();
+  for (const item of items) {
+    if (!ownRecord(item)) return null;
+    const outcome = ownDataValue(item, 'outcome');
+    const reason = ownDataValue(item, 'reason');
+    const upstream = ownDataValue(item, 'upstream');
+    const provenance = ownDataValue(item, 'provenance');
+    const data = ownDataValue(item, 'data');
+    if (typeof outcome !== 'string' || !BULK_OUTCOMES.has(outcome)) return null;
+    if (reason !== null && !(typeof reason === 'string' && BULK_REASONS.has(reason))) return null;
+    if (!ownRecord(upstream)) return null;
+    const attemptsForItem = ownDataValue(upstream, 'attempts');
+    const statuses = ownDataValue(upstream, 'statuses');
+    const fetchedAt = ownDataValue(upstream, 'fetchedAt');
+    if (!bulkInt(attemptsForItem) || (attemptsForItem as number) < 0 || (attemptsForItem as number) > 1 ||
+        !Array.isArray(statuses) || statuses.length !== attemptsForItem) return null;
+    for (const status of statuses) {
+      if (!bulkStatus(status)) return null;
+      const key = bulkStatusKey(status);
+      observedHistogram.set(key, (observedHistogram.get(key) ?? 0) + 1);
+    }
+    if (attemptsForItem === 0) {
+      if (statuses.length !== 0 || fetchedAt !== null || provenance !== null || reason === null) return null;
+    } else {
+      attemptedCount++;
+      itemAttemptSum += attemptsForItem as number;
+      if (!bulkStamp(fetchedAt)) return null;
+      if (provenance !== null && !ownRecord(provenance)) return null;
+    }
+    if (outcome === 'ok' || outcome === 'confirmed-empty') {
+      if (reason !== null || attemptsForItem !== 1 || statuses.length !== 1 || statuses[0] !== 200 ||
+          !ownRecord(provenance) ||
+          ownDataValue(provenance, 'sourceUrlPath') !== path ||
+          ownDataValue(provenance, 'httpStatus') !== 200 ||
+          !bulkJsonMediaType(ownDataValue(provenance, 'contentType')) ||
+          !(ownDataValue(provenance, 'cacheControl') === null ||
+            typeof ownDataValue(provenance, 'cacheControl') === 'string')) return null;
+      completedCount++;
+    } else if (data !== null) {
+      // UNKNOWN / not-attempted never carry success data.
+      return null;
+    }
+    if (outcome === 'not-attempted' && attemptsForItem !== 0) return null;
+    if (outcome === 'unknown' && attemptsForItem === 0) return null;
+    if (outcome === 'confirmed-empty') {
+      const confirmation = ownDataValue(item, 'confirmation');
+      if (data !== null || !ownRecord(confirmation) ||
+          path !== BULK_MARKER_UPSTREAM_PATH ||
+          ownDataValue(confirmation, 'sourceUrlPath') !== BULK_MARKER_UPSTREAM_PATH ||
+          ownDataValue(confirmation, 'httpStatus') !== 200 ||
+          !bulkJsonMediaType(ownDataValue(confirmation, 'contentType')) ||
+          ownDataValue(confirmation, 'fetchedAt') !== fetchedAt ||
+          ownDataValue(confirmation, 'statusCode') !== 1001 ||
+          ownDataValue(confirmation, 'success') !== false ||
+          ownDataValue(confirmation, 'message') !== BULK_EMPTY_MESSAGE ||
+          ownDataValue(confirmation, 'stationsCount') !== 0) return null;
+    }
+  }
+  // Aggregates, per-item attempt sum and the exact status histogram must agree
+  // before any reservation is settled.
+  if (itemAttemptSum !== attempts || attemptedCount !== attempted || completedCount !== completed) return null;
+  if (ok !== (completedCount === requested)) return null;
+  if (observedHistogram.size !== declaredHistogram.size) return null;
+  for (const [key, count] of observedHistogram) {
+    if (declaredHistogram.get(key) !== count) return null;
+  }
+  return {
+    requestedItems: requested as number,
+    upstreamAttempts: attempts as number,
+    items: items as readonly Record<string, unknown>[],
+  };
+}
+
+function markerResponseFromBulkData(data: unknown): StatiqMarkersResponse | null {
+  if (!ownRecord(data)) return null;
+  const raw = ownDataValue(data, 'stations');
+  if (!Array.isArray(raw)) return null;
+  const stations: StatiqMarker[] = [];
+  for (const value of raw) {
+    if (!ownRecord(value)) return null;
+    const stationId = ownDataValue(value, 'stationId');
+    const name = ownDataValue(value, 'name');
+    const lat = ownDataValue(value, 'lat');
+    const lon = ownDataValue(value, 'lon');
+    if (!bulkInt(stationId) || typeof name !== 'string' ||
+        typeof lat !== 'number' || !Number.isFinite(lat) ||
+        typeof lon !== 'number' || !Number.isFinite(lon)) return null;
+    const address = ownDataValue(value, 'address');
+    const accessType = ownDataValue(value, 'accessType');
+    const stationUrl = ownDataValue(value, 'stationUrl');
+    stations.push({
+      stationId, name, lat, lon,
+      address: typeof address === 'string' ? address : null,
+      accessType: bulkInt(accessType) ? accessType : 0,
+      isCommunityListed: ownDataValue(value, 'isCommunityListed') === true,
+      stationUrl: typeof stationUrl === 'string' ? stationUrl : '',
+    });
+  }
+  return {
+    ok: true,
+    live: true,
+    retained: false,
+    source: 'Statiq station markers (live)',
+    count: stations.length,
+    stations,
+  };
+}
+
+function emptyMarkersFromBulk(): StatiqMarkersResponse {
+  return { ok: true, live: true, retained: false, source: 'raw-confirmed-empty', count: 0, stations: [] };
+}
+
+function strictText(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  return typeof value === 'string' ? value : null;
+}
+function strictOptionalNumber(value: unknown): number | null {
+  if (value === undefined || value === null) return null;
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+function strictTextOrEmpty(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  return typeof value === 'string' ? value : '';
+}
+function safePositive(value: unknown): number | null {
+  return bulkInt(value) && (value as number) > 0 && Number.isSafeInteger(value) ? value as number : null;
+}
+function safeNonNegative(value: unknown): number | null {
+  return bulkInt(value) && (value as number) >= 0 && Number.isSafeInteger(value) ? value as number : null;
+}
+
+/** Rebuild the worker-normalized detail with NO coercion. Malformed identity,
+ *  charger/connector power, tariff, health or type fails the item closed
+ *  (unknown); absent optional fields remain null. */
+function stationDetailFromBulk(value: unknown): StatiqStationDetail | null {
+  if (!ownRecord(value)) return null;
+  const stationId = safePositive(ownDataValue(value, 'stationId'));
+  const name = ownDataValue(value, 'name');
+  const lat = ownDataValue(value, 'lat');
+  const lon = ownDataValue(value, 'lon');
+  if (stationId === null || typeof name !== 'string' ||
+      typeof lat !== 'number' || !Number.isFinite(lat) ||
+      typeof lon !== 'number' || !Number.isFinite(lon)) return null;
+  const chargersRaw = ownDataValue(value, 'chargers');
+  if (!Array.isArray(chargersRaw)) return null;
+  const chargers: StatiqCharger[] = [];
+  for (const chargerValue of chargersRaw) {
+    if (!ownRecord(chargerValue)) return null;
+    const chargerId = safePositive(ownDataValue(chargerValue, 'chargerId'));
+    const chargerName = ownDataValue(chargerValue, 'name');
+    const chargerType = ownDataValue(chargerValue, 'type');
+    const kw = ownDataValue(chargerValue, 'kw');
+    if (chargerId === null || typeof chargerName !== 'string' || typeof chargerType !== 'string' ||
+        typeof kw !== 'number' || !Number.isFinite(kw)) return null;
+    const priceRaw = ownDataValue(chargerValue, 'pricePerKwh');
+    if (priceRaw !== undefined && priceRaw !== null &&
+        (typeof priceRaw !== 'number' || !Number.isFinite(priceRaw))) return null;
+    const connectorsRaw = ownDataValue(chargerValue, 'connectors');
+    if (!Array.isArray(connectorsRaw)) return null;
+    const connectors: StatiqConnector[] = [];
+    for (const connValue of connectorsRaw) {
+      if (!ownRecord(connValue)) return null;
+      const displayId = safeNonNegative(ownDataValue(connValue, 'displayId'));
+      const connectorId = safeNonNegative(ownDataValue(connValue, 'connectorId'));
+      const type = ownDataValue(connValue, 'type');
+      const status = ownDataValue(connValue, 'status');
+      const availableRaw = ownDataValue(connValue, 'available');
+      const noteRaw = ownDataValue(connValue, 'note');
+      if (displayId === null || connectorId === null ||
+          typeof type !== 'string' || typeof status !== 'string' ||
+          (availableRaw !== undefined && availableRaw !== null && typeof availableRaw !== 'boolean') ||
+          (noteRaw !== undefined && noteRaw !== null && typeof noteRaw !== 'string')) return null;
+      connectors.push({
+        displayId, connectorId, type, status,
+        available: availableRaw === undefined || availableRaw === null ? null : availableRaw,
+        note: noteRaw === undefined || noteRaw === null ? null : noteRaw,
+      });
+    }
+    const currencyRaw = ownDataValue(chargerValue, 'currency');
+    const lastUsedRaw = ownDataValue(chargerValue, 'lastUsedOn');
+    if ((currencyRaw !== undefined && currencyRaw !== null && typeof currencyRaw !== 'string') ||
+        (lastUsedRaw !== undefined && lastUsedRaw !== null && typeof lastUsedRaw !== 'string')) return null;
+    chargers.push({
+      chargerId, name: chargerName, type: chargerType, kw,
+      pricePerKwh: priceRaw === undefined ? null : priceRaw,
+      currency: currencyRaw === undefined ? null : currencyRaw,
+      lastUsedOn: lastUsedRaw === undefined ? null : lastUsedRaw,
+      connectors,
+    });
+  }
+  const amenitiesRaw = ownDataValue(value, 'amenities');
+  if (amenitiesRaw !== undefined && amenitiesRaw !== null &&
+      (!Array.isArray(amenitiesRaw) || amenitiesRaw.some((a) => typeof a !== 'string'))) return null;
+  const summaryRaw = ownDataValue(value, 'summary');
+  let summary: StatiqStationDetail['summary'] = null;
+  if (summaryRaw !== undefined && summaryRaw !== null) {
+    if (!ownRecord(summaryRaw)) return null;
+    const anyDc = ownDataValue(summaryRaw, 'anyDc');
+    const ccs2Dc = ownDataValue(summaryRaw, 'ccs2Dc');
+    const availableNow = ownDataValue(summaryRaw, 'availableNow');
+    const maxKw = strictOptionalNumber(ownDataValue(summaryRaw, 'maxDcCcs2Kw'));
+    const counts = ownDataValue(summaryRaw, 'statusCounts');
+    if (typeof anyDc !== 'boolean' || typeof ccs2Dc !== 'boolean' ||
+        typeof availableNow !== 'boolean' || !ownRecord(counts)) return null;
+    const statusCounts: Record<string, number> = {};
+    for (const key of Object.keys(counts)) {
+      const n = ownDataValue(counts, key);
+      if (!bulkInt(n) || (n as number) < 0) return null;
+      statusCounts[key] = n as number;
+    }
+    summary = { anyDc, ccs2Dc, maxDcCcs2Kw: maxKw, availableNow, statusCounts };
+  }
+  const nullable = (key: string): string | null => strictText(ownDataValue(value, key));
+  const navUrl = ownDataValue(value, 'navUrl');
+  const stationUrl = ownDataValue(value, 'stationUrl');
+  if ((navUrl !== undefined && navUrl !== null && typeof navUrl !== 'string') ||
+      (stationUrl !== undefined && stationUrl !== null && typeof stationUrl !== 'string')) return null;
+  return {
+    stationId, name, lat, lon,
+    address: nullable('address'), area: nullable('area'), city: nullable('city'),
+    landmark: nullable('landmark'), hours: nullable('hours'), openText: nullable('openText'),
+    rating: strictOptionalNumber(ownDataValue(value, 'rating')),
+    reviewCount: strictOptionalNumber(ownDataValue(value, 'reviewCount')),
+    accessType: nullable('accessType'),
+    navUrl: strictTextOrEmpty(navUrl), stationUrl: strictTextOrEmpty(stationUrl),
+    imageUrl: nullable('imageUrl'),
+    amenities: Array.isArray(amenitiesRaw) ? amenitiesRaw.filter((a): a is string => typeof a === 'string') : [],
+    stepsToReach: nullable('stepsToReach'),
+    chargers,
+    summary,
+  };
+}
+
 function markerSquareVertices(lat: number, lon: number): MarkerVertex[] {
   const west = lon - 0.1, east = lon + 0.1, south = lat - 0.1, north = lat + 0.1;
   return [[west, south], [east, south], [east, north], [west, north], [west, south]];
@@ -75,7 +443,7 @@ function ownDataValue(value: unknown, key: string): unknown {
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
   return descriptor && 'value' in descriptor ? descriptor.value : undefined;
 }
-function ownRecord(value: unknown): boolean {
+function ownRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 function confirmedRawEmpty(res: Response, parsed: unknown): boolean {
@@ -249,6 +617,11 @@ export class StatiqClient {
   private callStamps: number[] = [];
   /** Serializes slot acquisition so concurrent callers cannot interleave. */
   private slotQueue: Promise<void> = Promise.resolve();
+  /** One active bulk batch; legacy dispatch is refused while it is set. */
+  private bulkInFlight = false;
+  /** Once a bulk transport/contract state is unknown, every later bulk or
+   *  legacy dispatch fails closed with the same error - no retry, no fallback. */
+  private bulkFailureLatch: Error | null = null;
 
   constructor(opts: StatiqClientOptions) {
     if (!opts.token) {
@@ -326,6 +699,280 @@ export class StatiqClient {
     const result = await this.detailsWithMeta(stationId, signal);
     if (signal?.aborted) throw new StatiqAbortError();
     return result.response;
+  }
+
+  /**
+   * BULK TRANSPORT (owner-deployed additive endpoints). Strictly validated,
+   * pessimistically budget-reserved, one active batch at a time. The worker
+   * reproduces the same 25/62s + 2s pacing server-side; the client does NOT
+   * re-pace batches. One client HTTP envelope may cover many upstream fetches.
+   */
+  private auditBulkItem(endpoint: string, status: BulkStatus): void {
+    this.upstreamAttempts += 1;
+    if (this.onUpstreamCall) {
+      this.onUpstreamCall({
+        seq: this.upstreamAttempts,
+        endpoint: endpoint.replace(/^\/+/, ''),
+        // Transport dispositions are audited as status 0 (the documented
+        // transport-failure code), never as a fabricated HTTP status.
+        status: typeof status === 'number' ? status : 0,
+        at: new Date().toISOString(),
+      });
+    }
+  }
+
+  private async bulkFetch<T>(
+    path: string,
+    endpoint: BulkEndpoint,
+    upstreamPath: string,
+    payload: unknown,
+    reserved: number,
+    echoes: readonly BulkItemEcho[],
+    ordinalBase: number,
+    signal: AbortSignal | undefined,
+    context: ProviderCallContext | undefined,
+    build: (item: Record<string, unknown>) => T | null,
+  ): Promise<BulkItemResult<T>[]> {
+    if (this.bulkFailureLatch) throw this.bulkFailureLatch;
+    if (this.bulkInFlight) throw new StatiqAbortError('a bulk batch is already active');
+    const budget = this.runBudget;
+    if (!budget) throw new Error('Bulk transport requires an attached run budget');
+    if (!signal?.aborted) this.bulkInFlight = true;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onOuterAbort = () => controller.abort();
+    signal?.addEventListener('abort', onOuterAbort, { once: true });
+    try {
+      if (signal?.aborted) throw new StatiqAbortError();
+      budget.reserveBatch(reserved);
+      const seqBase = this.dispatchAttempts;
+      const remainingHold = this.runDeadlineAt != null ? this.runDeadlineAt - this.now() : BULK_DEADLINE_CAP_MS;
+      const deadlineMs = Math.max(1, Math.min(BULK_DEADLINE_CAP_MS, remainingHold));
+      timer = setTimeout(() => controller.abort(), deadlineMs);
+      const res = await this.fetchImpl(this.base + path, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      // The single client HTTP envelope is NOT an upstream attempt: actual
+      // attempts are audited below from the VERIFIED per-item statuses only.
+      if (signal?.aborted) throw new StatiqAbortError();
+      if (res.status === 401 || res.status === 403 || res.status === 429) {
+        const cause = res.status === 429 ? 'throttled' : 'auth';
+        const retryAfter = cause === 'throttled'
+          ? this.parseRetryAfterMs(res.headers?.get('retry-after'))
+          : undefined;
+        budget.stop(cause, retryAfter);
+        throw new StatiqRunFatalError(cause, res.status, path, '', retryAfter);
+      }
+      const text = await res.text();
+      if (signal?.aborted) throw new StatiqAbortError();
+      // Unsupported-path 404 is NOT safely verifiable from the deployed
+      // contract artifacts: insufficient evidence means no legacy fallback.
+      if (!res.ok) throw new StatiqApiError(res.status, path, text);
+      if (!bulkJsonMediaType(res.headers?.get('content-type')) ||
+          !bulkNoStore(res.headers?.get('cache-control')) ||
+          res.headers?.get('x-evroute-upstream') !== 'statiq-live') {
+        throw new StatiqProvenanceError(path);
+      }
+      let parsed: unknown;
+      try { parsed = JSON.parse(text); } catch { throw new StatiqProvenanceError(path); }
+      const envelope = parseBulkEnvelope(parsed, endpoint, upstreamPath);
+      if (!envelope || envelope.upstreamAttempts > reserved ||
+          envelope.requestedItems !== echoes.length) {
+        throw new StatiqProvenanceError(path);
+      }
+      const results: BulkItemResult<T>[] = [];
+      for (let i = 0; i < envelope.items.length; i++) {
+        const item = envelope.items[i] as Record<string, unknown>;
+        const echo = echoes[i] as BulkItemEcho;
+        if (!this.bulkEchoMatches(item, echo)) throw new StatiqProvenanceError(path);
+        const outcome = ownDataValue(item, 'outcome') as BulkItemResult<T>['outcome'];
+        const reason = ownDataValue(item, 'reason') as string | null;
+        const up = ownDataValue(item, 'upstream') as Record<string, unknown>;
+        const upstream = {
+          attempts: ownDataValue(up, 'attempts') as number,
+          statuses: ownDataValue(up, 'statuses') as BulkStatus[],
+          fetchedAt: ownDataValue(up, 'fetchedAt') as string | null,
+        };
+        const built = outcome === 'ok' || outcome === 'confirmed-empty' ? build(item) : null;
+        if ((outcome === 'ok' || outcome === 'confirmed-empty') && built == null) {
+          throw new StatiqProvenanceError(path);
+        }
+        results.push({ outcome, reason, upstream, ...(built != null ? { response: built } : {}) });
+        if (upstream.attempts > 0) {
+          for (const status of upstream.statuses) this.auditBulkItem(upstreamPath, status);
+        }
+        if (outcome !== 'ok' && outcome !== 'confirmed-empty') {
+          this.reportFailure(
+            { endpointClass: context?.endpointClass ?? 'none',
+              phase: context?.phase ?? 'scan',
+              sampleOrdinal: endpoint === 'markers-bulk' ? ordinalBase + i + 1 : null },
+            path,
+            bulkFailureCode(outcome, reason, endpoint),
+            seqBase + i + 1,
+            typeof ownDataValue(ownDataValue(item, 'provenance'), 'httpStatus') === 'number'
+              ? ownDataValue(ownDataValue(item, 'provenance'), 'httpStatus') as number
+              : null,
+          );
+        }
+      }
+      // Dispatch/accounting counters track the VERIFIED actual attempts, not
+      // the pessimistic reservation. Settlement happens only now, after every
+      // item, echo, identity, count and histogram cross-check passed.
+      this.dispatchAttempts += envelope.upstreamAttempts;
+      try { context?.onDispatch?.(seqBase + envelope.upstreamAttempts); } catch { /* evidence only */ }
+      budget.settleBatch(reserved, envelope.upstreamAttempts);
+      return results;
+    } catch (err) {
+      // Unknown transport/contract state latches the run closed: no retry,
+      // no legacy resubmission, no follow-on batch, no concurrent dispatch.
+      this.bulkFailureLatch = err instanceof Error ? err : new Error('bulk transport failed');
+      throw err;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener('abort', onOuterAbort);
+      this.bulkInFlight = false;
+    }
+  }
+
+  private bulkEchoMatches(item: Record<string, unknown>, echo: BulkItemEcho): boolean {
+    if (ownDataValue(item, 'key') !== echo.key) return false;
+    if (echo.latitude !== undefined && ownDataValue(item, 'latitude') !== echo.latitude) return false;
+    if (echo.longitude !== undefined && ownDataValue(item, 'longitude') !== echo.longitude) return false;
+    if (echo.vertices !== undefined) {
+      const value = ownDataValue(item, 'vertices');
+      if (!Array.isArray(value) || value.length !== echo.vertices.length) return false;
+      for (let i = 0; i < echo.vertices.length; i++) {
+        const pair = value[i];
+        if (!Array.isArray(pair) || pair.length !== 2 ||
+            pair[0] !== echo.vertices[i]![0] || pair[1] !== echo.vertices[i]![1]) return false;
+      }
+    }
+    if (echo.stationId !== undefined &&
+        !(bulkInt(ownDataValue(item, 'stationId')) && Number.isSafeInteger(ownDataValue(item, 'stationId')) &&
+          (ownDataValue(item, 'stationId') as number) > 0 && ownDataValue(item, 'stationId') === echo.stationId)) {
+      return false;
+    }
+    return true;
+  }
+
+  /** Fetch every corridor sample in ordered bulk batches (12 max per call).
+   *  `onItem` fires as each batch resolves so completed early batches survive
+   *  a later fatal stop; sample ordinals are global, never per-batch. */
+  async markersBulk(
+    points: readonly BulkMarkerPoint[],
+    signal?: AbortSignal,
+    context?: ProviderCallContext,
+    onItem?: (result: BulkItemResult<StatiqMarkersResponse>, index: number) => void,
+  ): Promise<BulkItemResult<StatiqMarkersResponse>[]> {
+    const results: BulkItemResult<StatiqMarkersResponse>[] = [];
+    for (let i = 0; i < points.length; i += BULK_MARKERS_CHUNK) {
+      const slice = points.slice(i, i + BULK_MARKERS_CHUNK);
+      const squares = slice.map((p, j) => ({
+        key: `s${i + j}`,
+        latitude: p.lat,
+        longitude: p.lon,
+        vertices: markerSquareVertices(p.lat, p.lon),
+      }));
+      const reserved = Math.min(slice.length,
+        (this.runBudget?.maxAttempts ?? 0) - (this.runBudget?.attemptsMade ?? 0));
+      if (reserved < 1) {
+        throw new UpstreamRunStoppedError('budget-exhausted',
+          this.runBudget?.attemptsMade ?? 0, this.runBudget?.maxAttempts ?? 0);
+      }
+      const deadlineMs = Math.max(1, Math.min(BULK_DEADLINE_CAP_MS,
+        this.runDeadlineAt != null ? this.runDeadlineAt - this.now() : BULK_DEADLINE_CAP_MS));
+      const items = await this.bulkFetch<StatiqMarkersResponse>(
+        BULK_MARKERS_PATH,
+        'markers-bulk',
+        BULK_MARKER_UPSTREAM_PATH,
+        { squares, budget: { maxUpstreamAttempts: reserved }, deadlineMs },
+        reserved,
+        squares.map((s, j) => ({
+          key: s.key, latitude: slice[j]!.lat, longitude: slice[j]!.lon, vertices: s.vertices,
+        })),
+        i,
+        signal,
+        context,
+        (item) => ownDataValue(item, 'outcome') === 'confirmed-empty'
+          ? emptyMarkersFromBulk()
+          : markerResponseFromBulkData(ownDataValue(item, 'data')),
+      );
+      let stopCause: 'throttled' | 'auth' | undefined;
+      for (let j = 0; j < items.length; j++) {
+        const item = items[j] as BulkItemResult<StatiqMarkersResponse>;
+        results.push(item);
+        try { onItem?.(item, i + j); } catch { /* progress evidence never alters policy */ }
+        if (item.outcome === 'unknown' &&
+            (item.reason === 'upstream_auth' || item.reason === 'upstream_throttled')) {
+          stopCause = item.reason === 'upstream_auth' ? 'auth' : 'throttled';
+        }
+      }
+      // Per-item upstream auth/throttle stops ALL later dispatches.
+      if (stopCause) {
+        this.runBudget?.stop(stopCause);
+        throw new StatiqRunFatalError(stopCause, 0, BULK_MARKERS_PATH, 'per-item upstream fatal');
+      }
+    }
+    return results;
+  }
+
+  /** Fetch details for every unique station in ordered bulk batches. */
+  async detailsBulk(
+    stationIds: readonly number[],
+    signal?: AbortSignal,
+    context?: ProviderCallContext,
+  ): Promise<BulkItemResult<StationDetailsWithMeta>[]> {
+    const results: BulkItemResult<StationDetailsWithMeta>[] = [];
+    for (let i = 0; i < stationIds.length; i += BULK_DETAILS_CHUNK) {
+      const slice = stationIds.slice(i, i + BULK_DETAILS_CHUNK);
+      const stations = slice.map((id, j) => ({ key: `d${i + j}`, stationId: id }));
+      const reserved = Math.min(slice.length,
+        (this.runBudget?.maxAttempts ?? 0) - (this.runBudget?.attemptsMade ?? 0));
+      if (reserved < 1) {
+        throw new UpstreamRunStoppedError('budget-exhausted',
+          this.runBudget?.attemptsMade ?? 0, this.runBudget?.maxAttempts ?? 0);
+      }
+      const deadlineMs = Math.max(1, Math.min(BULK_DEADLINE_CAP_MS,
+        this.runDeadlineAt != null ? this.runDeadlineAt - this.now() : BULK_DEADLINE_CAP_MS));
+      const items = await this.bulkFetch<StationDetailsWithMeta>(
+        BULK_DETAILS_PATH,
+        'details-bulk',
+        BULK_DETAIL_UPSTREAM_PATH,
+        { stations, budget: { maxUpstreamAttempts: reserved }, deadlineMs },
+        reserved,
+        stations.map((s, j) => ({ key: s.key, stationId: slice[j]! })),
+        0,
+        signal,
+        context,
+        (item) => {
+          const station = ownDataValue(ownDataValue(item, 'data'), 'station');
+          const stationDetail = stationDetailFromBulk(station);
+          if (!stationDetail || stationDetail.stationId !== ownDataValue(item, 'stationId')) return null;
+          const fetchedAt = ownDataValue(ownDataValue(item, 'upstream') as Record<string, unknown>, 'fetchedAt');
+          return {
+            response: { ok: true, live: true, retained: false,
+              source: 'Statiq station detail (live)', station: stationDetail },
+            fetchedAt: new Date(fetchedAt as string),
+          };
+        },
+      );
+      let stopCause: 'throttled' | 'auth' | undefined;
+      for (const item of items) {
+        results.push(item);
+        if (item.outcome === 'unknown' &&
+            (item.reason === 'upstream_auth' || item.reason === 'upstream_throttled')) {
+          stopCause = item.reason === 'upstream_auth' ? 'auth' : 'throttled';
+        }
+      }
+      if (stopCause) {
+        this.runBudget?.stop(stopCause);
+        throw new StatiqRunFatalError(stopCause, 0, BULK_DETAILS_PATH, 'per-item upstream fatal');
+      }
+    }
+    return results;
   }
 
   /**
@@ -484,6 +1131,7 @@ export class StatiqClient {
     context?: ProviderCallContext,
     options: PostJsonOptions = {},
   ): Promise<T> {
+    if (this.bulkFailureLatch) throw this.bulkFailureLatch;
     let lastError: unknown;
     let lastRetryAfterMs: number | undefined;
     let attemptEvidenceRecorded = false;
@@ -520,6 +1168,10 @@ export class StatiqClient {
         this.reportFailure(context, path, 'deadline', null, null);
         throw new StatiqAbortError();
       }
+      // A bulk batch owns the wire while active; no concurrent legacy
+      // dispatch may start (no reservation has been made yet here).
+      if (this.bulkInFlight) throw new StatiqAbortError('legacy dispatch refused while a bulk batch is active');
+      if (this.bulkFailureLatch) throw this.bulkFailureLatch;
       // 2) Atomic reserve immediately before fetch, with NO await between a
       // successful reserve and the dispatch (reservation-race invariant):
       //  - fatal stop (first 429/401/403): this caller fails fast, zero NEW

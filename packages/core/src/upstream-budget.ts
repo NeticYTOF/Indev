@@ -48,6 +48,10 @@ export class UpstreamRunStoppedError extends Error {
 export class UpstreamBudget {
   readonly maxAttempts: number;
   private attempts = 0;
+  /** Attempts reserved pessimistically by a bulk batch and not yet
+   *  settled from a verified envelope. Unknown transports never settle,
+   *  so these stay reserved and the run fails closed. */
+  private pendingReservations = 0;
   /** RUN-FATAL cause only (throttle/auth). Cap exhaustion is NEVER stored
    *  here: it refuses only the caller that finds no room. */
   private fatalCause: UpstreamFatalCause | null = null;
@@ -78,6 +82,48 @@ export class UpstreamBudget {
   /** True when the attempt cap is reached (per-caller refusal, not fatal). */
   get exhausted(): boolean {
     return this.attempts >= this.maxAttempts;
+  }
+
+  /** Reserved but not yet confirmed by a verified bulk envelope. */
+  get reservedButUnknown(): number {
+    return this.pendingReservations;
+  }
+
+  /** Actually observed upstream attempts (excludes unresolved holds). */
+  get completedAttempts(): number {
+    return this.attempts - this.pendingReservations;
+  }
+
+  /** Reserve N attempts pessimistically before one bulk batch dispatch.
+   *  Fatal stops and cap exhaustion refuse BEFORE traffic; exhaustion is
+   *  per-caller exactly like reserveAttempt, preserving the legacy
+   *  reservation-race invariant. */
+  reserveBatch(count: number): void {
+    if (!Number.isInteger(count) || count < 1) {
+      throw new Error('reserveBatch requires a positive integer count');
+    }
+    if (this.fatalCause !== null) {
+      throw new UpstreamRunStoppedError(
+        this.fatalCause, this.attempts, this.maxAttempts, this.fatalRetryAfterMs,
+      );
+    }
+    if (this.attempts + count > this.maxAttempts) {
+      throw new UpstreamRunStoppedError('budget-exhausted', this.attempts, this.maxAttempts);
+    }
+    this.attempts += count;
+    this.pendingReservations += count;
+  }
+
+  /** Release ONLY the observed-unused portion of a verified reservation.
+   *  Call with an authoritative envelope count alone; unknown transports
+   *  must never settle, so their hold stays consumed. */
+  settleBatch(reserved: number, observed: number): void {
+    if (!Number.isInteger(reserved) || !Number.isInteger(observed) ||
+        observed < 0 || observed > reserved || reserved > this.pendingReservations) {
+      throw new Error('settleBatch received an inconsistent accounting');
+    }
+    this.attempts -= reserved - observed;
+    this.pendingReservations -= reserved;
   }
 
   /**

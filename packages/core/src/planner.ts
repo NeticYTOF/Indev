@@ -10,10 +10,10 @@ import { hasFreshProvenance } from './provenance.js';
  * - Do not detour far for a preferred charger: stations beyond
  *   `primaryDetourKm` off-route are used only if the primary band fails.
  * - Exhaustive candidate coverage (owner directive): every unique
- *   candidate in both detour bands is checked via individual per-station
- *   lookups with multiple checks in flight - no bulk endpoint, no
- *   window/candidate pruning. Concurrency never reduces the request
- *   count or removes pacing.
+ *   candidate in both detour bands is checked, via ordered bulk batches
+ *   when the client supports them or individual per-station lookups for
+ *   legacy doubles - never window/candidate pruning. Batch/ch concurrency
+ *   never removes upstream pacing.
  * - Brand preference Statiq > Tata > BPCL > HP > others breaks ties only
  *   inside a small chainage cluster, never at the cost of an extra stop.
  * - Charger data is fetched live during this run and never persisted.
@@ -439,6 +439,8 @@ async function planCore(
   /** Wrapper threads the deadline; budget enforcement lives in the client
    *  for real statiq deps (per transport attempt) or in reserveCall for
    *  duck-typed doubles (per logical dispatch). */
+  const bulkScan = typeof deps.statiq.markersBulk === 'function';
+  const bulkDetails = typeof deps.statiq.detailsBulk === 'function';
   const guardedStatiq = {
     markers: (
       lat: number,
@@ -459,6 +461,13 @@ async function planCore(
         onDispatch,
       });
     },
+    ...(bulkScan ? {
+      markersBulk: (points: readonly { lat: number; lon: number }[]) =>
+        deps.statiq.markersBulk(points, hooks.signal, {
+          endpointClass: 'stations/markers' as const,
+          phase: 'scan' as const,
+        }),
+    } : {}),
   };
 
   // 1) Fastest route (free OSRM).
@@ -530,13 +539,12 @@ async function planCore(
   }
 
   // 3) Live details + CCS2 DC classification for EVERY corridor candidate.
-  //    OWNER DIRECTIVE: individual per-station lookups with multiple checks
-  //    in flight - every unique candidate is checked. There is NO bulk
-  //    endpoint and NO window/candidate pruning: the whole unique pool
-  //    (both detour bands) is looked up one station at a time, with a few
-  //    lookups in flight so upstream latency can overlap the pacing gap.
-  //    Selection still prefers the primary band and never detours far for a
-  //    brand, but it CONSULTS every fetched candidate.
+  //    OWNER DIRECTIVE: every unique candidate is checked, with no
+  //    window/candidate pruning. Bulk-capable clients use ordered batches;
+  //    legacy doubles use individual lookups with a few in flight so
+  //    latency can overlap the pacing gap. Selection still prefers the
+  //    primary band and never detours far for a brand, but it CONSULTS
+  //    every fetched candidate.
   //
   //    CONCURRENCY EVIDENCE (offline harness, Linux; latency shaped like the
   //    replica): at 40ms latency / 200ms gaps, 12 calls took ~2244ms with 3
@@ -552,124 +560,168 @@ async function planCore(
    *  stations (all-faulted plugs), an unknown candidate could have been
    *  usable, so impossibility claims must respect it (see selection). */
   const unknownCandidates = new Set<number>();
-  const fetchCandidate = async (c: CorridorCandidate): Promise<void> => {
-    if (detailCache.has(c.stationId)) return;
-    let detailDispatchSeq: number | null = null;
-    const recordDetail = (code: ProviderFailureCode): void => {
+  /** All response-side validation for one candidate, shared by the legacy
+   *  per-station lookup and the ordered bulk-details path. */
+  const ingestDetail = (
+    c: CorridorCandidate,
+    response: import('./types.js').StatiqDetailsResponse,
+    fetchedAt: Date,
+    recordDetail: (code: ProviderFailureCode) => void,
+  ): void => {
+    // A details payload must describe the station actually requested.
+    // Otherwise another station's plugs could inherit this candidate's
+    // chainage and reachability. Treat that lookup as unknown, not usable.
+    if (!hasFreshProvenance(response)) {
+      recordDetail('nonfresh_provenance');
+      throw new Error('Station details response does not match the request');
+    }
+    if (!response || response.ok !== true) {
+      recordDetail('ok_false_response');
+      throw new Error('Station details response does not match the request');
+    }
+    if (response.station && response.station.stationId !== c.stationId) {
+      recordDetail('station_id_mismatch');
+      throw new Error('Station details response does not match the request');
+    }
+    // Absent charger/connector lists are missing evidence, not proof
+    // there are no usable plugs. Explicit empty lists remain valid.
+    if (response.station && (!Array.isArray(response.station.chargers) ||
+        response.station.chargers.some((charger) => !charger || !Array.isArray(charger.connectors)))) {
+      recordDetail('invalid_details_shape');
+      throw new Error('Station details are missing charger or connector lists');
+    }
+    if (response.station) {
+      const summary = summarizeCcs2(response.station);
+      if (summary.hasInvalidUsableAvailability) {
+        recordDetail('invalid_connector_availability');
+        if (!summary.isUsable) throw new Error('Usable connector availability is malformed');
+        warnings.push(`Station "${c.name}" (${c.stationId}) has invalid connector availability; only independently usable plugs support this plan.`);
+      }
+      if (summary.hasInvalidUsablePower) recordDetail('invalid_charger_power');
+      if (summary.isUsable && summary.hasInvalidUsablePower && summary.maxKw == null) {
+        // Connector health is known, but there is no supported power for
+        // timing this candidate. Preserve a hole, not a known-unusable
+        // verdict and not the legacy missing-only 50 kW estimate.
+        throw new Error('Usable charger power is malformed');
+      }
+      if (summary.isUsable && summary.maxKw != null && (summary.hasInvalidUsablePower || summary.hasMissingUsablePower)) {
+        warnings.push(`Station "${c.name}" (${c.stationId}) has incomplete charger power data; planning uses a charger with known power only.`);
+      }
+      if (summary.hasInvalidSelectedTariff) recordDetail('invalid_tariff');
+      if (summary.hasInvalidSelectedTariff) {
+        warnings.push(`Station "${c.name}" (${c.stationId}) has an invalid tariff; its charging cost is unknown.`);
+      }
+      const concreteMax = opts.maxChargerKw;
+      const certification = Number.isFinite(concreteMax) && concreteMax > 0
+        ? certifyCappedCharger(response.station, concreteMax)
+        : null;
+      if (certification?.status === 'incomplete') {
+        throw new Error('Usable CCS2 charger power is incomplete, so cap compliance is unknown');
+      }
+      if (certification?.status === 'policy-ineligible') {
+        warnings.push(`Skipping "${c.name}" (${c.stationId}): no usable charger is rated at or below the configured kW cap.`);
+      }
+      const capSelected = certification?.status === 'selected' ? certification.selected : null;
+      if (certification?.status !== 'policy-ineligible') {
+        detailCache.set(c.stationId, {
+          candidate: c,
+          summary,
+          view: toStationView(response.station, fetchedAt),
+          ...(capSelected
+            ? { selectedCharger: { ...capSelected, lastUsedOn: response.station.chargers.find(ch => ch.chargerId === capSelected.chargerId)?.lastUsedOn ?? null } }
+            : {}),
+        });
+        hooks.stats.candidatesDetailed = detailCache.size;
+      }
+    } else {
+      // 200 with a null station: data inconsistency - an unknown, not a
+      // verdict; leave a visible hole instead of passing silently
+      recordDetail('null_station');
+      unknownCandidates.add(c.stationId);
+      warnings.push(`Skipping "${c.name}" (${c.stationId}): the station returned no data.`);
+    }
+  };
+
+  const recordDetailFor = (seq: { value: number | null }): ((code: ProviderFailureCode) => void) =>
+    (code: ProviderFailureCode): void => {
       try { hooks.failureCollector.record({
         endpointClass: 'stations/details', phase: 'details',
-        dispatchSeq: detailDispatchSeq, httpStatus: 200, code,
+        dispatchSeq: seq.value, httpStatus: 200, code,
       }); } catch { /* diagnostics never alter planning */ }
     };
+
+  const markUnknown = (c: CorridorCandidate, err: unknown): void => {
+    unknownCandidates.add(c.stationId);
+    warnings.push(err instanceof Error && /cap compliance is unknown/.test(err.message)
+      ? `Skipping "${c.name}" (${c.stationId}): charger power is incomplete, so cap compliance is unknown.`
+      : err instanceof Error && err.message === 'Usable connector availability is malformed'
+      ? `Skipping "${c.name}" (${c.stationId}): connector availability is invalid; usable charger evidence is unknown.`
+      : err instanceof Error && err.message === 'Usable charger power is malformed'
+      ? `Skipping "${c.name}" (${c.stationId}): usable charger power is invalid; charging time cannot be verified.`
+      : `Skipping "${c.name}" (${c.stationId}): live details unavailable.`);
+  };
+
+  const isRunFatal = (err: unknown): boolean =>
+    isAbortLike(err) || err instanceof UpstreamRunStoppedError || err instanceof StatiqRunFatalError;
+
+  const fetchCandidate = async (c: CorridorCandidate): Promise<void> => {
+    if (detailCache.has(c.stationId)) return;
+    const seq: { value: number | null } = { value: null };
+    const recordDetail = recordDetailFor(seq);
     try {
       const { response, fetchedAt } = await guardedStatiq.detailsWithMeta(
         c.stationId,
-        (seq) => { detailDispatchSeq = seq; },
+        (dispatchSeq) => { seq.value = dispatchSeq; },
       );
-      // A details payload must describe the station actually requested.
-      // Otherwise another station's plugs could inherit this candidate's
-      // chainage and reachability. Treat that lookup as unknown, not usable.
-      if (!hasFreshProvenance(response)) {
-        recordDetail('nonfresh_provenance');
-        throw new Error('Station details response does not match the request');
-      }
-      if (!response || response.ok !== true) {
-        recordDetail('ok_false_response');
-        throw new Error('Station details response does not match the request');
-      }
-      if (response.station && response.station.stationId !== c.stationId) {
-        recordDetail('station_id_mismatch');
-        throw new Error('Station details response does not match the request');
-      }
-      // Absent charger/connector lists are missing evidence, not proof
-      // there are no usable plugs. Explicit empty lists remain valid.
-      if (response.station && (!Array.isArray(response.station.chargers) ||
-          response.station.chargers.some((charger) => !charger || !Array.isArray(charger.connectors)))) {
-        recordDetail('invalid_details_shape');
-        throw new Error('Station details are missing charger or connector lists');
-      }
-      if (response.station) {
-        const summary = summarizeCcs2(response.station);
-        if (summary.hasInvalidUsableAvailability) {
-          recordDetail('invalid_connector_availability');
-          if (!summary.isUsable) throw new Error('Usable connector availability is malformed');
-          warnings.push(`Station "${c.name}" (${c.stationId}) has invalid connector availability; only independently usable plugs support this plan.`);
-        }
-        if (summary.hasInvalidUsablePower) recordDetail('invalid_charger_power');
-        if (summary.isUsable && summary.hasInvalidUsablePower && summary.maxKw == null) {
-          // Connector health is known, but there is no supported power for
-          // timing this candidate. Preserve a hole, not a known-unusable
-          // verdict and not the legacy missing-only 50 kW estimate.
-          throw new Error('Usable charger power is malformed');
-        }
-        if (summary.isUsable && summary.maxKw != null && (summary.hasInvalidUsablePower || summary.hasMissingUsablePower)) {
-          warnings.push(`Station "${c.name}" (${c.stationId}) has incomplete charger power data; planning uses a charger with known power only.`);
-        }
-        if (summary.hasInvalidSelectedTariff) recordDetail('invalid_tariff');
-        if (summary.hasInvalidSelectedTariff) {
-          warnings.push(`Station "${c.name}" (${c.stationId}) has an invalid tariff; its charging cost is unknown.`);
-        }
-        const concreteMax = opts.maxChargerKw;
-        const certification = Number.isFinite(concreteMax) && concreteMax > 0
-          ? certifyCappedCharger(response.station, concreteMax)
-          : null;
-        if (certification?.status === 'incomplete') {
-          throw new Error('Usable CCS2 charger power is incomplete, so cap compliance is unknown');
-        }
-        if (certification?.status === 'policy-ineligible') {
-          warnings.push(`Skipping "${c.name}" (${c.stationId}): no usable charger is rated at or below the configured kW cap.`);
-        }
-        const capSelected = certification?.status === 'selected' ? certification.selected : null;
-        if (certification?.status !== 'policy-ineligible') {
-          detailCache.set(c.stationId, {
-            candidate: c,
-            summary,
-            view: toStationView(response.station, fetchedAt),
-            ...(capSelected
-              ? { selectedCharger: { ...capSelected, lastUsedOn: response.station.chargers.find(ch => ch.chargerId === capSelected.chargerId)?.lastUsedOn ?? null } }
-              : {}),
-          });
-          hooks.stats.candidatesDetailed = detailCache.size;
-        }
-      } else {
-        // 200 with a null station: data inconsistency - an unknown, not a
-        // verdict; leave a visible hole instead of passing silently
-        recordDetail('null_station');
-        unknownCandidates.add(c.stationId);
-        warnings.push(`Skipping "${c.name}" (${c.stationId}): the station returned no data.`);
-      }
+      ingestDetail(c, response, fetchedAt, recordDetail);
     } catch (err) {
       // run-fatal stops (budget gate, first throttle/auth) and deadline
       // aborts unwind the run; they are not per-candidate skips
-      if (
-        isAbortLike(err) ||
-        err instanceof UpstreamRunStoppedError ||
-        err instanceof StatiqRunFatalError
-      ) {
-        throw err;
-      }
-      unknownCandidates.add(c.stationId);
-      warnings.push(err instanceof Error && /cap compliance is unknown/.test(err.message)
-        ? `Skipping "${c.name}" (${c.stationId}): charger power is incomplete, so cap compliance is unknown.`
-        : err instanceof Error && err.message === 'Usable connector availability is malformed'
-        ? `Skipping "${c.name}" (${c.stationId}): connector availability is invalid; usable charger evidence is unknown.`
-        : err instanceof Error && err.message === 'Usable charger power is malformed'
-        ? `Skipping "${c.name}" (${c.stationId}): usable charger power is invalid; charging time cannot be verified.`
-        : `Skipping "${c.name}" (${c.stationId}): live details unavailable.`);
+      if (isRunFatal(err)) throw err;
+      markUnknown(c, err);
     }
     // processed counts every COMPLETED per-station lookup (fetched, empty
     // or skipped) - run-fatal unwinds do not reach this line.
     hooks.stats.candidatesProcessed += 1;
   };
 
-  // The WHOLE unique pool, both detour bands: individual per-station
-  // lookups through pMap(4) (multiple checks in flight, never a bulk
-  // endpoint). pMap only lets latency overlap the pacing gap; the client's
-  // limiter alone decides pace - request count and pacing are unchanged
-  // by concurrency (see the offline evidence in the comment above).
+  /** Ordered bulk-details path. Every unique candidate still gets exactly
+   *  one lookup; per-item unknown/not-attempted holes are recorded honestly. */
+  const fetchAllBulk = async (): Promise<void> => {
+    const items = await deps.statiq.detailsBulk(
+      corridor.candidates.map((c) => c.stationId), hooks.signal,
+      { endpointClass: 'stations/details', phase: 'details' });
+    for (let i = 0; i < corridor.candidates.length; i++) {
+      const c = corridor.candidates[i] as CorridorCandidate;
+      const seq: { value: number | null } = { value: null };
+      const recordDetail = recordDetailFor(seq);
+      try {
+        const item = items[i];
+        if (!item) throw new Error('Bulk detail result missing');
+        if (item.outcome !== 'ok' || !item.response) {
+          recordDetail('unknown');
+          throw new Error('Bulk detail lookup unavailable');
+        }
+        ingestDetail(c, item.response.response, item.response.fetchedAt, recordDetail);
+      } catch (err) {
+        if (isRunFatal(err)) throw err;
+        markUnknown(c, err);
+      }
+      hooks.stats.candidatesProcessed += 1;
+    }
+  };
+
+  // The WHOLE unique pool, both detour bands. Bulk-capable clients use one
+  // ordered batch transport; legacy doubles keep individual per-station
+  // lookups through pMap(4). Either way every candidate is checked, with no
+  // pruning by brand, power or rank and the same route geometry.
   const CANDIDATE_FETCH_CONCURRENCY = 4;
   hooks.stats.detailsStartedAt = Date.now();
-  await pMap(corridor.candidates, CANDIDATE_FETCH_CONCURRENCY, fetchCandidate);
+  if (bulkDetails) {
+    await fetchAllBulk();
+  } else {
+    await pMap(corridor.candidates, CANDIDATE_FETCH_CONCURRENCY, fetchCandidate);
+  }
   const usable: Candidate[] = [...detailCache.values()]
     .filter((r) => r.summary.isUsable)
     .sort((a, b) => a.candidate.chainageKm - b.candidate.chainageKm);
