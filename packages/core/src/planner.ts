@@ -697,7 +697,9 @@ async function planCore(
       );
     }
     throw new PlanningError(
-      'No usable CCS2 DC charging stations were found along this route within the detour limit.',
+      Number.isFinite(opts.maxChargerKw)
+        ? `No usable CCS2 DC charging station is certified at or below the active ${opts.maxChargerKw} kW cap.`
+        : 'No usable CCS2 DC charging stations were found along this route within the detour limit.',
       'no_route',
     );
   }

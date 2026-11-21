@@ -42,10 +42,11 @@ interface StationSpec {
   id: number;
   name: string;
   chainageKm: number;
+  chargers?: StatiqCharger[];
 }
 
 function stationDetail(spec: StationSpec): StatiqStationDetail {
-  const chargers: StatiqCharger[] = [
+  const chargers: StatiqCharger[] = spec.chargers ?? [
     {
       chargerId: spec.id * 10 + 1,
       name: `${spec.name} DC`,
@@ -261,19 +262,35 @@ describe('validateAiChoice', () => {
     if (!v.ok) expect(v.reason).toContain('finite positive');
   });
 
-  it('uses the capped selected charger for AI-rebuilt charge time and tariff', async () => {
-    const bundle = handBuiltBundle([50], 300);
-    const candidate = bundle.usableCandidates[0]!;
-    candidate.selectedCharger = { chargerId: 8, name: '60 kW', kw: 60, pricePerKwh: 22 };
-    candidate.view.chargers = [{ chargerId: 8, name: '60 kW', type: 'DC', kw: 60, pricePerKwh: 22,
-      lastUsedOn: null, plugs: [{ connectorId: 80, type: 'CCS-2', health: 'working-free', contradiction: false }] }];
-    candidate.summary.maxKw = 180; candidate.summary.pricePerKwh = 999;
-    const v = validateAiChoice(bundle, { stationIds: [candidate.candidate.stationId] }, { startSocPct: 20, maxChargerKw: 100 }, HARIER_EV_75);
+  it('certifies a mixed-site null tariff through candidate projection and AI rebuild', async () => {
+    const siteStations: StationSpec[] = Array.from({ length: 14 }, (_, i) => ({
+      id: 300 + i, name: `Statiq ${i}`, chainageKm: 50 * (i + 1),
+    }));
+    const mixed = siteStations[5]!;
+    const connector = { displayId: 1, connectorId: mixed.id * 100, type: 'CCS-2',
+      status: 'available', available: true, note: null };
+    mixed.chargers = [
+      { chargerId: mixed.id * 10 + 1, name: '180 kW', type: 'DC', kw: 180, pricePerKwh: 18,
+        currency: 'INR', lastUsedOn: null, connectors: [connector] },
+      { chargerId: mixed.id * 10 + 2, name: '60 kW', type: 'DC', kw: 60, pricePerKwh: null,
+        currency: 'INR', lastUsedOn: null, connectors: [connector] },
+    ];
+    const bundle = await planTripDetailed(
+      { router: fakeRouter(700), statiq: fakeStatiq(siteStations) }, O, D(700),
+      { includeCandidates: true, maxChargerKw: 100 },
+    );
+    const projected = bundle.plan.candidates?.find(c => c.stationId === mixed.id);
+    expect(projected).toMatchObject({ maxKw: 60, pricePerKwh: null });
+    expect(projected?.selectedCharger).toMatchObject({ kw: 60, pricePerKwh: null });
+    const v = validateAiChoice(bundle, { stationIds: bundle.plan.stops.map(s => s.station.stationId) },
+      { maxChargerKw: 100 }, HARIER_EV_75);
     expect(v.ok).toBe(true); if (!v.ok) return;
-    const opts = { ...DEFAULT_PLAN_OPTIONS, startSocPct: 20, maxChargerKw: 100 };
-    const stop = finalize(v.seq, 300, bundle.route, opts, HARIER_EV_75, [])[0]!;
-    expect(stop.pricePerKwh).toBe(22);
-    expect(stop.selectedCharger).toEqual(candidate.selectedCharger);
+    const rebuilt = assembleAiPlan(bundle, v.seq, { applied: true }, { maxChargerKw: 100 }, HARIER_EV_75);
+    const stop = rebuilt.stops.find(s => s.station.stationId === mixed.id);
+    expect(stop).toBeDefined(); if (!stop) return;
+    expect(stop.pricePerKwh).toBeNull();
+    expect(stop.estPriceInr).toBeNull();
+    expect(stop.selectedCharger).toMatchObject({ kw: 60, pricePerKwh: null });
     expect(stop.chargeTimeMin).toBe(Math.round(chargeTimeMin(stop.arriveSocPct, stop.leaveSocPct, 60, HARIER_EV_75)));
   });
 

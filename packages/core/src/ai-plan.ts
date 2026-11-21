@@ -18,7 +18,7 @@ import {
   type PlanBundle,
 } from './planner.js';
 import type { PlanOptions, PlanStop, PlanTotals, TripPlan } from './plan-types.js';
-import { certifyCappedCharger } from './plugs.js';
+import { certifyCappedViewChargers } from './plugs.js';
 import { socRequiredForArrival, socAfterDriving, type VehicleConfig } from './vehicle.js';
 import { DEFAULT_PLAN_OPTIONS } from './plan-types.js';
 
@@ -49,6 +49,7 @@ export function validateAiChoice(
   options: PlanOptions,
   vehicle: VehicleConfig,
 ): AiValidation {
+  const fail = (reason: string): AiValidation => ({ ok: false, reason });
   const opts = { ...DEFAULT_PLAN_OPTIONS, ...options };
   const capActive = options.maxChargerKw !== undefined;
   if (capActive && (typeof options.maxChargerKw !== 'number' ||
@@ -57,8 +58,6 @@ export function validateAiChoice(
   }
   const { usableCandidates, route } = bundle;
   const byId = new Map(usableCandidates.map((c) => [c.candidate.stationId, c]));
-
-  const fail = (reason: string): AiValidation => ({ ok: false, reason });
 
   if (!Array.isArray(choice.stationIds) || choice.stationIds.length === 0) {
     return fail('The AI returned no station sequence.');
@@ -93,11 +92,7 @@ export function validateAiChoice(
 
   for (const c of picked) {
     if (capActive) {
-      const evidence = {
-        stationId: c.view.stationId,
-        chargers: c.view.chargers.map(ch => ({ ...ch, connectors: ch.plugs })),
-      } as never;
-      const certified = certifyCappedCharger(evidence, opts.maxChargerKw);
+      const certified = certifyCappedViewChargers(c.view.chargers, opts.maxChargerKw);
       if (certified.status !== 'selected') {
         return fail(`Station ${c.candidate.stationId} has no certified charger within the ${opts.maxChargerKw} kW cap.`);
       }

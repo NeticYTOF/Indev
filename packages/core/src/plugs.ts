@@ -9,7 +9,7 @@
  * - Unknown vocabulary falls back to uncertain (never "working").
  */
 import type { PlugHealth, StatiqCharger, StatiqConnector, StatiqStationDetail } from './types.js';
-import type { PlanSelectedCharger } from './plan-types.js';
+import type { ChargerView, PlanSelectedCharger } from './plan-types.js';
 import { classifyPlugValues, connectorSlug as slug, type PlugClassification } from './plug-classifier.js';
 
 export type { PlugClassification } from './plug-classifier.js';
@@ -136,14 +136,23 @@ export function selectedCappedCharger(
   const certified = certifyCappedCharger(station, maxChargerKw);
   return certified.status === 'selected' ? certified.selected : null;
 }
-export function certifyCappedCharger(
-  station: StatiqStationDetail,
+interface CertifiedChargerEvidence {
+  chargerId: number;
+  name: string;
+  type: string;
+  kw: number;
+  pricePerKwh: number | null;
+  connectors: ReadonlyArray<{ type: string; health: PlugHealth; contradiction: boolean }>;
+}
+function certifyEvidence(
+  chargers: readonly CertifiedChargerEvidence[],
   maxChargerKw: number,
 ): CappedChargerCertification {
   let best: PlanSelectedCharger | null = null;
   let incomplete = false;
-  for (const ch of station.chargers ?? []) {
-    const usableConnector = (ch.connectors ?? []).some(c => isCcs2Dc(ch, c) && USABLE.includes(classifyPlug(c).health));
+  for (const ch of chargers) {
+    const usableConnector = norm(ch.type) === 'dc' &&
+      ch.connectors.some(c => connectorSlug(c.type) === 'ccs2' && !c.contradiction && USABLE.includes(c.health));
     if (!usableConnector) continue;
     if (typeof ch.kw !== 'number' || !Number.isFinite(ch.kw) || ch.kw <= 0) { incomplete = true; continue; }
     if (ch.kw > maxChargerKw) continue;
@@ -155,4 +164,25 @@ export function certifyCappedCharger(
   }
   if (best) return { status: 'selected', selected: best };
   return { status: incomplete ? 'incomplete' : 'policy-ineligible', selected: null };
+}
+export function certifyCappedCharger(
+  station: StatiqStationDetail,
+  maxChargerKw: number,
+): CappedChargerCertification {
+  const evidence: CertifiedChargerEvidence[] = (station.chargers ?? []).map(ch => ({
+    chargerId: ch.chargerId, name: ch.name, type: ch.type, kw: ch.kw, pricePerKwh: ch.pricePerKwh,
+    connectors: (ch.connectors ?? []).map(c => ({
+      type: c.type, health: classifyPlug(c).health, contradiction: classifyPlug(c).contradiction,
+    })),
+  }));
+  return certifyEvidence(evidence, maxChargerKw);
+}
+export function certifyCappedViewChargers(
+  chargers: readonly ChargerView[],
+  maxChargerKw: number,
+): CappedChargerCertification {
+  return certifyEvidence(chargers.map(ch => ({
+    chargerId: ch.chargerId, name: ch.name, type: ch.type, kw: ch.kw, pricePerKwh: ch.pricePerKwh,
+    connectors: ch.plugs.map(p => ({ type: p.type, health: p.health, contradiction: p.contradiction })),
+  })), maxChargerKw);
 }
