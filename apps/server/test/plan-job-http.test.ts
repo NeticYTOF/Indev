@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createApp, type AppDeps } from '../src/app.js';
 import type { Hono } from 'hono';
+import { toolFixture } from './ai-tool-fixture.js';
 import { chatCompletion, AiProviderError } from '../src/ai-provider.js';
 import type {
   CountersStore, OsrmRouter, PhotonGeocoder, StatiqClient, StatiqMarkersResponse, TripsStore,
@@ -33,7 +34,7 @@ function depsWith(statiq: StatiqClient, overrides: Partial<AppDeps> = {}): AppDe
     counters: {} as CountersStore,
     mock: false,
     ai: { baseUrl: 'https://ai.test/v1', apiKey: 'test-key', model: 'test-model' },
-    aiCall: async () => '{"chosenStationIds":[],"notes":"ok"}',
+    aiToolCall: toolFixture('{"chosenStationIds":[],"notes":"ok"}', []),
     ...overrides,
   };
 }
@@ -186,8 +187,11 @@ describe('process-local job endpoints', () => {
     const aiGate = deferred<string>();
     const aiStarted = deferred<void>();
     const statiq = { markers: async () => emptyMarkers } as unknown as StatiqClient;
-    const aiCall = async () => { aiStarted.resolve(); return aiGate.promise; };
-    const app = createApp(depsWith(statiq, { aiCall }));
+    const aiToolCall = async () => {
+      aiStarted.resolve();
+      return { content: await aiGate.promise, toolCalls: [] };
+    };
+    const app = createApp(depsWith(statiq, { aiToolCall }));
     const job = await startJob(app);
     await aiStarted.promise;
     const cancelled = await app.request(`/api/jobs/plan/${job.jobId}`, {
@@ -206,9 +210,12 @@ describe('process-local job endpoints', () => {
 
   it('failed job exposes error evidence but never its capability', async () => {
     const failing = {
-      markers: async () => { throw new Error('offline fixture failure'); },
+      markers: async () => emptyMarkers,
+      detailsWithMeta: async () => { throw new Error('offline fixture failure'); },
     } as unknown as StatiqClient;
-    const app = createApp(depsWith(failing));
+    const app = createApp(depsWith(failing, {
+      aiToolCall: toolFixture(JSON.stringify({ chosenStationIds: [999999] }), [999999]),
+    }));
     const job = await startJob(app);
     await tick();
     await tick();
@@ -219,7 +226,8 @@ describe('process-local job endpoints', () => {
     expect(body.state).toBe('failed');
     const error = body.error as { code: string; message: string };
     expect(error.code).toBe('not_determined');
-    expect(error.message.toLowerCase()).toContain('coverage is incomplete');
+    expect(error.message.toLowerCase()).toContain('999999');
+    expect(error.message.toLowerCase()).toMatch(/candidate|usable/);
     expect(body.result).toBeUndefined();
     expect(JSON.stringify(body)).not.toContain(job.capability);
   });

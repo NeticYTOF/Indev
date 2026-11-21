@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp, type AppDeps } from '../src/app.js';
+import { toolFixture } from './ai-tool-fixture.js';
 import {
   CountersStore,
   OsrmRouter,
@@ -1129,9 +1130,9 @@ describe('ordered stopover API boundary', () => {
     const deps = await makeDeps({
       mock,
       ai: aiConfig,
-      aiCall: async (_messages: AiMessage[]): Promise<string> => {
+      aiToolCall: async (...args: Parameters<ReturnType<typeof toolFixture>>) => {
         calls.ai += 1;
-        return JSON.stringify({ chosenStationIds: [] });
+        return await toolFixture(JSON.stringify({ chosenStationIds: [] }), [])(...args);
       },
       createStatiq: (_opts?: { retries?: number }): StatiqClient => {
         calls.factory += 1;
@@ -1245,7 +1246,7 @@ describe('maximum charger power wire validation', () => {
       createStatiq: () => mixedCapStatiq(),
       ...(path === '/api/ai/plan'
         ? { ai: { baseUrl: 'https://ai.test/v1', apiKey: 'sk-test', model: 'test-model' },
-            aiCall: async () => JSON.stringify({ chosenStationIds: [] }) }
+            aiToolCall: toolFixture(JSON.stringify({ chosenStationIds: [7201] }), [7201]) }
         : {}),
     });
     const res = await createApp(deps).request(path, {
@@ -1268,7 +1269,7 @@ describe('maximum charger power wire validation', () => {
       router: { route: async () => { calls.router += 1; throw new Error('unexpected route'); } } as unknown as OsrmRouter,
       createStatiq: () => { calls.factory += 1; throw new Error('unexpected provider'); },
       ai: { baseUrl: 'https://ai.test/v1', apiKey: 'sk-test', model: 'test-model' },
-      aiCall: async () => { calls.ai += 1; throw new Error('unexpected AI'); },
+      aiToolCall: async () => { calls.ai += 1; throw new Error('unexpected AI'); },
     });
     for (const maxChargerKw of [null, 0, -1, '60', {}]) {
       const res = await createApp(deps).request(path, {

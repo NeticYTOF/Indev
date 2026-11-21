@@ -15,10 +15,32 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface ChatToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+
+export type ChatToolMessage =
+  | { role: 'system' | 'user'; content: string }
+  | { role: 'assistant'; content: string | null; tool_calls?: ChatToolCall[] }
+  | { role: 'tool'; tool_call_id: string; content: string };
+
+export interface ChatToolDefinition {
+  type: 'function';
+  function: { name: string; description: string; parameters: Record<string, unknown> };
+}
+
 export interface AiChoiceRaw {
   chosenStationIds?: unknown;
   notes?: unknown;
 }
+export type AiToolCall = (
+  messages: ChatToolMessage[],
+  tools: ChatToolDefinition[],
+  signal?: AbortSignal,
+  maxCalls?: number,
+) => Promise<{ content: string | null; toolCalls: ChatToolCall[] }>;
 
 export class AiProviderError extends Error {
   constructor(message: string) {
@@ -71,6 +93,71 @@ export async function chatCompletion(
     throw new AiProviderError(
       `AI provider request failed: ${err instanceof Error ? err.message : 'unknown'}`,
     );
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onExternalAbort);
+  }
+}
+
+/** Real tool-call exchange. Tool bodies returned by the model are DATA. */
+export async function chatCompletionWithTools(
+  deps: AiProviderDeps,
+  messages: ChatToolMessage[],
+  tools: ChatToolDefinition[],
+  allowedToolNames: readonly string[],
+  signal?: AbortSignal,
+  maxCalls = 4,
+): Promise<{ content: string | null; toolCalls: ChatToolCall[] }> {
+  if (signal?.aborted) throw new AiProviderError('AI tool request cancelled');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 45_000);
+  const onExternalAbort = () => controller.abort();
+  if (signal) signal.addEventListener('abort', onExternalAbort, { once: true });
+  const cancelled = (): AiProviderError => new AiProviderError('AI tool request cancelled');
+  try {
+    const res = await (deps.fetchImpl ?? fetch)(`${deps.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${deps.apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: deps.model, temperature: 0.2, messages, tools, tool_choice: 'auto' }),
+      signal: controller.signal,
+    });
+    // A fetch that ignores abort must not let a post-cancel result through.
+    if (signal?.aborted || controller.signal.aborted) throw cancelled();
+    if (!res.ok) throw new AiProviderError(`AI provider returned ${res.status}`);
+    const body: unknown = await res.json();
+    if (signal?.aborted || controller.signal.aborted) throw cancelled();
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) throw new AiProviderError('malformed tool response');
+    const choices = (body as { choices?: unknown }).choices;
+    if (!Array.isArray(choices) || choices.length === 0) throw new AiProviderError('malformed tool response');
+    const first = choices[0];
+    if (typeof first !== 'object' || first === null || Array.isArray(first)) throw new AiProviderError('malformed tool response');
+    const message = (first as { message?: unknown }).message;
+    if (typeof message !== 'object' || message === null || Array.isArray(message)) throw new AiProviderError('malformed tool response');
+    const m = message as { content?: unknown; tool_calls?: unknown };
+    const content = typeof m.content === 'string' && m.content.trim() ? m.content : null;
+    if (m.tool_calls !== undefined && !Array.isArray(m.tool_calls)) throw new AiProviderError('malformed tool response');
+    const calls: ChatToolCall[] = [];
+    const seen = new Set<string>();
+    for (const item of Array.isArray(m.tool_calls) ? m.tool_calls : []) {
+      if (typeof item !== 'object' || item === null || Array.isArray(item) ||
+          Object.getPrototypeOf(item) !== Object.prototype) throw new AiProviderError('malformed tool call');
+      const c = item as { id?: unknown; type?: unknown; function?: unknown };
+      if (typeof c.id !== 'string' || c.id.length < 1 || c.id.length > 128 || seen.has(c.id)) throw new AiProviderError('malformed tool call');
+      if (c.type !== 'function' || typeof c.function !== 'object' || c.function === null || Array.isArray(c.function)) {
+        throw new AiProviderError('malformed tool call');
+      }
+      const f = c.function as { name?: unknown; arguments?: unknown };
+      if (typeof f.name !== 'string' || !allowedToolNames.includes(f.name)) throw new AiProviderError('unsupported tool call');
+      if (typeof f.arguments !== 'string' || f.arguments.length > 8192) throw new AiProviderError('malformed tool call');
+      if (calls.length >= maxCalls) throw new AiProviderError('too many tool calls');
+      seen.add(c.id);
+      calls.push({ id: c.id, type: 'function', function: { name: f.name, arguments: f.arguments } });
+    }
+    if (content == null && calls.length === 0) throw new AiProviderError('empty tool response');
+    return { content, toolCalls: calls };
+  } catch (err) {
+    if (err instanceof AiProviderError) throw err;
+    throw new AiProviderError(`AI tool request failed: ${err instanceof Error ? err.message : 'unknown'}`);
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', onExternalAbort);
