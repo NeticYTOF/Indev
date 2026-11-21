@@ -271,11 +271,15 @@ describe('strict bulk marker transport', () => {
     const { client } = bulkClient({ maxAttempts: 20, calls, collector,
       respond: (call) => {
         const squares = (call.body.squares ?? []) as SquareEcho[];
-        const specs = squares.map((_sq, i) => i === 5
-          ? { outcome: 'unknown' as const, reason: 'upstream_timeout', statuses: ['timeout'] }
-          : i === 12
-            ? { outcome: 'not-attempted' as const, reason: 'budget_exhausted' }
-            : {});
+        // Keys are global (s0..s12); use them, not the per-batch local index.
+        const specs = squares.map((sq) => {
+          const global = Number(sq.key.replace(/^s/, ''));
+          return global === 5
+            ? { outcome: 'unknown' as const, reason: 'upstream_timeout', statuses: ['timeout'] }
+            : global === 12
+              ? { outcome: 'not-attempted' as const, reason: 'budget_exhausted' }
+              : {};
+        });
         return { body: JSON.stringify(markersResponse(call.body, specs)) };
       } });
     // NO context argument: the transport must derive class/phase from endpoint.
@@ -331,7 +335,14 @@ describe('bulk details + corridor adoption', () => {
     for (const [kw, price] of [['bad', 20], [60, 'bad'], [undefined, 20]] as [unknown, unknown][]) {
       const strictCalls: any[] = [];
       const { client: strict } = bulkClient({ maxAttempts: 2, calls: strictCalls,
-        respond: (call) => ({ body: JSON.stringify(detailsResponse(call.body, kw, price)) }) });
+        respond: (call) => {
+          const response = detailsResponse(call.body);
+          // Inject the malformed values into the normalized station payload;
+          // the strict validator must fail the item closed.
+          for (const item of response.items) item.data.station.chargers[0].kw = kw;
+          for (const item of response.items) item.data.station.chargers[0].pricePerKwh = price;
+          return { body: JSON.stringify(response) };
+        } });
       await expect(strict.detailsBulk([1])).rejects.toBeTruthy();
     }
   });

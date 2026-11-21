@@ -191,9 +191,10 @@ describe('planTrip bulk adoption', () => {
       { startSocPct: 50 }).catch((e: unknown) => e);
     expect(summaries).toBe(1);
     const message = error instanceof Error ? error.message : String(error);
-    // Exactly ONE failure record, not two from callback+return double ingestion.
-    expect(message).toContain('(1 failed)');
-    expect(message).not.toContain('(2 failed)');
+    // Exactly ONE failed sample (double ingestion would report two/duplicate
+    // progress); the honest scan-coverage message carries that count.
+    expect(message).toContain('1 of 18 route samples could not be scanned');
+    expect(message).not.toContain('2 of 18');
   });
 
   it('retains earlier sample progress when a later bulk marker batch fails through the wrapper', async () => {
@@ -238,7 +239,9 @@ describe('planTrip bulk adoption', () => {
       { startSocPct: 50 }).catch((e: unknown) => e);
     expect(summaryCalls).toBe(1);
     const message = error instanceof Error ? error.message : String(error);
-    // 12 early samples survived; the remaining planned samples are honest holes.
-    expect(message).toContain('route samples covered 12/');
+    // 12 early samples survived (23 planned - 11 later holes = 12 covered);
+    // the honest scan-coverage message carries the retained count.
+    expect(message).toContain('11 of 23 route samples could not be scanned');
+    expect(message).not.toContain('23 of 23');
   });
 });

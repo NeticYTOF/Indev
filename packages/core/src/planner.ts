@@ -453,8 +453,12 @@ async function planCore(
   /** Wrapper threads the deadline; budget enforcement lives in the client
    *  for real statiq deps (per transport attempt) or in reserveCall for
    *  duck-typed doubles (per logical dispatch). */
-  const bulkScan = typeof deps.statiq.markersBulk === 'function';
-  const bulkDetails = typeof deps.statiq.detailsBulk === 'function';
+  // Capability is explicit/grounded, not method presence alone: the real
+  // client reports whether THIS transport serves bulk endpoints. Doubles
+  // without the capability method but with bulk methods opt in explicitly.
+  const bulkCapable = (): boolean => deps.statiq.bulkSupported?.() !== false;
+  const bulkScan = typeof deps.statiq.markersBulk === 'function' && bulkCapable();
+  const bulkDetails = typeof deps.statiq.detailsBulk === 'function' && bulkCapable();
   const guardedStatiq = {
     markers: (
       lat: number,

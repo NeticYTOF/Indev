@@ -577,6 +577,13 @@ export interface StatiqClientOptions {
    * PROJECT SAFETY DEFAULT, NOT a provider contract.
    */
   minCallGapMs?: number;
+  /**
+   * Explicit opt-in/out for the deployed bulk endpoints. Default: enabled
+   * ONLY for production transport (default fetch + default worker base).
+   * An injected fetchImpl is a wire-shaped fixture and is NOT assumed to
+   * serve bulk paths; legacy endpoints remain the compatibility contract.
+   */
+  bulk?: boolean;
   /** Injectable clock for deterministic limiter tests. */
   now?: () => number;
   /** Injectable sleep for deterministic limiter tests. */
@@ -640,6 +647,7 @@ export class StatiqClient {
   private runBudget: UpstreamBudget | undefined;
   private upstreamAttempts = 0;
   private readonly detailsCache = new Map<number, CacheEntry>();
+  private readonly bulkEnabled: boolean;
   private lastCallAt = Number.NEGATIVE_INFINITY;
   private callStamps: number[] = [];
   /** Serializes slot acquisition so concurrent callers cannot interleave. */
@@ -657,6 +665,10 @@ export class StatiqClient {
     this.base = (opts.baseUrl ?? DEFAULT_STATIQ_BASE_URL).replace(/\/+$/, '');
     this.token = opts.token;
     this.fetchImpl = opts.fetchImpl ?? fetch;
+    // Grounded transport capability: production (real fetch, real base) gets
+    // live bulk; injected wire fixtures keep legacy endpoints. Explicit bulk
+    // opt-in permits narrow real-bulk harness tests.
+    this.bulkEnabled = opts.bulk ?? (opts.fetchImpl === undefined && this.base === DEFAULT_STATIQ_BASE_URL);
     this.cacheTtlMs = opts.cacheTtlMs ?? 90_000;
     this.timeoutMs = opts.timeoutMs ?? 10_000;
     this.retries = opts.retries ?? 2;
@@ -666,6 +678,13 @@ export class StatiqClient {
     this.doSleep = opts.sleepImpl ?? defaultSleep;
     this.runDeadlineAt = opts.runDeadlineAt;
     this.onUpstreamCall = opts.onUpstreamCall;
+  }
+
+  /** Whether THIS transport is known to serve the deployed bulk endpoints.
+   *  Presence of the methods alone is not capability: test doubles and fake
+   *  transports may expose them while serving only legacy wire endpoints. */
+  bulkSupported(): boolean {
+    return this.bulkEnabled;
   }
 
   /** Stations near a point (~13 km radius, capped at 256 by the upstream). */
