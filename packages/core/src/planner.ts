@@ -23,7 +23,8 @@ import { scanCorridor, type CorridorCandidate } from './corridor.js';
 import { certifyCappedCharger, classifyPlug, connectorSlug, summarizeCcs2, type Ccs2Summary } from './plugs.js';
 import { detectBrand } from './brands.js';
 import { pMap } from './utils.js';
-import { chargeTimeMin, kwhForSocDelta, socAfterDriving, socRequiredForArrival, HARIER_EV_75, type VehicleConfig } from './vehicle.js';
+import { chargeTimeMin, kwhForSocDelta, socAfterDriving,
+  socAfterDrivingUncapped, socRequiredUncapped, HARIER_EV_75, type VehicleConfig } from './vehicle.js';
 import { RouterError, type OsrmRouter } from './router.js';
 import { isAbortLike, StatiqRunFatalError, type StatiqClient } from './statiq.js';
 import { UpstreamBudget, UpstreamRunStoppedError } from './upstream-budget.js';
@@ -40,7 +41,7 @@ import {
   DEFAULT_PLAN_OPTIONS,
   type PlaceRef,
   type PlanCandidate,
-  type PlanOptions,
+  type PlanOptions, type ResolvedPlanOptions,
   type PlanRunBudget,
   type PlanSelectedCharger,
   type PlanStatus,
@@ -160,7 +161,7 @@ function copiedVia(via: readonly PlaceRef[]): PlaceRef[] {
  * Merge options over defaults WITHOUT letting explicit undefined fields
  * erase a default (a classic spread bug that produced NaN-free 0-stop plans).
  */
-function mergePlanOptions(options: PlanOptions): Required<PlanOptions> {
+export function resolvePlanOptions(options: PlanOptions): ResolvedPlanOptions {
   const clean: PlanOptions = {};
   for (const [k, v] of Object.entries(options)) {
     if (v !== undefined) {
@@ -172,7 +173,32 @@ function mergePlanOptions(options: PlanOptions): Required<PlanOptions> {
       (typeof clean.maxChargerKw !== 'number' || !Number.isFinite(clean.maxChargerKw) || clean.maxChargerKw <= 0)) {
     throw new RouterError('InvalidWaypoints', 'maxChargerKw must be a finite positive number');
   }
-  return { ...DEFAULT_PLAN_OPTIONS, ...clean };
+  const merged: ResolvedPlanOptions = { ...DEFAULT_PLAN_OPTIONS, ...clean };
+  if (clean.reservePct !== undefined) {
+    if (!Number.isFinite(clean.reservePct) || clean.reservePct < 0 || clean.reservePct > 49) {
+      throw new RouterError('InvalidWaypoints', 'reservePct must be a finite number in 0..49');
+    }
+    merged.minArrivalSocPct = clean.reservePct;
+  }
+  if (clean.targetSoc !== undefined) {
+    const reserve = clean.reservePct ?? 0;
+    if (!Number.isFinite(clean.targetSoc) || clean.targetSoc < 15 || clean.targetSoc > 100 ||
+        clean.targetSoc < reserve + 5) {
+      throw new RouterError('InvalidWaypoints', 'targetSoc must be 15..100 and at least reservePct + 5');
+    }
+    merged.absoluteMaxSocPct = clean.targetSoc;
+  }
+  return merged;
+}
+function legFeasible(km: number, departSoc: number,
+  opts: ResolvedPlanOptions, vehicle: VehicleConfig): boolean {
+  return km <= opts.maxLegKm + 1e-6 &&
+    socAfterDrivingUncapped(km, departSoc, vehicle) >= opts.minArrivalSocPct - 1e-6;
+}
+function effectiveDeparture(cursor: Cursor, opts: ResolvedPlanOptions): number {
+  if (cursor.isOrigin) return opts.startSocPct;
+  return opts.targetSoc !== undefined
+    ? Math.max(cursor.socPct, opts.targetSoc) : opts.absoluteMaxSocPct;
 }
 
 export async function planTrip(
@@ -206,7 +232,7 @@ export async function planTripDetailed(
   options: PlanOptions = {},
   controls: PlanRunControls = {},
 ): Promise<PlanBundle> {
-  const baseOpts = mergePlanOptions(options);
+  const baseOpts = resolvePlanOptions(options);
   const failureCollector = deps.failureCollector ?? createProviderFailureCollector();
   const vehicle = deps.vehicle ?? HARIER_EV_75;
   const resolvedVehicle: ResolvedVehicle = deps.resolvedVehicle ?? resolveVehicle();
@@ -216,7 +242,7 @@ export async function planTripDetailed(
   // gates. This keeps short-range evidence from reporting the default 300 km
   // ceiling for a vehicle grounded to a shorter range.
   const userSafeRangeKm = resolvedVehicle.realWorldRangeKm;
-  const opts: Required<PlanOptions> =
+  const opts: ResolvedPlanOptions =
     userSafeRangeKm != null && Number.isFinite(userSafeRangeKm)
       ? { ...baseOpts, maxLegKm: Math.min(baseOpts.maxLegKm, userSafeRangeKm) }
       : baseOpts;
@@ -505,7 +531,7 @@ async function planCore(
   deps: PlannerDeps,
   origin: { label: string; lat: number; lon: number },
   destination: { label: string; lat: number; lon: number },
-  opts: Required<PlanOptions>,
+  opts: ResolvedPlanOptions,
   vehicle: VehicleConfig,
   vehicleMeta: PlanVehicleMeta,
   hooks: GuardHooks,
@@ -864,7 +890,7 @@ async function planCore(
   let guard = 0;
 
   const destLegKm = Math.max(0, totalKm - cursor.chainageKm);
-  if (usable.length === 0 && socAfterDriving(destLegKm, cursor.socPct, vehicle) < opts.minArrivalSocPct) {
+  if (usable.length === 0 && !legFeasible(destLegKm, cursor.socPct, opts, vehicle)) {
     // IMPOSSIBILITY CLAIMS NEED COMPLETE KNOWLEDGE: any UNKNOWN candidate
     // (lookup failed / empty response) could have been the usable one, so
     // 'no usable station' cannot be certified over holes.
@@ -885,15 +911,11 @@ async function planCore(
     );
   }
 
-  while (
-    Math.max(0, totalKm - cursor.chainageKm + cursor.detourKm) > opts.maxLegKm ||
-    socAfterDriving(
-      Math.max(0, totalKm - cursor.chainageKm + cursor.detourKm),
-      // a charging stop may charge before the final run; the origin cannot
-      cursor.isOrigin ? cursor.socPct : opts.absoluteMaxSocPct,
-      vehicle,
-    ) < opts.minArrivalSocPct
-  ) {
+  while (!legFeasible(
+    Math.max(0, totalKm - cursor.chainageKm + cursor.detourKm),
+    effectiveDeparture(cursor, opts),
+    opts, vehicle,
+  )) {
     if (++guard > 60) {
       throw new PlanningError(
         'Planner exceeded its stop budget; is the route chargeable at all?',
@@ -1018,7 +1040,7 @@ const USABLE_EVIDENCE_HEALTH: ReadonlySet<string> = new Set(['working-free', 'wo
 function chooseNextStop(
   usable: Candidate[],
   cursor: Cursor,
-  opts: Required<PlanOptions>,
+  opts: ResolvedPlanOptions,
   vehicle: VehicleConfig,
   warnings: string[],
 ): ChosenStop | null {
@@ -1027,11 +1049,11 @@ function chooseNextStop(
     if (legKm > opts.maxLegKm || legKm <= 1) return null;
     if (cursor.isOrigin) {
       // cannot charge before the first stop
-      if (socAfterDriving(legKm, cursor.socPct, vehicle) < opts.minArrivalSocPct - 1e-6) return null;
+      if (!legFeasible(legKm, cursor.socPct, opts, vehicle)) return null;
       return { cand: c, legKm };
     }
     // charging at the cursor can cover the hop only up to the absolute max
-    if (socAfterDriving(legKm, opts.absoluteMaxSocPct, vehicle) < opts.minArrivalSocPct - 1e-6) {
+    if (!legFeasible(legKm, effectiveDeparture(cursor, opts), opts, vehicle)) {
       return null;
     }
     return { cand: c, legKm };
@@ -1077,9 +1099,12 @@ function chooseNextStop(
   if (!best) return null;
 
   // Arrive SoC: charge at the cursor covers exactly this leg + buffer.
-  const arriveSocPct = cursor.isOrigin
-    ? socAfterDriving(best.legKm, cursor.socPct, vehicle)
-    : opts.minArrivalSocPct + 2;
+  const depart = effectiveDeparture(cursor, opts);
+  const arriveSocPct = opts.targetSoc !== undefined
+    ? socAfterDriving(best.legKm, depart, vehicle)
+    : cursor.isOrigin
+      ? socAfterDriving(best.legKm, cursor.socPct, vehicle)
+      : opts.minArrivalSocPct + 2;
   return { cand: best.cand, legKm: best.legKm, arriveSocPct };
 }
 
@@ -1088,7 +1113,7 @@ export function finalize(
   chosen: ChosenStop[],
   totalKm: number,
   route: { distanceKm: number; durationMin: number },
-  opts: Required<PlanOptions>,
+  opts: ResolvedPlanOptions,
   vehicle: VehicleConfig,
   warnings: string[],
 ): PlanStop[] {
@@ -1102,6 +1127,12 @@ export function finalize(
     // Selection reserves a conservative buffer. Final numbers must carry
     // actual departure energy forward, including charge not needed at an
     // early stop, rather than resetting every later arrival to that buffer.
+    if (!legFeasible(legKm, departureSoc, opts, vehicle)) {
+      throw new PlanningError(
+        `The leg into "${cur.cand.view.name}" cannot be completed with the requested reserve.`,
+        'not_determined',
+      );
+    }
     const arriveSocPct = socAfterDriving(legKm, departureSoc, vehicle);
 
     // Charge at this stop covers the NEXT hop (or the final run to the destination).
@@ -1112,19 +1143,34 @@ export function finalize(
       cur.cand.candidate.chainageKm +
       cur.cand.candidate.offRouteKm +
       nextDetour;
-    const neededSoc = socRequiredForArrival(nextLegKm, opts.minArrivalSocPct + 2, vehicle);
+    const neededSoc = socRequiredUncapped(nextLegKm, opts.minArrivalSocPct + 2, vehicle);
 
-    if (neededSoc > opts.absoluteMaxSocPct + 1e-6) {
-      throw new PlanningError(
-        `The leg leaving "${cur.cand.view.name}" is ${nextLegKm.toFixed(0)} km; even a full charge cannot cover it safely.`,
-      );
-    }
-    let leaveSoc = Math.max(arriveSocPct, Math.min(opts.maxSocPerStopPct, neededSoc));
-    if (neededSoc > opts.maxSocPerStopPct && neededSoc > arriveSocPct) {
-      leaveSoc = Math.min(opts.absoluteMaxSocPct, neededSoc);
-      warnings.push(
-        `Charging "${cur.cand.view.name}" to ${Math.round(leaveSoc)}% (above the usual ${opts.maxSocPerStopPct}%) to cover a long leg.`,
-      );
+    let leaveSoc: number;
+    if (opts.targetSoc !== undefined) {
+      const leave = Math.max(arriveSocPct, opts.targetSoc);
+      if (neededSoc > leave + 1e-6) {
+        throw new PlanningError(
+          `Charging to ${opts.targetSoc}% at "${cur.cand.view.name}" cannot cover the next leg with the requested reserve; the planned departure target is not sufficient.`,
+          'not_determined',
+        );
+      }
+      if (opts.targetSoc > 95) {
+        warnings.push(`Charging to ${opts.targetSoc}% uses the existing working-estimate taper curve to 100%; it is not verified vehicle data.`);
+      }
+      leaveSoc = leave;
+    } else {
+      if (neededSoc > Math.min(opts.absoluteMaxSocPct, 100) + 1e-6) {
+        throw new PlanningError(
+          `The leg leaving "${cur.cand.view.name}" is ${nextLegKm.toFixed(0)} km; even a full charge cannot cover it safely.`,
+        );
+      }
+      leaveSoc = Math.max(arriveSocPct, Math.min(opts.maxSocPerStopPct, neededSoc));
+      if (neededSoc > opts.maxSocPerStopPct && neededSoc > arriveSocPct) {
+        leaveSoc = Math.min(opts.absoluteMaxSocPct, neededSoc);
+        warnings.push(
+          `Charging "${cur.cand.view.name}" to ${Math.round(leaveSoc)}% (above the usual ${opts.maxSocPerStopPct}%) to cover a long leg.`,
+        );
+      }
     }
 
     const chargeKwh = Math.max(0, kwhForSocDelta(arriveSocPct, leaveSoc, vehicle));
@@ -1172,7 +1218,7 @@ export function computeTotals(
   stops: PlanStop[],
   totalKm: number,
   route: { distanceKm: number; durationMin: number },
-  opts: Required<PlanOptions>,
+  opts: ResolvedPlanOptions,
   vehicle: VehicleConfig,
 ): PlanTotals {
   const chargeMin = stops.reduce((s, x) => s + x.chargeTimeMin, 0);

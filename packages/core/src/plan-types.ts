@@ -229,6 +229,10 @@ export interface RunCoverageSnapshot {
   pacePerCallMs: number;
 }
 export interface PlanOptions {
+  /** Original parity: arrival reserve; maps to minArrivalSocPct when supplied. */
+  reservePct?: number;
+  /** Original parity: explicit charge-to departure SoC at every charging stop. */
+  targetSoc?: number;
   startSocPct?: number;
   /** Ordered user stopovers; validated/copied at plan start. */
   via?: readonly PlaceRef[];
@@ -259,7 +263,10 @@ export interface PlanOptions {
   avgSpeedKmh?: number;
 }
 
-export const DEFAULT_PLAN_OPTIONS: Required<PlanOptions> = {
+export type ResolvedPlanOptions =
+  Required<Omit<PlanOptions, 'targetSoc' | 'reservePct'>> &
+  Pick<PlanOptions, 'targetSoc' | 'reservePct'>;
+export const DEFAULT_PLAN_OPTIONS: ResolvedPlanOptions = {
   startSocPct: 100,
   via: [],
   minArrivalSocPct: 10, // working estimate

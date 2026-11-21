@@ -79,6 +79,16 @@ export function socAfterDriving(
   const pctPerKwh = 100 / usableKwh(v);
   return Math.max(0, startSocPct - consumedKwh * pctPerKwh);
 }
+/** SoC actually needed for a leg; deliberately NOT floored at 0 or capped at 100. */
+export function socRequiredUncapped(km: number, arrivalSocPct: number,
+  v: VehicleConfig): number {
+  return arrivalSocPct + kwhForDistance(km, v) * 100 / usableKwh(v);
+}
+/** SoC remaining after a leg without floor; negative means unreachable. */
+export function socAfterDrivingUncapped(km: number, startSocPct: number,
+  v: VehicleConfig): number {
+  return startSocPct - kwhForDistance(km, v) * 100 / usableKwh(v);
+}
 
 /**
  * Departure SoC % required so that after driving `km` the battery sits at

@@ -22,6 +22,10 @@ export interface PlanRequest {
     realWorldRangeKm?: number;
   };
   startSocPct?: number;
+  /** Original parity: arrival reserve 0..49. */
+  reservePct?: number;
+  /** Original parity: explicit charge-to departure SoC 15..100. */
+  targetSoc?: number;
   /** Hard cap for selected charger rated power; omitted means no cap. */
   maxChargerKw?: number;
 }

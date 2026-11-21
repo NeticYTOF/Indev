@@ -4,9 +4,10 @@
  * no retry, no fallback into the old all-candidate path.
  */
 import {
-  DEFAULT_PLAN_OPTIONS, UpstreamBudget, assembleAiPlan, computeTotals, cumulativeKm, finalize,
+  UpstreamBudget, assembleAiPlan, computeTotals, cumulativeKm, finalize,
   createProviderFailureCollector, isAbortLike, StatiqRunFatalError, UpstreamRunStoppedError,
-  discoverSelective, hydrateSelective, validateAiChoice, socAfterDriving,
+  discoverSelective, hydrateSelective, validateAiChoice, socAfterDrivingUncapped,
+  resolvePlanOptions,
   type CorridorCandidate, type OsrmRouter, type PlanOptions, type PlanRunBudget, type PlannerCandidate, type ProviderFailureReport,
   type ResolvedVehicle, type StatiqClient, type TripPlan,
 } from '@indeev/core';
@@ -133,7 +134,7 @@ export function compactCandidates(candidates: readonly CorridorCandidate[]): {
 }
 
 export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRunResult> {
-  const opts = { ...DEFAULT_PLAN_OPTIONS, ...deps.planOptions };
+  const opts = resolvePlanOptions(deps.planOptions);
   const stage = (s: string, p = 0, n = 0, counts?: { ok: number; failed: number }): void =>
     deps.onStage?.(s, p, n, counts);
   const runBudget = new UpstreamBudget(deps.budget.maxUpstreamCalls);
@@ -301,7 +302,7 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
           ? cumulativeKm(discovery.route.geometry).at(-1) ?? discovery.route.distanceKm
           : discovery.route.distanceKm;
         const directReachable = noFitKm <= opts.maxLegKm + 1e-6 &&
-          socAfterDriving(noFitKm, opts.startSocPct, deps.resolved.config) >= opts.minArrivalSocPct - 1e-6;
+          socAfterDrivingUncapped(noFitKm, opts.startSocPct, deps.resolved.config) >= opts.minArrivalSocPct - 1e-6;
         if (directReachable ||
             (remainingUnique > 0 && remainingRounds > 0 && remainingCalls > 0 && unexamined > 0)) {
           diagState.finalAnswerEvents.push({ reason: 'premature_no_fit',

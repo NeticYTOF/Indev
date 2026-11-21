@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { chargeTimeMin } from '../src/vehicle.js';
 import { planTrip, planTripDetailed, PlanningError } from '../src/planner.js';
 import type { OsrmRouter, RouteResult } from '../src/router.js';
 import type { StatiqClient } from '../src/statiq.js';
@@ -1245,4 +1246,54 @@ it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, '60', null])("rejects inva
   const counts = { router: 0, statiq: 0 };
   await expect(planTrip(countingPlannerDeps(counts), O, D(450), { maxChargerKw: maxChargerKw as never })).rejects.toMatchObject({ name: "RouterError", code: "InvalidWaypoints" });
   expect(counts).toEqual({ router: 0, statiq: 0 });
+});
+
+describe('original reserve and charge-to parity', () => {
+  const zeroReserveDeps = (km: number, specs: StationSpec[] = []) => ({
+    router: fakeRouter(km), statiq: fakeStatiq(specs),
+  });
+
+  it('rejects 285 km at start 50 with reserve 0 instead of trusting floored arrival', async () => {
+    await expect(planTrip(zeroReserveDeps(285), O, D(285), {
+      startSocPct: 50, reservePct: 0,
+    })).rejects.toMatchObject({ name: 'PlanningError' });
+  });
+
+  it('accepts 200 km at start 50 with reserve 0 as a zero-stop plan', async () => {
+    const plan = await planTrip(zeroReserveDeps(200), O, D(200), {
+      startSocPct: 50, reservePct: 0,
+    });
+    expect(plan.stops).toHaveLength(0);
+  });
+
+  it('accepts the reserve 49 / target 54 boundary', async () => {
+    const plan = await planTrip(zeroReserveDeps(100), O, D(100), {
+      startSocPct: 100, reservePct: 49, targetSoc: 54,
+    });
+    expect(plan.stops).toHaveLength(0);
+  });
+
+  it('keeps a finite working-estimate charge time from 80 to 100 percent', () => {
+    const minutes = chargeTimeMin(80, 100, 60, resolveVehicle().config);
+    expect(Number.isFinite(minutes) && minutes > 0).toBe(true);
+  });
+
+  it('fails when the explicit target cannot cover the next leg', async () => {
+    await expect(planTrip(zeroReserveDeps(420, [
+      { id: 71, name: 'Mid', chainageKm: 270 },
+    ]), O, D(420), {
+      startSocPct: 100, reservePct: 0, targetSoc: 35,
+    })).rejects.toMatchObject({ name: 'PlanningError' });
+  });
+
+  it('does not discharge retained energy above a low explicit target', async () => {
+    const plan = await planTrip(zeroReserveDeps(320, [
+      { id: 72, name: 'Early', chainageKm: 20 },
+    ]), O, D(320), {
+      startSocPct: 100, reservePct: 0, targetSoc: 15,
+    });
+    expect(plan.stops).toHaveLength(1);
+    expect(plan.stops[0]!.leaveSocPct).toBeGreaterThan(90);
+    expect(plan.stops[0]!.leaveSocPct).not.toBe(15);
+  });
 });

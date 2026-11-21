@@ -1,5 +1,5 @@
 /** Advisory physics guidance only. Never a filter, certification, or road-spur proof. */
-import { cumulativeKm, socAfterDriving, usableKwh, type Coords, type VehicleConfig } from '@indeev/core';
+import { cumulativeKm, socAfterDrivingUncapped, usableKwh, type Coords, type VehicleConfig } from '@indeev/core';
 
 export interface GuidancePoint {
   stationId: number;
@@ -105,14 +105,14 @@ function canLeg(from: State, point: GuidancePoint, opts: GuidanceOptions,
   const leg = legKm(from, point);
   if (leg < -EPS || leg > opts.maxLegKm + EPS) return false;
   const depart = from.id === null ? opts.startSocPct : opts.absoluteMaxSocPct;
-  return socAfterDriving(leg, depart, vehicle) >= opts.minArrivalSocPct - EPS;
+  return socAfterDrivingUncapped(leg, depart, vehicle) >= opts.minArrivalSocPct - EPS;
 }
 function finalReachable(state: State, routeKm: number, opts: GuidanceOptions,
   vehicle: VehicleConfig): boolean {
   const leg = routeKm - state.chainage + state.detour;
   if (leg < -EPS || leg > opts.maxLegKm + EPS) return false;
   const depart = state.id === null ? opts.startSocPct : opts.absoluteMaxSocPct;
-  return socAfterDriving(leg, depart, vehicle) >= opts.minArrivalSocPct - EPS;
+  return socAfterDrivingUncapped(leg, depart, vehicle) >= opts.minArrivalSocPct - EPS;
 }
 
 export function buildReachabilityGuidance(

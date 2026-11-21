@@ -417,6 +417,26 @@ describe('malformed planning inputs', () => {
       expect((await res.json() as { code: string }).code).toBe('bad_request');
     });
   }
+
+  for (const endpoint of ['/api/plan', '/api/ai/plan', '/api/jobs/plan']) {
+    const invalid: Array<[string, Record<string, unknown>]> = [
+      ['reserve high', { reservePct: 50 }],
+      ['reserve negative', { reservePct: -1 }],
+      ['target low', { targetSoc: 10 }],
+      ['target high', { targetSoc: 101 }],
+      ['target conflict', { reservePct: 49, targetSoc: 50 }],
+    ];
+    it.each(invalid)(`${endpoint} rejects %s`, async (_name, fields) => {
+      const app = createApp(await makeDeps({ mock: true,
+        createStatiq: () => { throw new Error('live call in mock mode!'); } }));
+      const res = await app.request(endpoint, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ origin: ORIGIN, destination: DEST, ...fields }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json() as { code: string }).code).toBe('bad_request');
+    });
+  }
 });
 
 describe('planning coordinate bounds', () => {

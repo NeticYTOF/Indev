@@ -535,3 +535,37 @@ describe('progressive40 detail coverage', () => {
   });
 });
 });
+
+describe('original reserve and target AI limits', () => {
+  it('exposes resolved reserve and charge-to limits to AI and advisory guidance', async () => {
+    let captured: Array<{ role: string; content: string | null }> = [];
+    const aiFetch = (async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string | null }> };
+      captured = body.messages;
+      return new Response(JSON.stringify({ choices: [{ message: {
+        content: '{"chosenStationIds":[]}',
+      } }] }), { status: 200 });
+    }) as typeof fetch;
+    await runSelective({
+      ai: { baseUrl: 'https://ai.test/v1', apiKey: 'k', model: 'm', fetchImpl: aiFetch },
+      router: { route: async () => ({ distanceKm: 100, durationMin: 100,
+        geometry: [{ lat: 0, lon: 0 }, { lat: 0.899, lon: 0 }] }) } as never,
+      statiq: { markers: async () => ({ ok: true, live: true, retained: false,
+        source: 'test', count: 0, stations: [] }) } as never,
+      origin: { label: 'A', lat: 0, lon: 0 },
+      destination: { label: 'B', lat: 0.899, lon: 0 },
+      via: [], resolved: resolveVehicle(),
+      planOptions: { startSocPct: 50, reservePct: 12, targetSoc: 60 },
+      budget: { deadlineMs: 600_000, maxUpstreamCalls: 100 },
+    });
+    const user = JSON.parse(String(captured[1]?.content)) as {
+      limits: Record<string, number>;
+      reachability: { initialReachKm: number };
+    };
+    expect(user.limits).toMatchObject({
+      startSocPct: 50, reservePct: 12, targetSoc: 60,
+      minArrivalSocPct: 12, absoluteMaxSocPct: 60,
+    });
+    expect(user.reachability.initialReachKm).toBeCloseTo(154.7, 1);
+  });
+});

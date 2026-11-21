@@ -10,18 +10,13 @@
  */
 import type { Coords } from './geo.js';
 import {
-  finalize,
-  computeTotals,
-  PlanningError,
-  type ChosenStop,
-  type PlannerCandidate,
-  type PlanBundle,
+  finalize, computeTotals, PlanningError, resolvePlanOptions,
+  type ChosenStop, type PlannerCandidate, type PlanBundle,
 } from './planner.js';
-import type { PlanOptions, PlanStop, PlanTotals, TripPlan } from './plan-types.js';
+import type { PlanOptions, PlanStop, PlanTotals, TripPlan,
+  ResolvedPlanOptions } from './plan-types.js';
 import { certifyCappedViewChargers } from './plugs.js';
-import { socRequiredForArrival, socAfterDriving, type VehicleConfig } from './vehicle.js';
-import { DEFAULT_PLAN_OPTIONS } from './plan-types.js';
-
+import { socAfterDriving, socRequiredUncapped, type VehicleConfig } from './vehicle.js';
 export interface AiChoice {
   stationIds: number[];
   notes?: string;
@@ -50,7 +45,10 @@ export function validateAiChoice(
   vehicle: VehicleConfig,
 ): AiValidation {
   const fail = (reason: string): AiValidation => ({ ok: false, reason });
-  const opts = { ...DEFAULT_PLAN_OPTIONS, ...options };
+  let opts: ResolvedPlanOptions;
+  try { opts = resolvePlanOptions(options); } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Invalid planning options.');
+  }
   const capActive = options.maxChargerKw !== undefined;
   if (capActive && (typeof options.maxChargerKw !== 'number' ||
       !Number.isFinite(options.maxChargerKw) || options.maxChargerKw <= 0)) {
@@ -107,22 +105,21 @@ export function validateAiChoice(
     if (legKm > opts.maxLegKm + 1e-6) {
       return fail(`A ${Math.round(legKm)} km leg exceeds the ${opts.maxLegKm} km safe running range.`);
     }
-    const arrive =
-      seq.length === 0
-        ? socAfterDriving(legKm, soc, vehicle)
-        : socAfterDriving(legKm, opts.absoluteMaxSocPct, vehicle);
-    if (arrive < opts.minArrivalSocPct - 1e-6) {
+    const depart = soc;
+    if (socRequiredUncapped(legKm, opts.minArrivalSocPct, vehicle) > depart + 1e-6) {
       return fail(
         `The battery cannot reach "${c.view.name}" with the required ${Math.round(opts.minArrivalSocPct)}% reserve.`,
       );
     }
+    const arrive = socAfterDriving(legKm, depart, vehicle);
     // Full-charge reachability above is a feasibility check, not the
     // planned arrival. Previous stops charge only for this hop + buffer.
     const plannedArrival = seq.length === 0 ? arrive : opts.minArrivalSocPct + 2;
     seq.push({ cand: c, legKm, arriveSocPct: plannedArrival });
     cursorChain = c.candidate.chainageKm;
     cursorDetour = c.candidate.offRouteKm;
-    soc = opts.absoluteMaxSocPct; // subsequent stops may charge to the cap
+    soc = options.targetSoc !== undefined
+      ? Math.max(arrive, opts.absoluteMaxSocPct) : opts.absoluteMaxSocPct;
   }
 
   // final leg to destination
@@ -130,13 +127,12 @@ export function validateAiChoice(
   if (finalLegKm > opts.maxLegKm + 1e-6) {
     return fail(`The ${Math.round(finalLegKm)} km final leg exceeds the safe running range.`);
   }
-  const needed = socRequiredForArrival(finalLegKm, opts.minArrivalSocPct + 2, vehicle);
-  const departFrom =
-    seq.length > 0 ? opts.absoluteMaxSocPct : opts.startSocPct;
-  if (socAfterDriving(finalLegKm, departFrom, vehicle) < opts.minArrivalSocPct - 1e-6) {
-    return fail('The destination is not reachable even after charging at the last stop.');
-  }
-  void needed;
+    const departFrom = seq.length > 0 ? soc : opts.startSocPct;
+    const arrivalPromise = seq.length > 0 ? opts.minArrivalSocPct + 2 : opts.minArrivalSocPct;
+    const required = socRequiredUncapped(finalLegKm, arrivalPromise, vehicle);
+    if (departFrom > 100 + 1e-6 || required > departFrom + 1e-6) {
+      return fail('The destination is not reachable even after charging at the last stop.');
+    }
 
   return { ok: true, seq };
 }
@@ -150,7 +146,7 @@ export function assembleAiPlan(
   options: PlanOptions,
   vehicle: VehicleConfig,
 ): TripPlan {
-  const opts = { ...DEFAULT_PLAN_OPTIONS, ...options };
+  const opts = resolvePlanOptions(options);
   const base = bundle.plan;
   const warnings = [
     ...base.warnings,

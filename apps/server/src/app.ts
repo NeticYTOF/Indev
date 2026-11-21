@@ -257,6 +257,8 @@ interface LivePlanParams {
   via: readonly PlaceRef[];
   maxChargerKw: number | undefined;
   startSocPct: number | undefined;
+  reservePct: number | undefined;
+  targetSoc: number | undefined;
   resolved: ResolvedVehicle;
   customRequest: string | undefined;
 }
@@ -283,6 +285,8 @@ async function runLiveAiPlan(
     via: params.via,
     ...(params.maxChargerKw === undefined ? {} : { maxChargerKw: params.maxChargerKw }),
     ...(params.startSocPct === undefined ? {} : { startSocPct: params.startSocPct }),
+    ...(params.reservePct === undefined ? {} : { reservePct: params.reservePct }),
+    ...(params.targetSoc === undefined ? {} : { targetSoc: params.targetSoc }),
   };
   const safeRange = params.resolved.realWorldRangeKm;
   if (safeRange != null && Number.isFinite(safeRange)) {
@@ -515,6 +519,8 @@ export function createApp(deps: AppDeps): Hono {
       vehicle?: VehicleSelection;
       startSocPct?: number;
       maxChargerKw?: unknown;
+      reservePct?: unknown;
+      targetSoc?: unknown;
     };
     const providerFailures = createProviderFailureCollector();
     const origin = coordRef(b.origin);
@@ -541,6 +547,10 @@ export function createApp(deps: AppDeps): Hono {
     const startSoc = readStartSocPct(b.startSocPct);
     if (!startSoc.ok) {
       return c.json({ error: 'startSocPct must be a finite number', code: 'bad_request' }, 400);
+    }
+    const reserveTarget = readReserveTarget(b.reservePct, b.targetSoc);
+    if (!reserveTarget.ok) {
+      return c.json({ error: 'reservePct/targetSoc out of range or conflicting', code: 'bad_request' }, 400);
     }
 
     // Vehicle selection (real-world range separation, never invented) -
@@ -574,6 +584,8 @@ export function createApp(deps: AppDeps): Hono {
       via: via.value,
       runBudget,
       ...(maxCharger.value === undefined ? {} : { maxChargerKw: maxCharger.value }),
+      ...(reserveTarget.reservePct === undefined ? {} : { reservePct: reserveTarget.reservePct }),
+      ...(reserveTarget.targetSoc === undefined ? {} : { targetSoc: reserveTarget.targetSoc }),
     };
     try {
       const plan = await planTrip(
@@ -603,6 +615,8 @@ export function createApp(deps: AppDeps): Hono {
       vehicle?: VehicleSelection;
       startSocPct?: number;
       maxChargerKw?: unknown;
+      reservePct?: unknown;
+      targetSoc?: unknown;
       request?: string;
     } | null;
     const origin = coordRef(b?.origin);
@@ -629,6 +643,10 @@ export function createApp(deps: AppDeps): Hono {
     const startSoc = readStartSocPct(b?.startSocPct);
     if (!startSoc.ok) {
       return c.json({ error: 'startSocPct must be a finite number', code: 'bad_request' }, 400);
+    }
+    const reserveTarget = readReserveTarget(b?.reservePct, b?.targetSoc);
+    if (!reserveTarget.ok) {
+      return c.json({ error: 'reservePct/targetSoc out of range or conflicting', code: 'bad_request' }, 400);
     }
 
     // Vehicle selection resolves first in ALL modes (mock echoes it).
@@ -681,6 +699,8 @@ export function createApp(deps: AppDeps): Hono {
           via: via.value,
           maxChargerKw: maxCharger.value,
           startSocPct: startSoc.value,
+          reservePct: reserveTarget.reservePct,
+          targetSoc: reserveTarget.targetSoc,
           resolved,
           customRequest,
         },
@@ -705,6 +725,8 @@ export function createApp(deps: AppDeps): Hono {
       startSocPct?: number;
       maxChargerKw?: unknown;
       request?: string;
+      reservePct?: unknown;
+      targetSoc?: unknown;
     };
     const origin = coordRef(b.origin);
     const destination = coordRef(b.destination);
@@ -723,6 +745,10 @@ export function createApp(deps: AppDeps): Hono {
     if (!startSoc.ok) {
       return c.json({ error: 'startSocPct must be a finite number', code: 'bad_request' }, 400);
     }
+    const reserveTarget = readReserveTarget(b.reservePct, b.targetSoc);
+    if (!reserveTarget.ok) {
+      return c.json({ error: 'reservePct/targetSoc out of range or conflicting', code: 'bad_request' }, 400);
+    }
     if (deps.mock) {
       return c.json({ error: 'Long-running jobs require live planning; mock mode is synchronous.', code: 'unsupported_mock_jobs' }, 422);
     }
@@ -736,6 +762,7 @@ export function createApp(deps: AppDeps): Hono {
     const started = jobs.start({
       origin, destination, via: via.value,
       maxChargerKw: maxCharger.value, startSocPct: startSoc.value,
+      reservePct: reserveTarget.reservePct, targetSoc: reserveTarget.targetSoc,
       resolved, customRequest,
     });
     if (!started.ok) {
@@ -950,6 +977,26 @@ function clampSoc(v: unknown): number | undefined {
   return Math.min(100, Math.max(5, v));
 }
 
+type ReserveTargetRead =
+  | { ok: true; reservePct: number | undefined; targetSoc: number | undefined }
+  | { ok: false };
+function readReserveTarget(reserve: unknown, target: unknown): ReserveTargetRead {
+  const bounded = (value: unknown, min: number, max: number): number | undefined => {
+    if (value === undefined) return undefined;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+      throw new Error('out of range');
+    }
+    return value;
+  };
+  try {
+    const reservePct = bounded(reserve, 0, 49);
+    const targetSoc = bounded(target, 15, 100);
+    if (targetSoc !== undefined && targetSoc < (reservePct ?? 0) + 5) throw new Error('conflict');
+    return { ok: true, reservePct, targetSoc };
+  } catch {
+    return { ok: false };
+  }
+}
 /**
  * Minimal live station payload for revalidation views (rating, plugs,
  * tariff, reliability: null, fetchedAt). Plug health is derived per rules.
