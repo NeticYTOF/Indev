@@ -77,6 +77,8 @@ tripsButton.addEventListener('click', () => {
   if (drawer.classList.contains('hidden')) {
     renderTripsDrawer(drawer, map, plannerController.loadSavedRoute);
     drawer.classList.remove('hidden');
+    tripsButton.setAttribute('aria-expanded', 'true');
+    drawer.querySelector<HTMLElement>('[data-close]')?.focus({ preventScroll: true });
   } else {
     // Canonical close: restore focus if the click path lost it to the
     // hide (here focus is already on the owner button - harmless no-op).

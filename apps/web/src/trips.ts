@@ -42,6 +42,7 @@ import {
 export function hideTripsDrawer(drawer: HTMLElement): void {
   const focusInside = drawer.contains(document.activeElement);
   drawer.classList.add('hidden');
+  document.getElementById('trips-button')?.setAttribute('aria-expanded', 'false');
   if (focusInside) {
     document.getElementById('trips-button')?.focus();
   }
@@ -343,6 +344,7 @@ export function renderTripsDrawer(
     const returnToDrawer = (): void => {
       clearTripComparisonView();
       drawer.classList.remove('hidden');
+      document.getElementById('trips-button')?.setAttribute('aria-expanded', 'true');
       const compare = head.querySelector<HTMLButtonElement>('[data-compare-selected]');
       const fallback = list.querySelector<HTMLButtonElement>('[data-compare-toggle]')
         ?? head.querySelector<HTMLButtonElement>('[data-close]');
@@ -385,6 +387,7 @@ export function renderTripsDrawer(
       else root.focus();
     };
     drawer.classList.add('hidden');
+    document.getElementById('trips-button')?.setAttribute('aria-expanded', 'false');
     drawComparison();
   });
 
@@ -468,6 +471,7 @@ function renderTripRow(
   row.querySelector('[data-open]')?.addEventListener('click', () => {
     clearTripComparisonView();
     drawer.classList.add('hidden'); // hide directly: focus lands on the
+    document.getElementById('trips-button')?.setAttribute('aria-expanded', 'false');
     // trip summary below, not on the drawer's owner control
     openSavedTrip(trip, map, loadSavedRoute);
   });

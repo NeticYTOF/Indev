@@ -383,3 +383,37 @@ test('successful deletion keeps the query and drops a deleted comparison selecti
   await expect(compare).toBeDisabled();
   await expect(page.locator('.hidden-selection-notice')).toBeHidden();
 });
+
+test('drawer keyboard open and close preserves expanded state and focus context', async ({ page }) => {
+  await page.route(/^https?:\/\//, async (route) => {
+    const host = new URL(route.request().url()).hostname;
+    if (host === 'localhost' || host === '127.0.0.1') await route.continue(); else await route.abort();
+  });
+  await page.route('**/api/trips', (route) => route.fulfill({ json: { trips: [] } }));
+  await page.goto('/');
+  const owner = page.locator('#trips-button'), drawer = page.locator('#trips-drawer'), close = page.locator('[data-close]');
+  await expect(owner).toHaveAttribute('aria-controls', 'trips-drawer');
+  await expect(owner).toHaveAttribute('aria-expanded', 'false');
+  const expectClosedWithFocus = async (focused: typeof owner): Promise<void> => {
+    await expect(drawer).toBeHidden();
+    await expect(owner).toHaveAttribute('aria-expanded', 'false');
+    await expect(focused).toBeFocused();
+  };
+  await owner.focus();
+  await owner.press('Enter');
+  await expect(drawer).toBeVisible();
+  await expect(owner).toHaveAttribute('aria-expanded', 'true');
+  await expect(close).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expectClosedWithFocus(owner);
+  await owner.focus();
+  await owner.press('Enter');
+  await close.click();
+  await expectClosedWithFocus(owner);
+  await owner.focus();
+  await owner.press('Enter');
+  const field = page.getByRole('combobox', { name: 'From', exact: true });
+  await field.focus();
+  await page.keyboard.press('Escape');
+  await expectClosedWithFocus(field);
+});
