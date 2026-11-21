@@ -323,9 +323,9 @@ describe('real bulk wire lifecycle', () => {
   });
 
   it('[planner] explicit later-batch transport failure retains first 12 samples', async () => {
-    const second = gate(), notice = gate();
+    const second = gate();
     const h = harness({ routeKm: 260, markerGates: [undefined, second] as Gate[],
-      markerModes: ['ok', 'transport-fail'], dispatchNotice: notice });
+      markerModes: ['ok', 'transport-fail'] });
     const errP = planTrip({ router: h.router, statiq: h.client }, O, D(260), OPTS).catch((e: unknown) => e);
     try {
       await wait(() => h.markerBatchCount() >= 2, 'second batch dispatch');
@@ -352,37 +352,49 @@ describe('real bulk wire lifecycle', () => {
     expect(h.detailCalls).toBe(1);
   });
 
-  it('[client transport] cap refusal joins work and freezes counters after return', async () => {
+  it('[client transport] sequential cap refusal joins first batch and freezes counters', async () => {
     const release = gate(), started = gate();
     const h = harness({ detailsGate: release,
       dispatchNotice: (target) => { if (target.endsWith('/stations/details-bulk')) started.resolve(); } });
-    const client = h.client;
-    client.attachRunBudget(new UpstreamBudget(1));
-    const calls = [
-      client.detailsBulk([1], undefined, { endpointClass: 'stations/details', phase: 'details' }).catch((e: unknown) => e),
-      client.detailsBulk([2], undefined, { endpointClass: 'stations/details', phase: 'details' }).catch((e: unknown) => e),
-    ];
+    const budget = new UpstreamBudget(2);
+    h.client.attachRunBudget(budget);
+    // detailsBulk chunks at 2. First chunk reserves 2; second chunk of the
+    // SAME call is refused before dispatch (budget-exhausted), after the
+    // first chunk has been joined and settled.
+    const pending = h.client.detailsBulk([1, 2, 3], undefined,
+      { endpointClass: 'stations/details', phase: 'details' }).catch((e: unknown) => e);
     try {
-      await wait(started.promise, 'first details dispatch');
+      await wait(started.promise, 'first details batch dispatch');
+      expect(h.detailCalls).toBe(1);
+      expect(h.audit).toHaveLength(0); // first batch still gated/unsettled
+      expect(budget.attemptsMade).toBe(2); // pessimistic hold, not settled
       release.resolve();
-      const outcomes = await Promise.all(calls);
-      expect(outcomes.some((o) => o instanceof UpstreamRunStoppedError)).toBe(true);
-      const frozen = { audit: h.audit.length, detailCalls: h.detailCalls };
+      const outcome = await pending;
+      expect(outcome).toBeInstanceOf(UpstreamRunStoppedError);
+      expect(h.detailCalls).toBe(1); // no second dispatch
+      expect(h.audit).toHaveLength(2); // first chunk's verified attempts
+      expect(budget.attemptsMade).toBe(2);
+      const frozen = { audit: h.audit.length, detailCalls: h.detailCalls, attempts: budget.attemptsMade };
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
-      expect({ audit: h.audit.length, detailCalls: h.detailCalls }).toEqual(frozen);
+      expect({ audit: h.audit.length, detailCalls: h.detailCalls, attempts: budget.attemptsMade }).toEqual(frozen);
     } finally {
       release.resolve();
-      await Promise.all(calls);
+      await pending.catch(() => undefined);
     }
   });
 
   it('[client transport] unknown transport latches with one dispatch and full hold', async () => {
-    const h = harness();
+    let bulkDispatch = 0, legacyDispatch = 0;
     const client = new StatiqClient({
       token: 'offline-only', baseUrl: 'https://worker.test/api', bulk: true, retries: 0,
       runDeadlineAt: Date.now() + 60_000,
       fetchImpl: (async (url: any) => {
-        if (String(url).endsWith('/stations/markers-bulk')) throw new Error('transport down');
+        const target = String(url);
+        if (target.endsWith('/stations/markers-bulk')) {
+          bulkDispatch++;
+          throw new Error('transport down');
+        }
+        legacyDispatch++;
         return new Response('{}');
       }) as typeof fetch,
     });
@@ -390,12 +402,14 @@ describe('real bulk wire lifecycle', () => {
     client.attachRunBudget(budget);
     const first = await client.markersBulk([{ lat: 28.6, lon: 77.2 }], undefined, ctx).catch((e: unknown) => e);
     expect(first).toBeInstanceOf(Error);
+    expect(bulkDispatch).toBe(1);
     expect(budget.attemptsMade).toBe(1);
     const second = await client.markersBulk([{ lat: 28.7, lon: 77.3 }], undefined, ctx).catch((e: unknown) => e);
     expect(second).toBeInstanceOf(Error);
+    expect(bulkDispatch).toBe(1); // latched: no second dispatch
     expect(budget.attemptsMade).toBe(1);
     await expect(client.markers(1, 1)).rejects.toBeInstanceOf(Error);
-    void h;
+    expect(legacyDispatch).toBe(0); // no legacy fallback after latch
   });
 
   it('[client transport] one active batch refuses a concurrent second batch', async () => {
