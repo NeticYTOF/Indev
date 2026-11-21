@@ -305,6 +305,9 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     <div class="ai-box hidden">
       <label for="ai-request" class="search-label">AI planning — custom requests (optional)</label>
       <textarea id="ai-request" rows="2" placeholder="e.g. Prefer stops with cafes, avoid single-plug stations"></textarea>
+      <label for="ai-max-charger-kw" class="search-label">Maximum charger power (kW, optional)</label>
+      <input id="ai-max-charger-kw" data-ai-max-charger-kw type="number" min="1" step="1" inputmode="numeric" placeholder="No limit" aria-describedby="ai-cap-hint" />
+      <p class="hint" id="ai-cap-hint">Blank means no cap. A value is an enforced hard ceiling: only certified chargers at or below it are eligible.</p>
       <button type="button" class="btn btn-ghost" data-ai-plan>Plan with AI</button>
       <p class="hint">The AI picks from the same live candidates and every choice is validated against the configured leg ceiling and charge/reserve feasibility.</p>
     </div>
@@ -401,6 +404,16 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     }
     const aiRequestEl = document.getElementById('ai-request') as HTMLTextAreaElement | null;
     const customRequest = aiRequestEl?.value.trim() || undefined;
+    const capRaw = aiBox.querySelector<HTMLInputElement>('[data-ai-max-charger-kw]')?.value.trim() || '';
+    let maxChargerKw: number | undefined;
+    if (capRaw) {
+      const parsedCap = Number(capRaw);
+      if (!Number.isFinite(parsedCap) || parsedCap <= 0) {
+        showError(errorBox, 'Maximum charger power must be a positive number, or leave it blank for no limit.');
+        return;
+      }
+      maxChargerKw = parsedCap;
+    }
     const vehicleResult = readVehicleSelection(vehicleRow);
     if (vehicleResult.kind === 'invalid') {
       showError(errorBox, vehicleResult.reason);
@@ -425,6 +438,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
         startSocPct: startSoc,
         ...(vehicleResult.kind === 'ok' ? { vehicle: vehicleResult.vehicle } : {}),
         ...(customRequest ? { request: customRequest } : {}),
+        ...(maxChargerKw === undefined ? {} : { maxChargerKw }),
       });
       onPlanAvailable(plan, map, errorBox);
       if (ai.applied) {

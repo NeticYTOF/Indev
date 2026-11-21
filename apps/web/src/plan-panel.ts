@@ -280,6 +280,9 @@ function renderStopCard(stop: unknown, index: number): HTMLElement {
   const inventoryKnown = Array.isArray(s.chargers);
   const chargers = inventoryKnown ? s.chargers as unknown[] : [];
   const stationId = safeStationId(s.stationId);
+  const selected = record(planned?.selectedCharger);
+  const selectedKw = selected?.kw;
+  const selectedId = selected?.chargerId;
   const fetchedAt = typeof s.fetchedAt === 'string' ? s.fetchedAt : null;
   const rating = safeNumber(s.rating);
   const ratingKnown = rating != null && rating >= 0 && rating <= 5;
@@ -320,6 +323,9 @@ function renderStopCard(stop: unknown, index: number): HTMLElement {
             <span class="stat">Arrive at ${escapeHtml(formatEta(safeNonNegative(planned?.arrivalEtaMin)))}</span>
             <span class="stat">Depart at +${escapeHtml(formatEta(safeNonNegative(planned?.departureEtaMin)))}</span>
             <span class="stat">Detour ${safeDecimal(planned?.detourKm)} km</span>
+            ${selected && typeof selectedKw === 'number' && Number.isFinite(selectedKw) && selectedKw > 0
+              ? `<span class="stat">Selected charger ${safeDisplay(selected.name)} (#${safeIntegerText(selectedId)}) · ${safeDecimal(selectedKw)} kW · ${safeTariff(planned?.pricePerKwh)}</span>`
+              : ''}
           </div>
           <div class="stop-meta">
             <span class="meta">${ratingKnown

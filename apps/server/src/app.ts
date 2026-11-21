@@ -256,6 +256,7 @@ export function createApp(deps: AppDeps): Hono {
       via?: unknown;
       vehicle?: VehicleSelection;
       startSocPct?: number;
+      maxChargerKw?: unknown;
     };
     const providerFailures = createProviderFailureCollector();
     const origin = coordRef(b.origin);
@@ -270,6 +271,10 @@ export function createApp(deps: AppDeps): Hono {
     const via = readVia(b.via);
     if (!via.ok) {
       return c.json({ error: 'via must be an array of at most 5 places with label, lat and lon', code: 'bad_request' }, 400);
+    }
+    const maxCharger = readMaxChargerKw(b.maxChargerKw);
+    if (!maxCharger.ok) {
+      return c.json({ error: 'maxChargerKw must be a finite positive number', code: 'bad_request' }, 400);
     }
     if (deps.mock && via.value.length > 0) {
       return c.json({ error: 'Synthetic demo planning supports only A-B trips; ordered stopovers require live routing.', code: 'unsupported_mock_stopovers' }, 422);
@@ -305,6 +310,7 @@ export function createApp(deps: AppDeps): Hono {
       startSocPct: startSoc.value,
       via: via.value,
       runBudget,
+      ...(maxCharger.value === undefined ? {} : { maxChargerKw: maxCharger.value }),
     };
     try {
       const plan = await planTrip(
@@ -332,6 +338,7 @@ export function createApp(deps: AppDeps): Hono {
       via?: unknown;
       vehicle?: VehicleSelection;
       startSocPct?: number;
+      maxChargerKw?: unknown;
       request?: string;
     } | null;
     const providerFailures = createProviderFailureCollector();
@@ -347,6 +354,10 @@ export function createApp(deps: AppDeps): Hono {
     const via = readVia(b?.via);
     if (!via.ok) {
       return c.json({ error: 'via must be an array of at most 5 places with label, lat and lon', code: 'bad_request' }, 400);
+    }
+    const maxCharger = readMaxChargerKw(b?.maxChargerKw);
+    if (!maxCharger.ok) {
+      return c.json({ error: 'maxChargerKw must be a finite positive number', code: 'bad_request' }, 400);
     }
     if (deps.mock && via.value.length > 0) {
       return c.json({ error: 'Synthetic demo planning supports only A-B trips; ordered stopovers require live routing.', code: 'unsupported_mock_stopovers' }, 422);
@@ -399,6 +410,7 @@ export function createApp(deps: AppDeps): Hono {
     const planOptions: PlanOptions = {
       runBudget,
       via: via.value,
+      ...(maxCharger.value === undefined ? {} : { maxChargerKw: maxCharger.value }),
       ...(startSocPct === undefined ? {} : { startSocPct }),
     };
     // Mirror the planner's tightened leg ceiling so AI validation reports
@@ -450,7 +462,10 @@ export function createApp(deps: AppDeps): Hono {
         claimedRangeKm: bundle.plan.vehicle.claimedRangeKm,
         realWorldRangeKm: bundle.plan.vehicle.realWorldRangeKm,
       },
-      limits: { maxLegKm: planOptions.maxLegKm ?? DEFAULT_PLAN_OPTIONS.maxLegKm },
+      limits: {
+        maxLegKm: planOptions.maxLegKm ?? DEFAULT_PLAN_OPTIONS.maxLegKm,
+        ...(maxCharger.value === undefined ? {} : { maxChargerKw: maxCharger.value }),
+      },
       basePlan: {
         stopIds: bundle.plan.stops.map((s) => s.station.stationId),
         stopNames: bundle.plan.stops.map((s) => s.station.name),
@@ -671,6 +686,14 @@ function readVia(value: unknown): { ok: true; value: PlaceRef[] } | { ok: false 
     places.push({ label: place.label.trim(), lat: coord.lat, lon: coord.lon });
   }
   return { ok: true, value: places };
+}
+
+type MaxChargerRead = { ok: true; value: number | undefined } | { ok: false };
+
+function readMaxChargerKw(v: unknown): MaxChargerRead {
+  if (v === undefined) return { ok: true, value: undefined };
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return { ok: false };
+  return { ok: true, value: v };
 }
 
 type StartSocRead = { ok: true; value: number | undefined } | { ok: false };

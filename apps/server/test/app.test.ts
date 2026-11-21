@@ -1204,6 +1204,83 @@ describe('ordered stopover API boundary', () => {
     }
   }
 });
+describe('maximum charger power wire validation', () => {
+  const endpoints = ['/api/plan', '/api/ai/plan'] as const;
+  function capHarness() {
+    const calls = { router: 0, factory: 0, ai: 0 };
+    return { calls };
+  }
+  function mixedCapStatiq(): StatiqClient {
+    const station = {
+      stationId: 7201, name: 'Mixed power site', lat: 27.75, lon: 76.5,
+      address: null, area: null, city: null, landmark: null,
+      hours: '00:00 To 23:59', openText: 'Open Now', rating: null, reviewCount: null,
+      accessType: 'public', navUrl: '', stationUrl: '', imageUrl: null, amenities: [],
+      stepsToReach: null,
+      chargers: [
+        { chargerId: 7210, name: '180 kW charger', type: 'DC', kw: 180, pricePerKwh: 18,
+          currency: 'INR', lastUsedOn: null,
+          connectors: [{ displayId: 1, connectorId: 72100, type: 'CCS-2',
+            status: 'available', available: true, note: null }] },
+        { chargerId: 7220, name: '60 kW charger', type: 'DC', kw: 60, pricePerKwh: null,
+          currency: 'INR', lastUsedOn: null,
+          connectors: [{ displayId: 1, connectorId: 72200, type: 'CCS-2',
+            status: 'available', available: true, note: null }] },
+      ],
+    };
+    return {
+      markers: async (): Promise<StatiqMarkersResponse> => ({
+        ok: true, live: true, retained: false, source: 'test', count: 1,
+        stations: [{ stationId: station.stationId, name: station.name, lat: station.lat,
+          lon: station.lon, address: null, accessType: 1, isCommunityListed: false, stationUrl: '' }],
+      }),
+      detailsWithMeta: async (): Promise<{ response: StatiqDetailsResponse; fetchedAt: Date }> => ({
+        response: { ok: true, live: true, retained: false, source: 'test', station: station as never },
+        fetchedAt: new Date(),
+      }),
+    } as unknown as StatiqClient;
+  }
+  it.each(endpoints.map((path) => ({ path })))('forwards the charger cap on $path', async ({ path }) => {
+    const deps = await makeDeps({
+      createStatiq: () => mixedCapStatiq(),
+      ...(path === '/api/ai/plan'
+        ? { ai: { baseUrl: 'https://ai.test/v1', apiKey: 'sk-test', model: 'test-model' },
+            aiCall: async () => JSON.stringify({ chosenStationIds: [] }) }
+        : {}),
+    });
+    const res = await createApp(deps).request(path, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: ORIGIN, destination: DEST, startSocPct: 20, maxChargerKw: 100 }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { plan: { stops: Array<{
+      pricePerKwh: number | null; estPriceInr: number | null;
+      selectedCharger?: { kw: number; pricePerKwh: number | null };
+    }> } };
+    const stopped = body.plan.stops[0];
+    expect(stopped?.selectedCharger).toMatchObject({ kw: 60, pricePerKwh: null });
+    expect(stopped?.pricePerKwh).toBeNull();
+    expect(stopped?.estPriceInr).toBeNull();
+  });
+  it.each(endpoints)('%s rejects invalid charger caps before dispatch', async (path) => {
+    const { calls } = capHarness();
+    const deps = await makeDeps({
+      router: { route: async () => { calls.router += 1; throw new Error('unexpected route'); } } as unknown as OsrmRouter,
+      createStatiq: () => { calls.factory += 1; throw new Error('unexpected provider'); },
+      ai: { baseUrl: 'https://ai.test/v1', apiKey: 'sk-test', model: 'test-model' },
+      aiCall: async () => { calls.ai += 1; throw new Error('unexpected AI'); },
+    });
+    for (const maxChargerKw of [null, 0, -1, '60', {}]) {
+      const res = await createApp(deps).request(path, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ origin: ORIGIN, destination: DEST, maxChargerKw }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json() as { code: string }).code).toBe('bad_request');
+    }
+    expect(calls).toEqual({ router: 0, factory: 0, ai: 0 });
+  });
+});
 describe('saved trip stopover wire validation', () => {
   async function saveFixture() {
     const dir = await mkdtemp(join(tmpdir(), 'indev-server-save-via-test-'));

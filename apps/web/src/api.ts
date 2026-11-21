@@ -22,6 +22,8 @@ export interface PlanRequest {
     realWorldRangeKm?: number;
   };
   startSocPct?: number;
+  /** Hard cap for selected charger rated power; omitted means no cap. */
+  maxChargerKw?: number;
 }
 
 export interface AiPlanRequest extends PlanRequest {
