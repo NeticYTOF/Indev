@@ -313,3 +313,46 @@ describe('process-local job endpoints', () => {
     expect(events[0]?.hostReasons.some((r) => r.reasons.includes('schema_invalid'))).toBe(true);
   });
 });
+
+describe('job progress evidence', () => {
+  it('exposes typed sample counts and complete inventory while AI is pending', async () => {
+    const gate = deferred<void>();
+    let markerCalls = 0;
+    const statiq = {
+      markers: async () => {
+        markerCalls += 1;
+        if (markerCalls === 2) throw new Error('one sample unavailable');
+        return { ok: true, live: true, retained: false, source: 'test', count: 0, stations: [] };
+      },
+    } as unknown as StatiqClient;
+    const app = createApp(depsWith(statiq, {
+      router: { route: async () => ({ distanceKm: 20, durationMin: 20,
+        geometry: [{ lat: 0, lon: 0 }, { lat: 0.18, lon: 0 }] }) } as never,
+      aiToolCall: async () => {
+        await gate.promise;
+        return { content: JSON.stringify({ chosenStationIds: [] }), toolCalls: [] };
+      },
+    }));
+    try {
+      const job = await startJob(app);
+      let progress: Record<string, unknown> | null = null;
+      for (let i = 0; i < 200; i += 1) {
+        await tick();
+        const polled = await app.request(`/api/jobs/plan/${job.jobId}`, {
+          headers: { 'x-job-capability': job.capability },
+        });
+        const body = await polled.json() as { progress?: Record<string, unknown> };
+        if (body.progress && body.progress.samplesCompleted === 3 &&
+            body.progress.candidateInventoryComplete === true) { progress = body.progress; break; }
+      }
+      expect(progress).toMatchObject({
+        samplesPlanned: 3, samplesCompleted: 3, samplesOk: 2, samplesFailed: 1,
+        candidatesPlanned: 0, candidateInventoryComplete: true,
+      });
+      gate.resolve();
+      await waitTerminal(app, job, 'succeeded');
+    } finally {
+      gate.resolve();
+    }
+  });
+});

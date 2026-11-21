@@ -40,14 +40,14 @@ export async function discoverSelective(
   destination: PlaceRef,
   opts: PlanOptions,
   signal?: AbortSignal,
-  onProgress?: (completed: number, planned: number) => void,
+  onProgress?: (progress: { completed: number; planned: number; ok: number; failed: number }) => void,
 ): Promise<SelectiveDiscovery> {
   const route = await deps.router.route(origin, destination, signal, opts.via);
   const corridor = await scanCorridor(deps.statiq, route.geometry, {
     maxOffRouteKm: opts.fallbackDetourKm,
     signal,
     failureCollector: deps.failureCollector,
-    onProgress: (p) => onProgress?.(p.completed, p.planned),
+    onProgress: (p) => onProgress?.({ completed: p.completed, planned: p.planned, ok: p.ok, failed: p.failed }),
   });
   const warnings = [...corridor.warnings];
   if (corridor.failedSamples.length > 0) {

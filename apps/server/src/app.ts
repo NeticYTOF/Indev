@@ -261,13 +261,21 @@ async function runLiveAiPlan(
       resolved: params.resolved, planOptions,
       customRequest: params.customRequest, budget: controls.budget,
       signal: controls.signal,
-      onStage: (stage, processed, planned) => {
+      onStage: (stage, processed, planned, counts) => {
         if (stage === 'discovery') {
           progress.samplesCompleted = processed;
           progress.samplesPlanned = planned;
+          if (counts) {
+            progress.samplesOk = counts.ok;
+            progress.samplesFailed = counts.failed;
+          }
         } else if (stage === 'shortlist') {
           progress.candidatesPlanned = planned;
           progress.candidateInventoryComplete = true;
+          if (counts) {
+            progress.samplesOk = counts.ok;
+            progress.samplesFailed = counts.failed;
+          }
         } else if (stage === 'details') {
           progress.candidatesProcessed = processed;
         }

@@ -26,7 +26,7 @@ export interface SelectiveRunDeps {
   customRequest?: string;
   budget: PlanRunBudget;
   signal?: AbortSignal;
-  onStage?: (stage: string, processed: number, planned: number) => void;
+  onStage?: (stage: string, processed: number, planned: number, counts?: { ok: number; failed: number }) => void;
 }
 
 const TOOL_NAME = 'get_station_details';
@@ -95,7 +95,8 @@ export function compactCandidates(candidates: readonly CorridorCandidate[]): {
 
 export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRunResult> {
   const opts = { ...DEFAULT_PLAN_OPTIONS, ...deps.planOptions };
-  const stage = (s: string, p = 0, n = 0): void => deps.onStage?.(s, p, n);
+  const stage = (s: string, p = 0, n = 0, counts?: { ok: number; failed: number }): void =>
+    deps.onStage?.(s, p, n, counts);
   const runBudget = new UpstreamBudget(deps.budget.maxUpstreamCalls);
   const failures = createProviderFailureCollector();
   deps.statiq.attachRunBudget?.(runBudget, failures);
@@ -124,9 +125,10 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
   const discovery = await discoverSelective(
     { router: deps.router, statiq: deps.statiq, failureCollector: failures },
     deps.origin, deps.destination, opts, signal,
-    (completed, planned) => stage('discovery', completed, planned),
+    (p) => stage('discovery', p.completed, p.planned, { ok: p.ok, failed: p.failed }),
   );
-  stage('shortlist', 0, discovery.candidates.length);
+  stage('shortlist', 0, discovery.candidates.length,
+    { ok: discovery.samplesOk, failed: discovery.samplesFailed });
   const pool = new Map(discovery.candidates.map((c) => [c.stationId, c]));
   const ledger = new SelectiveToolLedger(new Set(pool.keys()));
   const hydrated = new Map<number, PlannerCandidate>();
