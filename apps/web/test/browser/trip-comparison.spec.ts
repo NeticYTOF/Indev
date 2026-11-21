@@ -60,7 +60,7 @@ test('two saved trips can be compared without mutating or fetching new data', as
     if (route.request().method() !== 'GET') forbidden.add('trip write');
     return route.fulfill({ json: { trips: savedTrips } });
   });
-  for (const path of ['**/api/plan', '**/api/ai/plan', '**/api/geocode*', '**/api/stations/*']) {
+  for (const path of ['**/api/plan', '**/api/ai/plan', '**/api/jobs/plan*', '**/api/geocode*', '**/api/stations/*']) {
     await page.route(path, (route) => {
       forbidden.add(new URL(route.request().url()).pathname);
       return route.fulfill({ status: 500, body: 'unexpected comparison request' });

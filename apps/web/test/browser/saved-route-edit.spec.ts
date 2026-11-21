@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { installAiJobRoutes } from './job-routes.js';
 
 const SAVED_ORIGIN = { label: 'Delhi — saved exact', lat: 28.6139, lon: 77.209 };
 const SAVED_DESTINATION = { label: 'Jaipur — saved exact', lat: 26.9124, lon: 75.7873 };
@@ -118,11 +119,11 @@ async function wiredPage(
     counters.geocodeDone = (counters.geocodeDone ?? 0) + 1;
   });
   await page.route('**/api/stations/*', (route) => { counters.station++; return route.abort(); });
-  await page.route('**/api/ai/plan', async (route) => {
+  await installAiJobRoutes(page, (raw: unknown) => {
     counters.ai++;
-    const body = route.request().postDataJSON() as PlanBody;
+    const body = raw as PlanBody;
     counters.lastAiBody = body;
-    return route.fulfill({ json: { plan: syntheticPlan(body), ai: { applied: false, reason: 'fixture' } } });
+    return { json: { plan: syntheticPlan(body), ai: { applied: false, reason: 'fixture' } } };
   });
   await page.route('**/api/plan', async (route) => {
     if (route.request().method() !== 'POST') return route.continue();

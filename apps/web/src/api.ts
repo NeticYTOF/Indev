@@ -36,8 +36,37 @@ export interface AiPlanResponse {
   ai: { applied: boolean; notes?: string; reason?: string };
 }
 
-async function get<T>(path: string): Promise<T> {
-  const res = await request(path);
+/** Start response. The capability is a one-shot bearer secret: the caller
+ *  holds it only in memory for this page session, never in storage or URLs. */
+export interface PlanJobStart {
+  jobId: string;
+  capability: string;
+  budget: { deadlineMs: number; maxUpstreamCalls: number };
+}
+
+export interface PlanJobStatus {
+  jobId: string;
+  state: 'running' | 'succeeded' | 'failed' | 'cancelled';
+  startedAt: number;
+  finishedAt: number | null;
+  /** Advisory only: candidatesPlanned=0 with candidateInventoryComplete=false
+   *  means the scan has not returned; never present it as an empty pool. */
+  progress: {
+    samplesPlanned: number;
+    samplesCompleted: number;
+    samplesOk: number;
+    samplesFailed: number;
+    candidatesPlanned: number;
+    candidatesProcessed: number;
+    candidatesDetailed: number;
+    candidateInventoryComplete: boolean;
+  } | null;
+  result?: AiPlanResponse;
+  error?: { code: string; message: string; cause?: string };
+}
+
+async function get<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await request(path, init);
   return handle<T>(res);
 }
 
@@ -110,6 +139,20 @@ export const api = {
   geocode: (q: string) => get<{ hits: GeocodeHit[] }>(`/api/geocode?q=${encodeURIComponent(q)}`),
   plan: async (req: PlanRequest) => requireEnvelope(await post<{ plan: TripPlan } | null>('/api/plan', req), 'planning'),
   aiPlan: async (req: AiPlanRequest) => requireEnvelope(await post<AiPlanResponse | null>('/api/ai/plan', req), 'AI planning'),
+  // Capability is passed by the caller from in-memory state only; never
+  // persisted, logged, or placed in a URL.
+  startPlanJob: (req: AiPlanRequest) => post<PlanJobStart>('/api/jobs/plan', req),
+  planJobStatus: (jobId: string, capability: string) =>
+    get<PlanJobStatus>(`/api/jobs/plan/${encodeURIComponent(jobId)}`, {
+      headers: { 'x-job-capability': capability },
+    }),
+  cancelPlanJob: async (jobId: string, capability: string) => {
+    const res = await request(`/api/jobs/plan/${encodeURIComponent(jobId)}`, {
+      method: 'DELETE',
+      headers: { 'x-job-capability': capability },
+    });
+    return await handle<{ cancelled: boolean }>(res);
+  },
   trips: () => get<{ trips: SavedTrip[] }>('/api/trips'),
   trip: (id: string) => get<{ trip: SavedTrip }>(`/api/trips/${encodeURIComponent(id)}`),
   saveTrip: (plan: TripPlan, name?: string) => post<{ trip: SavedTrip; warnings?: unknown }>('/api/trips', { plan, name }),

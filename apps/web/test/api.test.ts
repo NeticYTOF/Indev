@@ -129,4 +129,31 @@ describe('ApiError cause preservation (machine-readable not_determined)', () => 
     expect(out.plan.id).toBe('plan-1');
     expect(out.plan.stops).toEqual([]);
   });
+
+});
+describe('job API keeps the capability transient', () => {
+  const START = { jobId: 'job-1', capability: 'cap-secret', budget: { deadlineMs: 1, maxUpstreamCalls: 1 } };
+
+  it('posts the real AI request and never stores the capability', async () => {
+    const calls = stubFetchOnce({ status: 202, body: START });
+    const req = { ...PLAN_REQ, request: 'prefer cafes', maxChargerKw: 120 };
+    const out = await api.startPlanJob(req);
+    expect(out).toEqual(START);
+    expect(String(calls[0]!.path)).toBe('/api/jobs/plan');
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual(req);
+    expect(calls[0]!.init?.headers).toEqual({ 'Content-Type': 'application/json' });
+  });
+
+  it('sends capability only as a header on status and cancel', async () => {
+    const calls = stubFetchOnce({ status: 200, body: { jobId: 'job-1', state: 'running', startedAt: 1, finishedAt: null, progress: null } });
+    await api.planJobStatus('job/1', 'cap-secret');
+    expect(String(calls[0]!.path)).toBe('/api/jobs/plan/job%2F1');
+    expect(calls[0]!.init?.headers).toEqual({ 'x-job-capability': 'cap-secret' });
+    expect(String(calls[0]!.path)).not.toContain('cap-secret');
+
+    const second = stubFetchOnce({ status: 200, body: { cancelled: true } });
+    await api.cancelPlanJob('job-1', 'cap-secret');
+    expect(second[0]!.init?.method).toBe('DELETE');
+    expect(second[0]!.init?.headers).toEqual({ 'x-job-capability': 'cap-secret' });
+  });
 });

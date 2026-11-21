@@ -68,7 +68,8 @@ describe('planning run lifecycle (single flight by construction)', () => {
     // makes the overlap unreachable - both paths must begin through the
     // gate and release it in their finally.
     expect((plannerSrc.match(/gate\.tryBegin\(\)/g) ?? []).length).toBe(2);
-    expect((plannerSrc.match(/gate\.end\(\)/g) ?? []).length).toBe(2);
+    // Two submit paths plus the explicit recovery release path.
+    expect((plannerSrc.match(/gate\.end\(\)/g) ?? []).length).toBe(3);
   });
 
   it('reflects the shared busy state on BOTH submit controls', () => {

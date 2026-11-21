@@ -966,6 +966,29 @@ body {
   line-height: 1.5;
 }
 
+.plan-busy-progress {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-2);
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+.plan-busy-cancel {
+  align-self: flex-start;
+}
+
+.plan-busy-recovery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.plan-busy-recovery .hint {
+  flex-basis: 100%;
+}
+
 .plan-busy-time {
   margin: 0;
   display: flex;

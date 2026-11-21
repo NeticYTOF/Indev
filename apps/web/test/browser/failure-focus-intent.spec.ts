@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { installAiJobRoutes } from './job-routes.js';
 
 for (const mode of ['plan', 'ai']) {
   test(`${mode} failure keeps focus deliberately moved while waiting`, async ({ page }) => {
@@ -10,10 +11,17 @@ for (const mode of ['plan', 'ai']) {
       else await route.abort();
     });
     await page.route('**/api/health', (route) => route.fulfill({ json: { ok: true, mock: true, ai: true, chargersSeen: 0 } }));
-    await page.route(mode === 'plan' ? '**/api/plan' : '**/api/ai/plan', async (route) => {
-      await held;
-      await route.fulfill({ status: 422, json: { code: 'not_determined', cause: 'budget-exhausted', error: 'Synthetic failure boundary.' } });
-    });
+    if (mode === 'plan') {
+      await page.route('**/api/plan', async (route) => {
+        await held;
+        await route.fulfill({ status: 422, json: { code: 'not_determined', cause: 'budget-exhausted', error: 'Synthetic failure boundary.' } });
+      });
+    } else {
+      await installAiJobRoutes(page, async () => {
+        await held;
+        return { status: 422, json: { code: 'not_determined', cause: 'budget-exhausted', error: 'Synthetic failure boundary.' } };
+      });
+    }
     await page.goto('/');
     for (const [name, query] of [['From', 'Delhi'], ['To', 'Jaipur']]) {
       await page.getByRole('combobox', { name, exact: true }).fill(query!);

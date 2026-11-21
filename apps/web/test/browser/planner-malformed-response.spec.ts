@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { installAiJobRoutes } from './job-routes.js';
 
 const origin = { label: 'Malformed origin', lat: 28, lon: 77 };
 const destination = { label: 'Malformed destination', lat: 26, lon: 75 };
@@ -49,17 +50,23 @@ for (const mode of ['plan', 'ai'] as const) {
     await localMapStyle(page);
     await page.route('**/api/health', (route) => route.fulfill({ json: { ok: true, mock: true, ai: true, chargersSeen: 0 } }));
     let call = 0;
-    await page.route(mode === 'plan' ? '**/api/plan' : '**/api/ai/plan', async (route) => {
-      call += 1;
-      if (call === 1) await held;
-      if (call === 1) {
+    const answerFor = (n: number) => {
+      if (n === 1) {
         const broken = { ...validPlan(), stops: { unexpected: true } };
-        await route.fulfill({ json: mode === 'plan' ? { plan: broken } : { plan: broken, ai: { applied: false, reason: 'Synthetic malformed payload' } } });
-      } else {
-        const good = { ...validPlan(), id: `valid-${call}` };
-        await route.fulfill({ json: mode === 'plan' ? { plan: good } : { plan: good, ai: { applied: true, notes: 'local fixture' } } });
+        return { json: mode === 'plan' ? { plan: broken } : { plan: broken, ai: { applied: false, reason: 'Synthetic malformed payload' } } };
       }
-    });
+      const good = { ...validPlan(), id: `valid-${n}` };
+      return { json: mode === 'plan' ? { plan: good } : { plan: good, ai: { applied: true, notes: 'local fixture' } } };
+    };
+    if (mode === 'plan') {
+      await page.route('**/api/plan', async (route) => {
+        call += 1;
+        if (call === 1) await held;
+        await route.fulfill({ json: answerFor(call).json });
+      });
+    } else {
+      await installAiJobRoutes(page, (_body, n) => { call = n; return answerFor(n); }, { holdFirstStart: held });
+    }
     await page.goto('/');
     await pickPlaces(page);
     const button = page.locator(mode === 'plan' ? '.planner-go' : '[data-ai-plan]');
@@ -89,14 +96,19 @@ for (const mode of ['plan', 'ai'] as const) {
     await localMapStyle(page);
     await page.route('**/api/health', (route) => route.fulfill({ json: { ok: true, mock: true, ai: true, chargersSeen: 0 } }));
     let call = 0;
-    await page.route(mode === 'plan' ? '**/api/plan' : '**/api/ai/plan', async (route) => {
-      call += 1;
-      if (call === 2) await route.fulfill({ json: null });
-      else {
-        const plan = { ...validPlan(), id: `whole-null-${call}` };
-        await route.fulfill({ json: mode === 'plan' ? { plan } : { plan, ai: { applied: true, notes: 'local fixture' } } });
-      }
-    });
+    const answerFor = (n: number) => {
+      if (n === 2) return { json: null };
+      const plan = { ...validPlan(), id: `whole-null-${n}` };
+      return { json: mode === 'plan' ? { plan } : { plan, ai: { applied: true, notes: 'local fixture' } } };
+    };
+    if (mode === 'plan') {
+      await page.route('**/api/plan', async (route) => {
+        call += 1;
+        await route.fulfill({ json: answerFor(call).json });
+      });
+    } else {
+      await installAiJobRoutes(page, (_body, n) => { call = n; return answerFor(n); });
+    }
     await page.goto('/');
     await pickPlaces(page);
     const button = page.locator(mode === 'plan' ? '.planner-go' : '[data-ai-plan]');

@@ -20,7 +20,7 @@ test('combined provenance filters preserve identity, hidden selection and clear 
     else await route.abort();
   });
   const unexpected: string[] = [];
-  for (const path of ['**/api/plan', '**/api/ai/plan', '**/api/geocode*', '**/api/stations/*']) {
+  for (const path of ['**/api/plan', '**/api/ai/plan', '**/api/jobs/plan*', '**/api/geocode*', '**/api/stations/*']) {
     await page.route(path, (route) => {
       unexpected.push(new URL(route.request().url()).pathname);
       return route.fulfill({ status: 500, body: 'unexpected request' });

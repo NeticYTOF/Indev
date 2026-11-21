@@ -22,7 +22,7 @@ test('saved trips search, sort and clear preserve original record identity', asy
     if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') await route.continue();
     else await route.abort();
   });
-  for (const path of ['**/api/plan', '**/api/ai/plan', '**/api/geocode*', '**/api/stations/*']) {
+  for (const path of ['**/api/plan', '**/api/ai/plan', '**/api/jobs/plan*', '**/api/geocode*', '**/api/stations/*']) {
     await page.route(path, (route) => {
       unexpected.push(new URL(route.request().url()).pathname);
       return route.fulfill({ status: 500, body: 'unexpected request' });
@@ -276,7 +276,7 @@ test('filtered and sorted Edit/Delete actions target their original saved record
     deletePath = new URL(route.request().url()).pathname;
     await route.fulfill({ json: { ok: true } });
   });
-  for (const path of ['**/api/plan', '**/api/ai/plan', '**/api/geocode*', '**/api/stations/*']) {
+  for (const path of ['**/api/plan', '**/api/ai/plan', '**/api/jobs/plan*', '**/api/geocode*', '**/api/stations/*']) {
     await page.route(path, (route) => {
       if (path === '**/api/plan') planRequests += 1;
       unexpected.push(new URL(route.request().url()).pathname);

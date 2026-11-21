@@ -1,5 +1,19 @@
 import { expect, test } from '@playwright/test';
 
+// Local fixture: no real /api/plan call, so sharded workers cannot share
+// fixture DB state or contend for the server's single run slot.
+const FIXTURE_PLAN = {
+  id: 'save-unknown-plan', createdAt: '2026-11-21T12:00:00Z', source: 'synthetic', status: 'ok',
+  origin: { label: 'Delhi', lat: 28.6, lon: 77.2 },
+  destination: { label: 'Jaipur', lat: 26.9, lon: 75.8 },
+  vehicle: { label: 'Harrier', catalogId: 'harrier', batteryKwh: 75, claimedRangeKm: 627, realWorldRangeKm: 300 },
+  routeDistanceKm: 285, routeDurationMin: 270,
+  geometry: [{ lat: 28.6, lon: 77.2 }, { lat: 26.9, lon: 75.8 }],
+  warnings: [], stationsSeen: 0, stops: [],
+  totals: { distanceKm: 285, driveTimeMin: 270, chargeTimeMin: 0, totalTimeMin: 270,
+    chargeKwh: 0, estPriceInr: null, finalSocPct: 60 },
+};
+
 for (const [label, body] of [
   ['null JSON', 'null'],
   ['missing trip', '{"plan":{}}'],
@@ -9,7 +23,7 @@ for (const [label, body] of [
 ] as const) {
   test(`unknown save identity: ${label}`, async ({ page }) => {
     await page.route(/^https?:\/\//, async route => { const host = new URL(route.request().url()).hostname; if (host === 'localhost' || host === '127.0.0.1') await route.continue(); else await route.abort(); });
-    const plan = (await (await page.request.post('/api/plan', { data: { origin: { label: 'Delhi', lat: 28.6, lon: 77.2 }, destination: { label: 'Jaipur', lat: 26.9, lon: 75.8 } } })).json()).plan;
+    const plan = FIXTURE_PLAN;
     let posts = 0;
     await page.route('**/api/plan', route => route.fulfill({ json: { plan } }));
     await page.route('**/api/geocode*', route => route.fulfill({ json: { hits: [{ name: 'Delhi', label: 'Delhi', lat: 28, lon: 77 }] } }));
@@ -22,6 +36,8 @@ for (const [label, body] of [
     for (const name of ['From', 'To']) { await page.getByRole('combobox', { name, exact: true }).fill('Delhi'); await page.locator('.suggestions:not(.hidden) .suggestion-item').first().click(); }
     await page.getByRole('button', { name: 'Plan route', exact: true }).click();
     const facts = () => page.locator('.plan-head, .trip-strip, .stops, [data-journey-briefing]').allInnerTexts();
+    await expect(page.locator('.plan-results')).toBeVisible();
+    await expect.poll(async () => (await facts()).length).toBeGreaterThan(0);
     const before = await facts();
     const save = page.locator('[data-save]');
     await save.click();
@@ -42,7 +58,7 @@ for (const [label, body] of [
 for (const key of ['Enter', 'Space']) {
   test(`unknown save recovers through drawer check and explicit retry with ${key}`, async ({ page }) => {
   await page.route(/^https?:\/\//, async route => { const host = new URL(route.request().url()).hostname; if (host === "localhost" || host === "127.0.0.1") await route.continue(); else await route.abort(); });
-  const plan = (await (await page.request.post("/api/plan", { data: { origin: { label: "Delhi", lat: 28.6, lon: 77.2 }, destination: { label: "Jaipur", lat: 26.9, lon: 75.8 } } })).json()).plan;
+  const plan = FIXTURE_PLAN;
   let posts = 0, gets = 0; const warning = 'Storage operation completed, but its writer lock could not be released. Do not retry the operation; stop all writers before manual recovery.';
   await page.route("**/api/plan", route => route.fulfill({ json: { plan } }));
   await page.route("**/api/geocode*", route => route.fulfill({ json: { hits: [{ name: "Delhi", label: "Delhi", lat: 28, lon: 77 }] } }));
@@ -51,6 +67,8 @@ for (const key of ['Enter', 'Space']) {
   for (const name of ["From", "To"]) { await page.getByRole("combobox", { name, exact: true }).fill("Delhi"); await page.locator(".suggestions:not(.hidden) .suggestion-item").first().click(); }
   await page.getByRole("button", { name: "Plan route", exact: true }).click();
   const facts = () => page.locator(".plan-head, .trip-strip, .stops, [data-journey-briefing]").allInnerTexts();
+  await expect(page.locator('.plan-results')).toBeVisible();
+  await expect.poll(async () => (await facts()).length).toBeGreaterThan(0);
   const before = await facts(), save = page.locator("[data-save]"), original = await save.innerText();
   await save.click(); await expect(save).toHaveText("Save status unknown"); await expect(save).toBeDisabled(); expect(posts).toBe(1);
   const banner = page.locator("[data-storage-warning]"); await expect(banner).toHaveText("Save could not be confirmed. Check saved trips before trying again.");

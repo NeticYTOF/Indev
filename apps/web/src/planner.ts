@@ -6,7 +6,7 @@
  */
 import * as maplibregl from 'maplibre-gl';
 import type { GeocodeHit, VehicleCatalogEntry } from '@indeev/core';
-import { api, ApiError, type PlanRequest } from './api.js';
+import { api, ApiError, type PlanRequest, type PlanJobStart, type PlanJobStatus } from './api.js';
 import type { TripPlan } from '@indeev/core';
 import { clearTrip, drawTrip } from './map.js';
 import { stationDirectionsUrl } from './safe-url.js';
@@ -272,11 +272,25 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
   // aria-hidden visual-only so a long wait is never live-region spam.
   const liveBusy = el(`
     <div class="plan-busy hidden">
-      <p class="plan-busy-hint" role="status">Every candidate charger is fetched individually with safety pacing — a long corridor can take several minutes. The request stays open; nothing is cached between runs.</p>
+      <p class="plan-busy-hint" role="status">Every candidate charger is fetched individually with safety pacing — a long corridor can take several minutes. Nothing is cached between runs.</p>
+      <p class="plan-busy-progress" role="status"></p>
+      <button type="button" class="btn btn-ghost plan-busy-cancel hidden">Cancel this run</button>
+      <div class="plan-busy-recovery hidden">
+        <button type="button" class="btn btn-ghost plan-busy-recheck">Check status</button>
+        <button type="button" class="btn btn-ghost plan-busy-recancel">Cancel run</button>
+        <p class="hint">The last status was unconfirmed. No retry starts automatically.</p>
+        <button type="button" class="btn btn-ghost plan-busy-unlock hidden">Unlock controls</button>
+      </div>
       <p class="plan-busy-time"><span class="plan-busy-spinner" aria-hidden="true"></span><span class="plan-busy-elapsed" aria-hidden="true">0s elapsed</span></p>
     </div>
   `);
   const busyElapsed = liveBusy.querySelector('.plan-busy-elapsed') as HTMLElement;
+  const busyProgress = liveBusy.querySelector('.plan-busy-progress') as HTMLElement;
+  const jobCancelButton = liveBusy.querySelector('.plan-busy-cancel') as HTMLButtonElement;
+  const recoveryBox = liveBusy.querySelector('.plan-busy-recovery') as HTMLElement;
+  const recheckButton = liveBusy.querySelector('.plan-busy-recheck') as HTMLButtonElement;
+  const recancelButton = liveBusy.querySelector('.plan-busy-recancel') as HTMLButtonElement;
+  const unlockButton = liveBusy.querySelector('.plan-busy-unlock') as HTMLButtonElement;
   let busyTimer: number | null = null;
   let busyStartedAt = 0;
   const startBusy = (): void => {
@@ -297,6 +311,12 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
       busyTimer = null;
     }
     liveBusy.classList.add('hidden');
+    busyProgress.textContent = '';
+    jobCancelButton.classList.add('hidden');
+    recoveryBox.classList.add('hidden');
+    recheckButton.classList.remove('hidden');
+    recancelButton.classList.remove('hidden');
+    unlockButton.classList.add('hidden');
   };
   form.appendChild(liveBusy);
 
@@ -334,6 +354,64 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
   };
   const setFormBusy = (busy: boolean): void => {
     form.setAttribute('aria-busy', String(busy));
+  };
+
+  // Job status is advisory evidence, never a route verdict. While the scan
+  // is in flight the unique charger pool is UNKNOWN; zero does not mean empty.
+  const JOB_POLL_MS = 2000;
+  const planEnvelopeOk = (v: unknown): boolean => {
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+    if (!('plan' in v) || !('ai' in v)) return false;
+    const plan = v.plan;
+    const ai = v.ai;
+    if (typeof plan !== 'object' || plan === null || Array.isArray(plan)) return false;
+    if (typeof ai !== 'object' || ai === null || Array.isArray(ai)) return false;
+    return 'applied' in ai && typeof ai.applied === 'boolean';
+  };
+  const startShapeOk = (v: unknown): boolean => {
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+    if (!('jobId' in v) || !('capability' in v) || !('budget' in v)) return false;
+    if (typeof v.jobId !== 'string' || v.jobId.length === 0) return false;
+    if (typeof v.capability !== 'string' || v.capability.length === 0) return false;
+    const budget = v.budget;
+    if (typeof budget !== 'object' || budget === null || Array.isArray(budget)) return false;
+    if (!('deadlineMs' in budget) || !('maxUpstreamCalls' in budget)) return false;
+    const deadline = budget.deadlineMs;
+    const calls = budget.maxUpstreamCalls;
+    return typeof deadline === 'number' && Number.isFinite(deadline) && deadline > 0 &&
+      typeof calls === 'number' && Number.isInteger(calls) && calls > 0;
+  };
+  const statusShapeOk = (v: unknown, expectedJobId: string): boolean => {
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+    if (!('jobId' in v) || v.jobId !== expectedJobId) return false;
+    if (!('state' in v) || typeof v.state !== 'string') return false;
+    const state = v.state;
+    if (state !== 'running' && state !== 'succeeded' && state !== 'failed' && state !== 'cancelled') return false;
+    if (!('progress' in v)) return false;
+    const p = v.progress;
+    if (p === null) return true;
+    if (typeof p !== 'object' || Array.isArray(p)) return false;
+    // Named shape for the external snapshot; every field is checked below.
+    const fields = p as {
+      samplesPlanned?: unknown; samplesCompleted?: unknown; samplesOk?: unknown;
+      samplesFailed?: unknown; candidatesPlanned?: unknown; candidatesProcessed?: unknown;
+      candidatesDetailed?: unknown; candidateInventoryComplete?: unknown;
+    };
+    for (const key of ['samplesPlanned', 'samplesCompleted', 'samplesOk', 'samplesFailed',
+      'candidatesPlanned', 'candidatesProcessed', 'candidatesDetailed'] as const) {
+      const value = fields[key];
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return false;
+    }
+    return typeof fields.candidateInventoryComplete === 'boolean';
+  };
+  const jobProgressText = (status: PlanJobStatus, cancelling = false): string => {
+    if (cancelling) return 'Cancellation requested — waiting for the server to confirm a terminal state.';
+    const p = status.progress;
+    if (!p) return 'Job accepted. Route scan is starting; the charger inventory is not yet known.';
+    if (!p.candidateInventoryComplete) {
+      return `Scanning route samples: ${p.samplesCompleted} of ${p.samplesPlanned} responded. Charger inventory is still unknown; remaining counts are minimums only.`;
+    }
+    return `Corridor discovery complete (${p.samplesPlanned} samples). Charger details checking ${p.candidatesProcessed} of ${p.candidatesPlanned} unique chargers.`;
   };
 
   section.appendChild(errorBox);
@@ -430,9 +508,134 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     const aiButton = aiBox.querySelector('[data-ai-plan]') as HTMLButtonElement | null;
     hideError(errorBox);
     startBusy();
+    jobCancelButton.classList.remove('hidden');
+    jobCancelButton.disabled = true; // no capability yet: cannot cancel
+    // Capability and id live only in these closure variables for this page
+    // session. Never stored, logged, or put in a URL. A reload loses them.
+    let job: PlanJobStart | null = null;
+    let cancelRequested = false;
+    const onCancel = (): void => {
+      if (!job || cancelRequested) return;
+      cancelRequested = true;
+      jobCancelButton.disabled = true;
+      busyProgress.textContent = 'Cancellation requested — confirming with the server.';
+      const active = job;
+      // Never claim cancellation until the server reports a terminal state.
+      // A failed DELETE leaves the run active, so keep polling and allow retry.
+      void api.cancelPlanJob(active.jobId, active.capability).then(
+        () => { /* status polling still has to confirm the terminal state */ },
+        () => {
+          cancelRequested = false;
+          jobCancelButton.disabled = false;
+          busyProgress.textContent = 'Cancellation could not be confirmed. The run may still be active; you can try again.';
+        },
+      );
+    };
+    jobCancelButton.addEventListener('click', onCancel);
     let focusOnSettle: HTMLElement | null = null;
+    // A job whose terminal state was never observed is NOT finished: the
+    // server's single slot may still be occupied. Keep the UI guard held.
+    let startedOk = false;
+    let terminalConfirmed = false;
+    let uncertain = false;
+    const releaseUi = (): void => {
+      stopBusy();
+      setFormBusy(false);
+      setActionsBusy(false);
+      gate.end();
+      planInFlight = false;
+    };
+    const settleTerminal = (status: PlanJobStatus): void => {
+      terminalConfirmed = true;
+      if (status.state === 'succeeded') {
+        if (!planEnvelopeOk(status.result)) {
+          throw new ApiError('The job response was malformed: it did not include a usable route.', 'malformed_plan', 200);
+        }
+        const { plan, ai } = status.result as { plan: TripPlan; ai: { applied: boolean; notes?: string; reason?: string } };
+        onPlanAvailable(plan, map, errorBox);
+        if (ai.applied) {
+          toast(ai.notes ? `AI plan applied: ${ai.notes}` : 'AI plan applied.');
+        } else if (ai.reason) {
+          toast(`Computed plan shown — ${ai.reason}`, 'warn', 6000);
+        }
+      } else if (status.state === 'cancelled') {
+        showError(errorBox, 'The server confirmed cancellation. No plan was saved and no retry was started.');
+      } else if (status.state === 'failed') {
+        throw new ApiError(
+          status.error?.message ?? 'The planning job failed.',
+          status.error?.code ?? 'job_failed',
+          422,
+          status.error?.cause,
+        );
+      }
+    };
+    const wireRecovery = (active: PlanJobStart): void => {
+      recoveryBox.classList.remove('hidden');
+      let pending = false;
+      const finish = (): void => {
+        recheckButton.removeEventListener('click', onRecheck);
+        recancelButton.removeEventListener('click', onRecancel);
+        pending = false;
+        recheckButton.disabled = false;
+        recancelButton.disabled = false;
+        releaseUi();
+        if (document.activeElement === document.body) aiButton?.focus({ preventScroll: true });
+      };
+      const check = async (): Promise<void> => {
+        if (pending) return;
+        pending = true;
+        recheckButton.disabled = true;
+        recancelButton.disabled = true;
+        try {
+          const raw: unknown = await api.planJobStatus(active.jobId, active.capability);
+          if (!statusShapeOk(raw, active.jobId)) {
+            throw new ApiError('The job status response was malformed.', 'malformed_status', 200);
+          }
+          const status = raw as unknown as PlanJobStatus;
+          if (status.state === 'running') {
+            busyProgress.textContent = jobProgressText(status);
+            showError(errorBox, 'The run is still active. Check again when ready; no retry was started.');
+            pending = false;
+            recheckButton.disabled = false;
+            recancelButton.disabled = false;
+            return;
+          }
+          // A confirmed terminal state always releases the guard, even when
+          // rendering a failed/malformed result throws.
+          try { settleTerminal(status); } finally { finish(); }
+        } catch (err) {
+          pending = false;
+          recheckButton.disabled = false;
+          recancelButton.disabled = false;
+          if (err instanceof ApiError && err.code === 'job_not_found') {
+            showError(errorBox, 'This run is no longer available — the server restarted or the job expired. Nothing is retried automatically; start a new run.');
+            finish();
+            return;
+          }
+          showPlanningError(errorBox, err, 'Status could not be confirmed.');
+        }
+      };
+      const onRecheck = (): void => { void check(); };
+      const onRecancel = (): void => {
+        if (pending) return;
+        pending = true;
+        recheckButton.disabled = true;
+        recancelButton.disabled = true;
+        void api.cancelPlanJob(active.jobId, active.capability).then(
+          () => { pending = false; void check(); },
+          () => {
+            pending = false;
+            recheckButton.disabled = false;
+            recancelButton.disabled = false;
+            showError(errorBox, 'Cancellation could not be sent. Check status before starting another run.');
+          },
+        );
+      };
+      recheckButton.addEventListener('click', onRecheck);
+      recancelButton.addEventListener('click', onRecancel);
+    };
     try {
-      const { plan, ai } = await api.aiPlan({
+      const rawStart: unknown = await api.startPlanJob({
         origin: { label: origin.hit.label, lat: origin.hit.lat, lon: origin.hit.lon },
         destination: { label: destination.hit.label, lat: destination.hit.lat, lon: destination.hit.lon },
         startSocPct: startSoc,
@@ -440,32 +643,71 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
         ...(customRequest ? { request: customRequest } : {}),
         ...(maxChargerKw === undefined ? {} : { maxChargerKw }),
       });
-      onPlanAvailable(plan, map, errorBox);
-      if (ai.applied) {
-        toast(ai.notes ? `AI plan applied: ${ai.notes}` : 'AI plan applied.');
-      } else if (ai.reason) {
-        toast(`Computed plan shown — ${ai.reason}`, 'warn', 6000);
+      if (!startShapeOk(rawStart)) {
+        throw new ApiError('The job start response was malformed.', 'malformed_job', 200);
       }
+      const startedJob = rawStart as PlanJobStart;
+      startedOk = true;
+      job = startedJob;
+      jobCancelButton.disabled = false;
+      // Finite polling window: an absent terminal state must fail loudly,
+      // never leave the submit guard held forever.
+      const deadline = Date.now() + startedJob.budget.deadlineMs + 30_000;
+      let terminal: PlanJobStatus | null = null;
+      while (Date.now() < deadline) {
+        const rawStatus: unknown = await api.planJobStatus(startedJob.jobId, startedJob.capability);
+        if (!statusShapeOk(rawStatus, startedJob.jobId)) {
+          throw new ApiError('The job status response was malformed.', 'malformed_status', 200);
+        }
+        const status = rawStatus as unknown as PlanJobStatus;
+        busyProgress.textContent = jobProgressText(status, cancelRequested);
+        if (status.state !== 'running') { terminal = status; break; }
+        await new Promise<void>((resolve) => window.setTimeout(() => resolve(), JOB_POLL_MS));
+      }
+      if (!terminal) {
+        throw new ApiError('The run did not report a terminal state before its deadline.', 'job_timeout', 200);
+      }
+      settleTerminal(terminal);
     } catch (err) {
       clearTrip(map);
       document.getElementById('planner-panel')?.querySelector('.plan-results')?.remove();
-      showPlanningError(errorBox, err, 'AI planning failed.');
-      // Context restore: the disabled button lost focus to <body> during
-      // the run - land back on the retry control once it re-enables.
-      focusOnSettle = aiButton;
+      const lost = err instanceof ApiError && err.code === 'job_not_found';
+      uncertain = startedOk && !terminalConfirmed && !lost;
+      if (uncertain) {
+        if (job) {
+          wireRecovery(job);
+          showError(errorBox, 'This run has no confirmed terminal state. Use Check status or Cancel run below; no retry starts automatically. New runs stay blocked until it is confirmed.');
+        } else {
+          // The start response failed before any id/capability arrived; the
+          // server may still have accepted the run and we cannot query it.
+          showError(errorBox, 'The start response failed before a job reference arrived. A run may still be active on the server; new runs stay blocked. Confirm on the server before reloading.');
+          recoveryBox.classList.remove('hidden');
+          recheckButton.classList.add('hidden');
+          recancelButton.classList.add('hidden');
+          unlockButton.classList.remove('hidden');
+          unlockButton.addEventListener('click', () => {
+            releaseUi();
+            toast('Controls unlocked without a confirmed job state. Confirm on the server before starting another run.', 'warn', 8000);
+          }, { once: true });
+        }
+      } else if (lost) {
+        showError(errorBox, 'This run is no longer available — the server restarted or the job expired. Nothing is retried automatically; start a new run.');
+      } else {
+        showPlanningError(errorBox, err, 'AI planning failed.');
+      }
+      if (!uncertain) focusOnSettle = aiButton;
     } finally {
-      stopBusy();
-      setFormBusy(false);
-      setActionsBusy(false);
-      gate.end();
-      planInFlight = false;
-      // Keyboard focus returns to the retry control WITHOUT scrolling:
-      // the failure is already revealed in place (renderPlanFailure
-      // aligned it to the top); a scrolling focus would push it back
-      // below the fold (the mobile long-error defect from rendered
-      // review).
+      jobCancelButton.removeEventListener('click', onCancel);
+      jobCancelButton.disabled = false;
+      // One call per state: uncertain keeps controls live for recheck/cancel.
+      setFormBusy(uncertain);
+      setActionsBusy(uncertain);
+      if (!uncertain) {
+        stopBusy();
+        gate.end();
+        planInFlight = false;
+      }
       // Restore only focus actually lost by disabling the submit control.
-      // Do not interrupt someone who moved to another field during the wait.
       if (document.activeElement === document.body) {
         focusOnSettle?.focus({ preventScroll: true });
       }

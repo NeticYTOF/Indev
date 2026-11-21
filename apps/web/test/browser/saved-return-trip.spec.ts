@@ -26,7 +26,7 @@ test('filtered and sorted Return trip loads a manual return draft without reques
     else await route.abort();
   });
   const unexpected: string[] = [];
-  for (const path of ['**/api/plan', '**/api/ai/plan', '**/api/geocode*', '**/api/stations/*']) {
+  for (const path of ['**/api/plan', '**/api/ai/plan', '**/api/jobs/plan*', '**/api/geocode*', '**/api/stations/*']) {
     await page.route(path, (route) => {
       unexpected.push(new URL(route.request().url()).pathname);
       return route.fulfill({ status: 500, body: 'unexpected request' });
@@ -78,7 +78,7 @@ test('saved summary Return clears the forward map and results before review', as
     json: { version: 8, sources: {}, layers: [{ id: 'background', type: 'background' }] },
   }));
   const unexpected: string[] = [];
-  for (const path of ['**/api/plan', '**/api/ai/plan', '**/api/geocode*', '**/api/stations/*']) {
+  for (const path of ['**/api/plan', '**/api/ai/plan', '**/api/jobs/plan*', '**/api/geocode*', '**/api/stations/*']) {
     await page.route(path, (route) => {
       unexpected.push(new URL(route.request().url()).pathname);
       return route.fulfill({ status: 500, body: 'unexpected request' });

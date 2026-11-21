@@ -203,4 +203,40 @@ describe('process-local job endpoints', () => {
     expect(status.state).toBe('cancelled');
     expect(status.result).toBeUndefined();
   });
+
+  it('failed job exposes error evidence but never its capability', async () => {
+    const failing = {
+      markers: async () => { throw new Error('offline fixture failure'); },
+    } as unknown as StatiqClient;
+    const app = createApp(depsWith(failing));
+    const job = await startJob(app);
+    await tick();
+    await tick();
+    const res = await app.request(`/api/jobs/plan/${job.jobId}`, {
+      headers: { 'x-job-capability': job.capability },
+    });
+    const body = await res.json() as Record<string, unknown>;
+    expect(body.state).toBe('failed');
+    const error = body.error as { code: string; message: string };
+    expect(error.code).toBe('not_determined');
+    expect(error.message.toLowerCase()).toContain('coverage is incomplete');
+    expect(body.result).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain(job.capability);
+  });
+
+  it('issues a distinct capability per job and rejects a stale one', async () => {
+    const gate = deferred<StatiqMarkersResponse>();
+    const statiq = { markers: async () => gate.promise } as unknown as StatiqClient;
+    const app = createApp(depsWith(statiq));
+    const first = await startJob(app);
+    gate.resolve(emptyMarkers);
+    await tick();
+    await tick();
+    const second = await startJob(app);
+    expect(second.capability).not.toBe(first.capability);
+    const stale = await app.request(`/api/jobs/plan/${second.jobId}`, {
+      headers: { 'x-job-capability': first.capability },
+    });
+    expect(stale.status).toBe(404);
+  });
 });

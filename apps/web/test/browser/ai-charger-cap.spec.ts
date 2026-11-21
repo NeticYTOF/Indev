@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { installAiJobRoutes } from './job-routes.js';
 
 interface Body {
   maxChargerKw?: number;
@@ -51,13 +52,11 @@ async function wiredPage(page: Page, counters: Counters): Promise<void> {
     return route.fulfill({ json: { hits: [{ name: q, label: q, lat: 28.6, lon: 77.2,
       city: null, state: null, country: 'India' }] } });
   });
-  await page.route('**/api/ai/plan', (route) => {
+  await installAiJobRoutes(page, (raw) => {
     counters.ai += 1;
-    counters.lastAiBody = route.request().postDataJSON() as Body;
-    return route.fulfill({ json: { plan: plan({
-      origin: (counters.lastAiBody as unknown as { origin: { label: string } }).origin,
-      destination: (counters.lastAiBody as unknown as { destination: { label: string } }).destination,
-    }), ai: { applied: true, notes: 'Fixture selection.' } } });
+    const body = raw as Body & { origin: { label: string }; destination: { label: string } };
+    counters.lastAiBody = body;
+    return { json: { plan: plan({ origin: body.origin, destination: body.destination }), ai: { applied: true, notes: 'Fixture selection.' } } };
   });
 }
 async function pick(page: Page, name: string, value: string): Promise<void> {
