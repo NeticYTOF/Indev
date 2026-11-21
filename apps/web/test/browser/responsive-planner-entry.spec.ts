@@ -39,7 +39,7 @@ for (const [label, width, startsOpen] of [['mobile', 390, true], ['desktop resiz
   test(`saved drawer excludes background planner: ${label}`, async ({ page }) => {
     const planRequests = await wireDrawer(page);
     await page.setViewportSize({ width, height: 844 }); await page.goto('/');
-    const planner = page.getByRole('dialog', { name: 'Trip planner', exact: true }), fab = page.getByRole('button', { name: 'Open trip planner', exact: true });
+    const planner = page.getByRole('dialog', { name: 'Trip planner', exact: true }), fab = page.locator('#sheet-open');
     await expect(planner).toBeVisible();
     for (const [name, query] of [['From', 'Delhi'], ['To', 'Jaipur']] as const) {
       await page.getByRole('combobox', { name, exact: true }).fill(query); await page.locator('.suggestions:not(.hidden) .suggestion-item').filter({ hasText: query }).click();
