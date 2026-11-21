@@ -12,6 +12,7 @@ import {
 } from '@indeev/core';
 import { chatCompletionWithTools, type AiToolCall, type ChatToolMessage, type ChatToolDefinition } from './ai-provider.js';
 import { factsFromHydrated, SelectiveToolLedger } from './selective-tools.js';
+import { buildHostStationEvidence, type HostStationEvidence } from './host-connector-evidence.js';
 
 export interface SelectiveRunDeps {
   ai: { baseUrl: string; apiKey: string; model: string; fetchImpl?: typeof fetch; timeoutMs?: number };
@@ -89,6 +90,7 @@ export interface SelectiveRunResult {
     hostReasons: Array<{ stationId: number; reasons: string[] }>;
     /** Host-only final-answer contract evidence; never raw content. */
     finalAnswerEvents?: FinalAnswerDiagnostic[];
+    stationDiagnostics?: HostStationEvidence[];
   };
 }
 type CandidateRow = [number, string, number, number, string | null, number | null, boolean | null];
@@ -128,6 +130,7 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
     detailChecksStarted: 0, detailChecksSettled: 0,
     hostReasons: [] as Array<{ stationId: number; reasons: string[] }>,
     finalAnswerEvents: [] as FinalAnswerDiagnostic[],
+    stationDiagnostics: [] as HostStationEvidence[],
   };
   const diag = (): SelectiveRunResult['diagnostics'] => ({
     observedAttempts: runBudget.completedAttempts,
@@ -287,6 +290,9 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
           const h = hydrateSelective(found, fetched.response, fetched.fetchedAt, deps.planOptions.maxChargerKw);
           diagState.hostReasons.push({ stationId: id, reasons: [...h.reasons] });
           warnings.push(...h.warnings);
+          diagState.stationDiagnostics.push(buildHostStationEvidence(
+            id, fetched.response, h.reasons, h.candidate !== null, deps.planOptions.maxChargerKw));
+          if (diagState.stationDiagnostics.length > 20) diagState.stationDiagnostics.shift();
           if (h.candidate) {
             hydrated.set(id, h.candidate);
             factCache.set(id, factsFromHydrated(h.candidate, fetched.response.source ?? null,

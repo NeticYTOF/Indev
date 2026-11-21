@@ -1,6 +1,7 @@
 export * from './geo.js';
 export * from './types.js';
 export * from './plugs.js';
+export { classifyPlugValues, type ClassifiableConnector } from './plug-classifier.js';
 export * from './brands.js';
 export * from './statiq.js';
 export * from './upstream-budget.js';

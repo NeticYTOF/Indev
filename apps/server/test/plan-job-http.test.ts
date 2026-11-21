@@ -286,7 +286,8 @@ describe('process-local job endpoints', () => {
   });
 
   it('logs host reason codes on failure but never in the response body', async () => {
-    const events: Array<{ outcome: string; hostReasons: Array<{ reasons: string[] }> }> = [];
+    const events: Array<{ outcome: string; hostReasons: Array<{ reasons: string[] }>;
+      stationDiagnostics?: Array<{ reasons: string[]; rawChargerCount: number }> }> = [];
     const broken = {
       markers: async () => ({
         ok: true, live: true, retained: false, source: 'test', count: 1,
@@ -311,6 +312,11 @@ describe('process-local job endpoints', () => {
     expect(text).not.toContain('schema_invalid');
     expect(events.length).toBe(1);
     expect(events[0]?.hostReasons.some((r) => r.reasons.includes('schema_invalid'))).toBe(true);
+    expect(events[0]?.stationDiagnostics).toHaveLength(1);
+    expect(events[0]?.stationDiagnostics?.[0]).toMatchObject({
+      reasons: ['schema_invalid'], rawChargerCount: 1, invalidChargerCount: 1,
+    });
+    expect(JSON.stringify(events[0])).not.toContain('Broken');
   });
   it('forwards sanitized final-answer diagnostics to the private observer', async () => {
     const events: Array<{ outcome: string; finalAnswerEvents?: Array<{ reason: string }> }> = [];
@@ -334,6 +340,18 @@ describe('process-local job endpoints', () => {
       { reason: 'invalid_final_json', contentType: 'string', contentLength: 9 },
     ]);
     expect(await res.text()).not.toContain('invalid_final_json');
+  });
+
+  it('keeps the job outcome intact when the private observer throws', async () => {
+    const app = createApp(depsWith({ markers: async () => emptyMarkers } as unknown as StatiqClient, {
+      router: { route: async () => ({ distanceKm: 20, durationMin: 20,
+        geometry: [{ lat: 28.6, lon: 77.2 }, { lat: 28.78, lon: 77.2 }] }) } as never,
+      aiToolCall: toolFixture('{"chosenStationIds":[],"notes":"ok"}', []),
+      onPlanRunEvent: () => { throw new Error('observer down'); },
+    }));
+    const job = await startJob(app);
+    const res = await waitTerminal(app, job, 'succeeded');
+    expect(res.status).toBe(200);
   });
 
 });

@@ -47,6 +47,7 @@ import { PlanJobRegistry, type PlanJobControls } from './plan-job.js';
 import { runSelective, SelectiveRunError, type FinalAnswerDiagnostic } from './selective-run.js';
 import { SingleRunSlot } from './run-slot.js';
 import type { AiToolCall } from './ai-provider.js';
+import type { HostStationEvidence } from './host-connector-evidence.js';
 import { DEFAULT_ALLOWED_WEB_ORIGINS } from './env.js';
 import { validSavedPlanMetadata } from './saved-plan-validation.js';
 
@@ -76,6 +77,7 @@ export interface AppDeps {
     detailChecksStarted: number;
     detailChecksSettled: number;
     finalAnswerEvents?: FinalAnswerDiagnostic[];
+    stationDiagnostics?: HostStationEvidence[];
   }) => void;
   /** AI planning config: all three set = enabled. Off by default. */
   ai?: { baseUrl: string; apiKey: string; model: string };
@@ -199,7 +201,8 @@ function emitPlanRunEvent(
   outcome: string,
   diagnostics: { hostReasons: Array<{ stationId: number; reasons: string[] }>;
     detailChecksStarted: number; detailChecksSettled: number;
-    finalAnswerEvents?: FinalAnswerDiagnostic[] },
+    finalAnswerEvents?: FinalAnswerDiagnostic[];
+    stationDiagnostics?: HostStationEvidence[] },
 ): void {
   try {
     deps.onPlanRunEvent?.({
@@ -209,6 +212,8 @@ function emitPlanRunEvent(
       detailChecksSettled: diagnostics.detailChecksSettled,
       ...(diagnostics.finalAnswerEvents && diagnostics.finalAnswerEvents.length > 0
         ? { finalAnswerEvents: diagnostics.finalAnswerEvents.slice(0, 5) } : {}),
+      ...(diagnostics.stationDiagnostics && diagnostics.stationDiagnostics.length > 0
+        ? { stationDiagnostics: diagnostics.stationDiagnostics.slice(0, 20) } : {}),
     });
   } catch { /* diagnostics never alter the run */ }
 }
