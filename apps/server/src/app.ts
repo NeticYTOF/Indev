@@ -532,6 +532,11 @@ export function createApp(deps: AppDeps): Hono {
     ) {
       return c.json({ error: 'A live plan object is required to save a trip', code: 'bad_request' }, 400);
     }
+    const via = readVia(plan.via);
+    if (!via.ok) {
+      return c.json({ error: 'Saved trip stopovers are malformed', code: 'bad_request' }, 400);
+    }
+
     // sanity-check stop station refs so corrupted plans cannot be persisted
     for (const s of plan.stops) {
       if (!s || !s.station || typeof s.station !== 'object' || !Number.isInteger(s.station.stationId) || s.station.stationId <= 0) {
@@ -572,7 +577,7 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: 'Saved trip coordinates or names are malformed', code: 'bad_request' }, 400);
     }
     try {
-      const saved = await deps.trips.save(plan, name as string | undefined);
+      const saved = await deps.trips.save(via.value.length > 0 ? { ...plan, via: via.value } : plan, name as string | undefined);
       return c.json({ trip: saved }, 201);
     } catch (error) {
       if (error instanceof StoreLockCleanupError && error.committed) {

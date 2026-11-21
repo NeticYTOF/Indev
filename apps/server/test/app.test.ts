@@ -1204,3 +1204,110 @@ describe('ordered stopover API boundary', () => {
     }
   }
 });
+describe('saved trip stopover wire validation', () => {
+  async function saveFixture() {
+    const dir = await tempDir();
+    const filePath = join(dir, 'trips.json');
+    await writeFile(filePath, '[]');
+    let providerCalls = 0;
+    const deps = await makeDeps({
+      mock: true,
+      trips: new TripsStore({ filePath }),
+      createStatiq: () => { providerCalls += 1; throw new Error('provider must not be called'); },
+    });
+    const app = createApp(deps);
+    const planned = await app.request('/api/plan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: ORIGIN, destination: DEST }),
+    });
+    expect(planned.status).toBe(200);
+    const { plan } = await planned.json() as { plan: Record<string, unknown> & { id: string } };
+    return { app, filePath, plan, providerCalls: () => providerCalls };
+  }
+
+  async function expectEmptyStore(app: ReturnType<typeof createApp>, filePath: string, providerCalls: () => number): Promise<void> {
+    expect(providerCalls()).toBe(0);
+    expect(await readFile(filePath, 'utf8')).toBe('[]');
+    const list = await app.request('/api/trips');
+    expect(list.status).toBe(200);
+    expect((await list.json() as { trips: unknown[] }).trips).toEqual([]);
+  }
+
+  const malformed = [
+    { name: 'null', via: null },
+    { name: 'object', via: { label: 'A', lat: 23, lon: 72 } },
+    { name: 'string', via: 'Jaipur' },
+    { name: 'six stops', via: Array.from({ length: 6 }, (_, i) => ({ label: `S${i}`, lat: 20 + i, lon: 70 + i })) },
+    { name: 'blank label', via: [{ label: '   ', lat: 23, lon: 72 }] },
+    { name: 'out-of-range', via: [{ label: 'Bad', lat: 91, lon: 72 }] },
+    { name: 'wrong coordinate type', via: [{ label: 'Bad', lat: '23', lon: 72 }] },
+    { name: 'null member', via: [null] },
+  ];
+
+  it.each(malformed)('rejects malformed save stopovers: $name', async ({ via }) => {
+    const { app, filePath, plan, providerCalls } = await saveFixture();
+    const response = await app.request('/api/trips', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: { ...plan, via }, name: 'Invalid stops' }),
+    });
+    expect(response.status).toBe(400);
+    expect((await response.json() as { code: string }).code).toBe('bad_request');
+    await expectEmptyStore(app, filePath, providerCalls);
+  });
+
+  const stopoverSets = [
+    { name: 'one', places: [{ label: '  Ahmedabad  ', lat: 23.02, lon: 72.57, extra: 'strip' }] },
+    { name: 'five', places: [
+      { label: '  Nagpur  ', lat: 21.15, lon: 79.09, extra: 'strip' },
+      { label: '  Indore  ', lat: 22.72, lon: 75.86, extra: 'strip' },
+      { label: '  Ahmedabad  ', lat: 23.02, lon: 72.57, extra: 'strip' },
+      { label: '  Surat  ', lat: 21.17, lon: 72.83, extra: 'strip' },
+      { label: '  Vapi  ', lat: 20.37, lon: 72.91, extra: 'strip' },
+    ] },
+  ];
+
+  it.each(stopoverSets)('saves exact ordered normalized stopovers: $name', async ({ places }) => {
+    const { app, plan, providerCalls } = await saveFixture();
+    const input = { plan: { ...plan, via: places }, name: 'Stopover save' };
+    const beforeInput = JSON.stringify(input);
+    const response = await app.request('/api/trips', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+    });
+    expect(response.status).toBe(201);
+    expect(providerCalls()).toBe(0);
+    expect(JSON.stringify(input)).toBe(beforeInput);
+    const expected = places.map(({ label, lat, lon }) => ({ label: label.trim(), lat, lon }));
+    const { trip } = await response.json() as { trip: Record<string, unknown> };
+    expect(trip.via).toEqual(expected);
+    expect(trip.geometry).toEqual((plan.geometry as Array<{ lat: number; lon: number }>).map(p => [p.lat, p.lon]));
+    expect(trip.totals).toEqual(plan.totals);
+    const got = await app.request(`/api/trips/${trip.id as string}`);
+    const { trip: fetched } = await got.json() as { trip: Record<string, unknown> };
+    expect(fetched.via).toEqual(expected);
+    for (const place of fetched.via as Array<Record<string, unknown>>) {
+      expect(Object.keys(place).sort()).toEqual(['label', 'lat', 'lon']);
+    }
+    const list = await app.request('/api/trips');
+    const { trips } = await list.json() as { trips: Array<Record<string, unknown>> };
+    expect(trips).toHaveLength(1);
+    expect(trips[0]?.via).toEqual(expected);
+  });
+
+  it.each([
+    { name: 'omitted', attach: false },
+    { name: 'empty', attach: true },
+  ])('omits saved via for A-B plans: $name', async ({ attach }) => {
+    const { app, plan } = await saveFixture();
+    const requestPlan = { ...plan };
+    if (attach) requestPlan.via = [];
+    const response = await app.request('/api/trips', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: requestPlan, name: 'A-B save' }),
+    });
+    expect(response.status).toBe(201);
+    const { trip } = await response.json() as { trip: Record<string, unknown> };
+    expect(Object.prototype.hasOwnProperty.call(trip, 'via')).toBe(false);
+    const { trip: fetched } = await (await app.request(`/api/trips/${trip.id as string}`)).json() as { trip: Record<string, unknown> };
+    expect(Object.prototype.hasOwnProperty.call(fetched, 'via')).toBe(false);
+  });
+});
