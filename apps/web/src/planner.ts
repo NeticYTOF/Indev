@@ -717,18 +717,22 @@ function makeSearchField(
   setSavedPlace: (place: { label: string; lat: number; lon: number }) => void;
 } {
   const letter = field === 'origin' ? 'A' : 'B';
+  const popupId = `place-options-${field}`;
   const wrap = el(`
     <div class="search-field" data-field="${field}">
-      <label class="search-label">${labelText}</label>
+      <label class="search-label" for="${popupId}-input">${labelText}</label>
       <div class="search-box">
         <span class="search-icon" aria-hidden="true">${letter}</span>
-        <input type="search" placeholder="${placeholder}" aria-label="${labelText}" />
-        <div class="suggestions hidden" role="listbox"></div>
+        <input id="${popupId}-input" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${popupId}" placeholder="${placeholder}" aria-label="${labelText}" />
+        <div id="${popupId}" class="suggestions hidden" role="listbox" aria-label="${labelText} suggestions"></div>
       </div>
     </div>
   `);
   const input = wrap.querySelector('input') as HTMLInputElement;
   const list = wrap.querySelector('.suggestions') as HTMLElement;
+  const optionId = (index: number): string => `${popupId}-option-${index}`;
+  const showList = (): void => { list.classList.remove('hidden'); input.setAttribute('aria-expanded', 'true'); };
+  const hideList = (): void => { list.classList.add('hidden'); input.setAttribute('aria-expanded', 'false'); clearActive(); };
 
   let debounce: ReturnType<typeof setTimeout> | null = null;
   let activeIndex = -1;
@@ -737,6 +741,22 @@ function makeSearchField(
   // pick) must never repopulate or reopen the list. Pure module - see
   // geocode-session.test.ts for the deterministic ordering regressions.
   const session = new GeocodeSession();
+  const options = (): HTMLElement[] =>
+    Array.from(list.querySelectorAll<HTMLElement>('.suggestion-item[role="option"]'));
+  const clearActive = (): void => {
+    activeIndex = -1;
+    input.removeAttribute('aria-activedescendant');
+    options().forEach((node) => { node.classList.remove('active'); node.setAttribute('aria-selected', 'false'); });
+  };
+  const setActive = (idx: number): void => {
+    const active = options()[idx];
+    clearActive();
+    if (!active) return;
+    active.classList.add('active');
+    active.setAttribute('aria-selected', 'true');
+    input.setAttribute('aria-activedescendant', active.id);
+    activeIndex = idx;
+  };
 
   // Swap changes the field without emitting input. Cancel both pending
   // debounce and response ownership without touching its picked coordinates.
@@ -744,9 +764,8 @@ function makeSearchField(
     session.invalidate();
     if (debounce) clearTimeout(debounce);
     debounce = null;
+    hideList();
     list.replaceChildren();
-    list.classList.add('hidden');
-    activeIndex = -1;
   };
 
   input.addEventListener('input', () => {
@@ -754,7 +773,7 @@ function makeSearchField(
     invalidateSuggestions(); // old query choices and responses are stale
     const q = input.value.trim();
     if (q.length < 2) {
-      list.classList.add('hidden');
+      hideList();
       list.innerHTML = '';
       return;
     }
@@ -767,11 +786,11 @@ function makeSearchField(
         // Stale response, or focus left the field (blur orphan: the list
         // must not reopen while the user is elsewhere) - apply nothing.
         if (!session.isCurrent(token) || document.activeElement !== input) return;
+        clearActive();
         list.innerHTML = '';
-        activeIndex = -1;
         if (hits.length === 0) {
           list.innerHTML = `<div class="suggestion-item empty">No places found — try the nearest town.</div>`;
-          list.classList.remove('hidden');
+          showList();
           return;
         }
         const seen = new Set<string>();
@@ -782,29 +801,24 @@ function makeSearchField(
           if (seen.has(key)) continue;
           seen.add(key);
           const index = seen.size - 1;
-          const item = el(`<button type="button" class="suggestion-item" role="option">${escapeHtml(h.label)}</button>`);
+          const item = el(`<button type="button" id="${optionId(index)}" class="suggestion-item" role="option" aria-selected="false">${escapeHtml(h.label)}</button>`);
           item.addEventListener('click', () => {
             // The session is complete: pending stragglers must not reopen
             // the list over the finished selection.
             session.invalidate();
             input.value = h.label;
             onPicked(h);
-            list.classList.add('hidden');
+            hideList();
             input.dispatchEvent(new Event('picked'));
           });
           item.addEventListener('mousemove', () => setActive(index));
           list.appendChild(item);
         }
-        function setActive(idx: number): void {
-          const items = list.querySelectorAll('.suggestion-item');
-          items.forEach((n, ni) => n.classList.toggle('active', ni === idx));
-          activeIndex = idx;
-        }
-        list.classList.remove('hidden');
+        showList();
       } catch {
         // A stale request's error must not hide a NEWER query's list.
         if (!session.isCurrent(token)) return;
-        list.classList.add('hidden');
+        hideList();
       }
     }, 220);
   });
@@ -818,14 +832,14 @@ function makeSearchField(
       invalidateSuggestions();
       return;
     }
-    const items = Array.from(list.querySelectorAll('.suggestion-item'));
+    const items = options();
     if (items.length === 0 || list.classList.contains('hidden')) return;
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
       activeIndex = activeIndex < 0
         ? (e.key === 'ArrowDown' ? 0 : items.length - 1)
         : (activeIndex + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
-      items.forEach((n, i) => n.classList.toggle('active', i === activeIndex));
+      setActive(activeIndex);
       (items[activeIndex] as HTMLElement)?.scrollIntoView({ block: 'nearest' });
     } else if (e.key === 'Enter' && activeIndex >= 0) {
       e.preventDefault();
@@ -837,11 +851,11 @@ function makeSearchField(
     // Allow suggestion clicks to register, but do not let an old blur
     // hide choices after the user has already returned to this field.
     setTimeout(() => {
-      if (document.activeElement !== input) list.classList.add('hidden');
+      if (document.activeElement !== input) hideList();
     }, 180);
   });
   input.addEventListener('focus', () => {
-    if (list.children.length > 0) list.classList.remove('hidden');
+    if (list.children.length > 0) showList();
   });
 
   // mobile: open panel when focusing search

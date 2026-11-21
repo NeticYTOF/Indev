@@ -90,7 +90,7 @@ async function renderPrintFixture(page: import('@playwright/test').Page, options
   await page.route('**/api/plan', (route) => route.fulfill({ json: { plan: printPlan(options) } }));
   await page.goto('/');
   for (const [name, query] of [['From', 'Delhi'], ['To', 'Jaipur']]) {
-    await page.getByRole('searchbox', { name, exact: true }).fill(query!);
+    await page.getByRole('combobox', { name, exact: true }).fill(query!);
     await page.locator('.suggestions:not(.hidden) .suggestion-item').first().click();
   }
   await page.getByRole('button', { name: 'Plan route', exact: true }).click();

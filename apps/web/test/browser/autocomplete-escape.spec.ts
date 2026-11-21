@@ -9,7 +9,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
       else await route.abort();
     });
     await page.goto('/');
-    const field = page.getByRole('searchbox', { name: 'From', exact: true });
+    const field = page.getByRole('combobox', { name: 'From', exact: true });
     await field.fill('Delhi');
     const choices = page.locator('[data-field="origin"] .suggestions');
     await expect(choices).toBeVisible();

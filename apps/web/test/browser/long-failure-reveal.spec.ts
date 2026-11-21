@@ -81,10 +81,10 @@ test.beforeEach(async ({ page }) => {
 
 async function forceLongFailure(page: Page): Promise<void> {
   await expect(page.getByRole('button', { name: 'Plan with AI', exact: true })).toBeVisible();
-  const from = page.getByRole('searchbox', { name: 'From', exact: true });
+  const from = page.getByRole('combobox', { name: 'From', exact: true });
   await from.fill('Delhi');
   await page.locator('.suggestions:not(.hidden) .suggestion-item').first().click();
-  const to = page.getByRole('searchbox', { name: 'To', exact: true });
+  const to = page.getByRole('combobox', { name: 'To', exact: true });
   await to.fill('Jaipur');
   await page.locator('.suggestions:not(.hidden) .suggestion-item').first().click();
   await page.getByRole('button', { name: 'Plan route' }).click();

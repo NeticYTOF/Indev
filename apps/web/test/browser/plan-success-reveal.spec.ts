@@ -10,7 +10,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
     });
     await page.goto('/');
     for (const [name, query] of [['From', 'Delhi'], ['To', 'Jaipur']]) {
-      await page.getByRole('searchbox', { name, exact: true }).fill(query!);
+      await page.getByRole('combobox', { name, exact: true }).fill(query!);
       await page.locator('.suggestions:not(.hidden) .suggestion-item').first().click();
     }
     await page.getByRole('button', { name: 'Plan route', exact: true }).focus();
@@ -43,11 +43,11 @@ test('success does not steal focus deliberately moved during a pending plan', as
   });
   await page.goto('/');
   for (const [name, query] of [['From', 'Delhi'], ['To', 'Jaipur']]) {
-    await page.getByRole('searchbox', { name, exact: true }).fill(query!);
+    await page.getByRole('combobox', { name, exact: true }).fill(query!);
     await page.locator('.suggestions:not(.hidden) .suggestion-item').first().click();
   }
   await page.getByRole('button', { name: 'Plan route', exact: true }).click();
-  const field = page.getByRole('searchbox', { name: 'From', exact: true });
+  const field = page.getByRole('combobox', { name: 'From', exact: true });
   await field.focus();
   release();
   await expect(page.locator('.plan-results')).toBeVisible();

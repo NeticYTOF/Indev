@@ -15,10 +15,16 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('editing a query clears obsolete choices before the next response', async ({ page }) => {
-  const from = page.getByRole('searchbox', { name: 'From', exact: true });
+  const from = page.getByRole('combobox', { name: 'From', exact: true });
   const options = page.locator('[data-field=origin] .suggestions');
+  await expect(from).toHaveAttribute('id', 'place-options-origin-input');
+  await expect(from).toHaveAttribute('aria-controls', 'place-options-origin');
+  await expect(from).toHaveAttribute('aria-autocomplete', 'list');
+  await expect(from).toHaveAttribute('aria-expanded', 'false');
   await from.fill('Old query');
   await expect(options).toBeVisible();
+  await expect(options).toHaveAttribute('id', 'place-options-origin');
+  await expect(from).toHaveAttribute('aria-expanded', 'true');
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
   await page.route('**/api/geocode?q=New*', async (route) => {
@@ -28,6 +34,8 @@ test('editing a query clears obsolete choices before the next response', async (
   await from.fill('New query');
   try {
     await expect(options).toBeHidden();
+    await expect(from).toHaveAttribute('aria-expanded', 'false');
+    await expect(from).not.toHaveAttribute('aria-activedescendant', /.+/);
     await expect(options.getByRole('option')).toHaveCount(0);
     await page.locator('#vehicle-select').focus();
     await from.focus();
@@ -37,13 +45,19 @@ test('editing a query clears obsolete choices before the next response', async (
 });
 
 test('first ArrowUp selects the last place, then Enter picks it', async ({ page }) => {
-  const from = page.getByRole('searchbox', { name: 'From', exact: true });
+  const from = page.getByRole('combobox', { name: 'From', exact: true });
   await from.fill('Town');
   await expect(page.locator('[data-field=origin]').getByRole('option')).toHaveCount(3);
   await from.press('ArrowDown');
   await expect(page.locator('[data-field=origin] .suggestion-item.active')).toHaveText('First town');
+  await expect(page.locator('[data-field=origin] [role=option]').first()).toHaveAttribute('id', 'place-options-origin-option-0');
+  await expect(from).toHaveAttribute('aria-activedescendant', 'place-options-origin-option-0');
+  await expect(page.locator('[data-field=origin] [role=option]').first()).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('[data-field=origin] [role=option][aria-selected=true]')).toHaveCount(1);
   await from.press('ArrowUp');
   await expect(page.locator('[data-field=origin] .suggestion-item.active')).toHaveText('Third town');
+  await expect(from).toHaveAttribute('aria-activedescendant', 'place-options-origin-option-2');
+  await expect(page.locator('[data-field=origin] [role=option]').first()).toHaveAttribute('aria-selected', 'false');
   await from.fill('Town again');
   await expect(page.locator('[data-field=origin]').getByRole('option')).toHaveCount(3);
   await from.press('ArrowUp');
@@ -52,8 +66,13 @@ test('first ArrowUp selects the last place, then Enter picks it', async ({ page 
   await from.press('Enter');
   await expect(from).toHaveValue('Third town');
   await expect(page.locator('[data-field=origin] .suggestions')).toBeHidden();
-  const to = page.getByRole('searchbox', { name: 'To', exact: true });
+  await expect(from).toHaveAttribute('aria-expanded', 'false');
+  await expect(from).not.toHaveAttribute('aria-activedescendant', /.+/);
+  const to = page.getByRole('combobox', { name: 'To', exact: true });
+  await expect(to).toHaveAttribute('id', 'place-options-destination-input');
+  await expect(to).toHaveAttribute('aria-controls', 'place-options-destination');
   await to.fill('Destination');
+  await expect(to).toHaveAttribute('aria-expanded', 'true');
   await page.locator('.suggestions:not(.hidden) [role=option]').first().click();
   const submitted = page.waitForRequest('**/api/plan');
   await page.route('**/api/plan', (route) => route.fulfill({
@@ -61,4 +80,64 @@ test('first ArrowUp selects the last place, then Enter picks it', async ({ page 
   }));
   await page.getByRole('button', { name: 'Plan route', exact: true }).click();
   expect((await submitted).postDataJSON().origin).toEqual({ label: 'Third town', lat: 30, lon: 79 });
+});
+
+for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
+  test(`no-results popup stays empty and non-selectable at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await page.route('**/api/geocode?*', (route) => route.fulfill({ json: { hits: [] } }));
+    const from = page.getByRole('combobox', { name: 'From', exact: true });
+    const list = page.locator('[data-field=origin] .suggestions');
+    await from.fill('Town');
+    await expect(list.locator('.suggestion-item.empty')).toBeVisible();
+    await expect(list.getByRole('option')).toHaveCount(0);
+    await expect(from).toHaveAttribute('aria-expanded', 'true');
+    for (const key of ['ArrowDown', 'ArrowUp', 'Enter']) {
+      await from.press(key);
+      await expect(list.locator('.suggestion-item.active')).toHaveCount(0);
+      await expect(from).not.toHaveAttribute('aria-activedescendant', /.+/);
+      await expect(from).toHaveValue('Town');
+    }
+    await page.screenshot({ path: test.info().outputPath(`no-results-${viewport.width}.png`) });
+    await from.press('Escape');
+    await expect(list).toBeHidden();
+    await expect(from).toHaveAttribute('aria-expanded', 'false');
+    await expect(from).not.toHaveAttribute('aria-activedescendant', /.+/);
+    await expect(from).toBeFocused();
+  });
+}
+
+test('suggestion active state clears on blur and Escape without losing refocus behavior', async ({ page }) => {
+  const from = page.getByRole('combobox', { name: 'From', exact: true });
+  const list = page.locator('[data-field=origin] .suggestions');
+  await from.fill('Town');
+  await expect(list.getByRole('option')).toHaveCount(3);
+  await from.press('ArrowDown');
+  await expect(from).toHaveAttribute('aria-activedescendant', 'place-options-origin-option-0');
+  await page.locator('#vehicle-select').focus();
+  await expect(list).toBeHidden();
+  await expect(from).toHaveAttribute('aria-expanded', 'false');
+  await expect(from).not.toHaveAttribute('aria-activedescendant', /.+/);
+  await expect(list.locator('.suggestion-item.active')).toHaveCount(0);
+  await expect(list.locator('[role=option][aria-selected=true]')).toHaveCount(0);
+  await from.focus();
+  await expect(list).toBeVisible();
+  await expect(list.getByRole('option')).toHaveCount(3);
+  await expect(from).toHaveAttribute('aria-expanded', 'true');
+  await expect(from).not.toHaveAttribute('aria-activedescendant', /.+/);
+  await expect(list.locator('.suggestion-item.active')).toHaveCount(0);
+  await expect(list.locator('[role=option][aria-selected=true]')).toHaveCount(0);
+  await page.screenshot({ path: test.info().outputPath('autocomplete-refocused.png') });
+  await from.press('ArrowUp');
+  await expect(from).toHaveAttribute('aria-activedescendant', 'place-options-origin-option-2');
+  await from.press('Escape');
+  await expect(list).toBeHidden();
+  await expect(from).toHaveAttribute('aria-expanded', 'false');
+  await expect(from).not.toHaveAttribute('aria-activedescendant', /.+/);
+  await expect(list.getByRole('option')).toHaveCount(0);
+  await page.locator('#vehicle-select').focus();
+  await from.focus();
+  await expect(list).toBeHidden();
+  await expect(from).toHaveAttribute('aria-expanded', 'false');
+  await expect(from).not.toHaveAttribute('aria-activedescendant', /.+/);
 });

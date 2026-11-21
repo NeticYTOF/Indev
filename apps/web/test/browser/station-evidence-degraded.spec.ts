@@ -17,7 +17,7 @@ test('successful zero-stop plan discloses incomplete station evidence without cl
   });
   await page.goto('/');
   for (const [name, query] of [['From', 'Delhi'], ['To', 'Jaipur']]) {
-    await page.getByRole('searchbox', { name, exact: true }).fill(query!);
+    await page.getByRole('combobox', { name, exact: true }).fill(query!);
     await page.locator('.suggestions:not(.hidden) .suggestion-item').first().click();
   }
   await page.getByRole('button', { name: 'Plan route', exact: true }).click();

@@ -19,7 +19,7 @@ test('export keeps both long endpoints and vehicle provenance within its card', 
   });
   await page.goto('/');
   for (const [name, query] of [['From', 'Delhi'], ['To', 'Jaipur']]) {
-    await page.getByRole('searchbox', { name, exact: true }).fill(query!);
+    await page.getByRole('combobox', { name, exact: true }).fill(query!);
     await page.locator('.suggestions:not(.hidden) .suggestion-item').first().click();
   }
   await page.locator('.planner-go').click();

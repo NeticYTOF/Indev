@@ -12,7 +12,7 @@ test('a failed health check does not claim the whole responding server is offlin
   await expect(page.locator('#toast-root')).toContainText('Server status unavailable');
   await expect(page.locator('#health-badge')).toBeHidden();
   for (const [name, query] of [['From', 'Delhi'], ['To', 'Jaipur']]) {
-    await page.getByRole('searchbox', { name, exact: true }).fill(query!);
+    await page.getByRole('combobox', { name, exact: true }).fill(query!);
     await page.locator('.suggestions:not(.hidden) .suggestion-item').first().click();
   }
   await page.locator('.planner-go').click();

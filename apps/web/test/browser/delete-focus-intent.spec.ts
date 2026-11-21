@@ -23,7 +23,7 @@ for (const moved of [false, true]) {
     const button = page.getByRole('button', { name: 'Delete', exact: true });
     await button.click();
     await expect(button).toBeDisabled();
-    const field = page.getByRole('searchbox', { name: 'From', exact: true });
+    const field = page.getByRole('combobox', { name: 'From', exact: true });
     if (moved) {
       await page.getByRole('button', { name: 'Close', exact: true }).click();
       await field.focus();

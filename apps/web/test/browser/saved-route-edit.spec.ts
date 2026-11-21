@@ -146,15 +146,15 @@ test('editing from the drawer copies facts only, with mobile focus and no reques
   await expect(page.locator('.saved-route-review')).toContainText('Start charge, charging reserve and other plan options were not stored');
   await expect(page.locator('.saved-route-review')).toContainText('default catalog entry');
   await expect(page.locator('.saved-route-review')).toContainText('Saved Harrier — label must survive fallback');
-  await expect(page.getByRole('searchbox', { name: 'From', exact: true })).toHaveValue(SAVED_ORIGIN.label);
-  await expect(page.getByRole('searchbox', { name: 'To', exact: true })).toHaveValue(SAVED_DESTINATION.label);
+  await expect(page.getByRole('combobox', { name: 'From', exact: true })).toHaveValue(SAVED_ORIGIN.label);
+  await expect(page.getByRole('combobox', { name: 'To', exact: true })).toHaveValue(SAVED_DESTINATION.label);
   await expect(page.locator('select[data-vehicle]')).toHaveValue('custom');
   await expect(page.locator('input[data-custom-kwh]')).toHaveValue('75');
   await expect(page.locator('input[data-real-world]')).toHaveValue('300');
   await expect(page.locator('.plan-results')).toHaveCount(0);
   await expect(page.locator('#planner-panel')).toHaveClass(/open/);
   await expect(page.locator('#sheet-open')).toHaveAttribute('aria-expanded', 'true');
-  await expect(page.getByRole('searchbox', { name: 'From', exact: true })).toBeFocused();
+  await expect(page.getByRole('combobox', { name: 'From', exact: true })).toBeFocused();
   expect(counters).toEqual({ geocode: 0, plan: 0, ai: 0, station: 0, save: 0 });
   await page.screenshot({ path: info.outputPath('saved-route-edit-mobile.png') });
 });
@@ -168,8 +168,8 @@ test('editing from the saved summary uses the same manual-only flow', async ({ p
 
   await page.locator('.saved-briefing-actions [data-edit-saved]').click();
   await expect(page.locator('.saved-route-review')).toContainText('Editing saved route');
-  await expect(page.getByRole('searchbox', { name: 'From', exact: true })).toHaveValue(SAVED_ORIGIN.label);
-  await expect(page.getByRole('searchbox', { name: 'To', exact: true })).toHaveValue(SAVED_DESTINATION.label);
+  await expect(page.getByRole('combobox', { name: 'From', exact: true })).toHaveValue(SAVED_ORIGIN.label);
+  await expect(page.getByRole('combobox', { name: 'To', exact: true })).toHaveValue(SAVED_DESTINATION.label);
   await expect(page.locator('.plan-results')).toHaveCount(0);
   expect(counters).toEqual({ geocode: 0, plan: 0, ai: 0, station: 0, save: 0 });
   await page.screenshot({ path: info.outputPath('saved-route-summary-edit.png') });
@@ -278,7 +278,7 @@ test('typing after restore invalidates the selected place', async ({ page }) => 
   });
   await page.locator('#trips-button').click();
   await page.getByRole('button', { name: 'Edit route', exact: true }).click();
-  const origin = page.getByRole('searchbox', { name: 'From', exact: true });
+  const origin = page.getByRole('combobox', { name: 'From', exact: true });
   await origin.fill('Late geocoded Delhi');
   await expect(page.locator('.suggestions:not(.hidden) .suggestion-item')).toContainText('Late geocoded Delhi');
   await expect(origin).toHaveValue('Late geocoded Delhi');
@@ -300,15 +300,15 @@ test('a pending pre-edit geocode response cannot replace saved coordinates', asy
     geocodeHits: [{ label: 'Stale geocode result', lat: 19.076, lon: 72.8777 }],
   });
 
-  await page.getByRole('searchbox', { name: 'From', exact: true }).fill('Stale query');
+  await page.getByRole('combobox', { name: 'From', exact: true }).fill('Stale query');
   await expect.poll(() => counters.geocode).toBe(1);
   await page.locator('#trips-button').click();
   await page.getByRole('button', { name: 'Edit route', exact: true }).click();
 
   releaseGeocode();
   await expect.poll(() => counters.geocodeDone).toBe(1);
-  await expect(page.getByRole('searchbox', { name: 'From', exact: true })).toHaveValue(SAVED_ORIGIN.label);
-  await expect(page.getByRole('searchbox', { name: 'To', exact: true })).toHaveValue(SAVED_DESTINATION.label);
+  await expect(page.getByRole('combobox', { name: 'From', exact: true })).toHaveValue(SAVED_ORIGIN.label);
+  await expect(page.getByRole('combobox', { name: 'To', exact: true })).toHaveValue(SAVED_DESTINATION.label);
   await expect(page.locator('.suggestions:not(.hidden) .suggestion-item')).toHaveCount(0);
   await expect(page.locator('input[data-custom-kwh]')).toHaveValue('75');
   expect(counters.plan).toBe(0);
@@ -338,7 +338,7 @@ test('editing is refused while a plan is in flight', async ({ page }) => {
   expect(counters.plan).toBe(1);
   releasePlan();
   await expect(page.locator('.plan-results')).toBeVisible();
-  await expect(page.getByRole('searchbox', { name: 'From', exact: true })).toHaveValue(SAVED_ORIGIN.label);
+  await expect(page.getByRole('combobox', { name: 'From', exact: true })).toHaveValue(SAVED_ORIGIN.label);
 });
 
 test('AI replan after editing is manual and uses the saved exact coordinates', async ({ page }) => {

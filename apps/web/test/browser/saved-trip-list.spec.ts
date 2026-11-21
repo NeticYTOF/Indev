@@ -251,8 +251,8 @@ test('filtered and sorted Edit/Delete actions target their original saved record
   await page.locator('[data-trip-sort]').selectOption('name');
   await page.locator('[data-trip-search]').fill('goa');
   await row('Beta').getByRole('button', { name: 'Edit route', exact: true }).click();
-  await expect(page.getByRole('searchbox', { name: 'From', exact: true })).toHaveValue('Pune');
-  await expect(page.getByRole('searchbox', { name: 'To', exact: true })).toHaveValue('Goa');
+  await expect(page.getByRole('combobox', { name: 'From', exact: true })).toHaveValue('Pune');
+  await expect(page.getByRole('combobox', { name: 'To', exact: true })).toHaveValue('Goa');
   await expect(page.locator('.plan-results')).toHaveCount(0);
 
   await page.locator('#trips-button').click();

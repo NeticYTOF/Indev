@@ -27,7 +27,7 @@ for (const action of ['save', 'delete'] as const) {
     await page.goto('/');
     if (action === 'save') {
       for (const [name, query] of [['From', 'Delhi'], ['To', 'Jaipur']]) {
-        await page.getByRole('searchbox', { name, exact: true }).fill(query!);
+        await page.getByRole('combobox', { name, exact: true }).fill(query!);
         await page.locator('.suggestions:not(.hidden) .suggestion-item').first().click();
       }
       await page.getByRole('button', { name: 'Plan route', exact: true }).click();

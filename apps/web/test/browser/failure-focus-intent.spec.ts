@@ -16,14 +16,14 @@ for (const mode of ['plan', 'ai']) {
     });
     await page.goto('/');
     for (const [name, query] of [['From', 'Delhi'], ['To', 'Jaipur']]) {
-      await page.getByRole('searchbox', { name, exact: true }).fill(query!);
+      await page.getByRole('combobox', { name, exact: true }).fill(query!);
       await page.locator('.suggestions:not(.hidden) .suggestion-item').first().click();
     }
     const button = page.locator(mode === 'plan' ? '.planner-go' : '[data-ai-plan]');
     await button.click();
     await expect(button).toBeDisabled();
     await expect(page.locator('.planner-form')).toHaveAttribute('aria-busy', 'true');
-    const field = page.getByRole('searchbox', { name: 'From', exact: true });
+    const field = page.getByRole('combobox', { name: 'From', exact: true });
     await field.focus();
     release();
     await expect(button).toBeEnabled();

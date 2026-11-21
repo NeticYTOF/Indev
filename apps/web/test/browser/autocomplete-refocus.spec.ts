@@ -7,7 +7,7 @@ test('quick refocus keeps place choices open after the old blur timeout', async 
     else await route.abort();
   });
   await page.goto('/');
-  const field = page.getByRole('searchbox', { name: 'From', exact: true });
+  const field = page.getByRole('combobox', { name: 'From', exact: true });
   const choices = page.locator('[data-field=origin] .suggestions');
   await field.fill('Delhi');
   await expect(choices).toBeVisible();

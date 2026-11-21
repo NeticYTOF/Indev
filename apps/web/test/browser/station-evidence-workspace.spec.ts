@@ -15,7 +15,7 @@ async function outsideAborted(page: import('@playwright/test').Page): Promise<vo
 async function planFresh(page: import('@playwright/test').Page): Promise<void> {
   await page.goto('/');
   for (const [name, query] of [['From', 'Delhi'], ['To', 'Jaipur']]) {
-    await page.getByRole('searchbox', { name, exact: true }).fill(query!);
+    await page.getByRole('combobox', { name, exact: true }).fill(query!);
     await page.locator('.suggestions:not(.hidden) .suggestion-item').first().click();
   }
   await page.getByRole('button', { name: 'Plan route', exact: true }).click();
@@ -633,7 +633,7 @@ test('keyboard opens details without fetching and a focused input keeps focus wh
 
   await page.getByRole('button', { name: 'Revalidate', exact: true }).first().click();
   await expect.poll(() => fetches).toBe(1);
-  const origin = page.getByRole('searchbox', { name: 'From', exact: true });
+  const origin = page.getByRole('combobox', { name: 'From', exact: true });
   await origin.focus();
   release();
   await expect.poll(() => completedFetches).toBe(1);

@@ -16,8 +16,8 @@ test('route swap invalidates the old field query without changing swapped coordi
     } else await route.fulfill({ json: { hits: [{ label: 'Chosen destination', name: 'Chosen', lat: 27, lon: 76 }] } });
   });
   await page.goto('/');
-  const from = page.getByRole('searchbox', { name: 'From', exact: true });
-  const to = page.getByRole('searchbox', { name: 'To', exact: true });
+  const from = page.getByRole('combobox', { name: 'From', exact: true });
+  const to = page.getByRole('combobox', { name: 'To', exact: true });
   await to.fill('Destination');
   await page.locator('.suggestions:not(.hidden) [role=option]').first().click();
   const started = page.waitForRequest('**/api/geocode?q=Old%20origin');

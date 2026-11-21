@@ -53,12 +53,12 @@ test('filtered and sorted Return trip loads a manual return draft without reques
   await page.locator('.trip-row').filter({ hasText: 'Beta' })
     .getByRole('button', { name: 'Return trip', exact: true }).click();
 
-  await expect(page.getByRole('searchbox', { name: 'From', exact: true })).toHaveValue('Goa');
-  await expect(page.getByRole('searchbox', { name: 'To', exact: true })).toHaveValue('Pune');
+  await expect(page.getByRole('combobox', { name: 'From', exact: true })).toHaveValue('Goa');
+  await expect(page.getByRole('combobox', { name: 'To', exact: true })).toHaveValue('Pune');
   await expect(page.locator('.review-title')).toContainText('New return-direction plan');
   await expect(page.locator('.saved-route-review')).toContainText('Saved stops, geometry, totals and any previous results were not reversed or reused');
   await expect(page.locator('.saved-route-review')).toContainText('Start charge, charging reserve');
-  await expect(page.getByRole('searchbox', { name: 'From', exact: true })).toBeFocused();
+  await expect(page.getByRole('combobox', { name: 'From', exact: true })).toBeFocused();
   await expect(page.locator('.plan-results')).toHaveCount(0);
   expect(JSON.stringify(trips)).toBe(snapshot);
   expect(tripWrites).toBe(0);
@@ -102,10 +102,10 @@ test('saved summary Return clears the forward map and results before review', as
   await expect(page.locator('.pin-destination')).toHaveCount(0);
   await expect(page.locator('.stop-marker')).toHaveCount(0);
   await expect(page.locator('.plan-results')).toHaveCount(0);
-  await expect(page.getByRole('searchbox', { name: 'From', exact: true })).toHaveValue('Jaipur');
-  await expect(page.getByRole('searchbox', { name: 'To', exact: true })).toHaveValue('Delhi');
+  await expect(page.getByRole('combobox', { name: 'From', exact: true })).toHaveValue('Jaipur');
+  await expect(page.getByRole('combobox', { name: 'To', exact: true })).toHaveValue('Delhi');
   await expect(page.locator('.review-title')).toContainText('New return-direction plan');
-  await expect(page.getByRole('searchbox', { name: 'From', exact: true })).toBeFocused();
+  await expect(page.getByRole('combobox', { name: 'From', exact: true })).toBeFocused();
   expect(JSON.stringify(trip)).toBe(snapshot);
   expect(unexpected).toEqual([]);
 });
