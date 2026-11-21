@@ -18,6 +18,7 @@ import {
   type PlanBundle,
 } from './planner.js';
 import type { PlanOptions, PlanStop, PlanTotals, TripPlan } from './plan-types.js';
+import { certifyCappedCharger } from './plugs.js';
 import { socRequiredForArrival, socAfterDriving, type VehicleConfig } from './vehicle.js';
 import { DEFAULT_PLAN_OPTIONS } from './plan-types.js';
 
@@ -49,6 +50,11 @@ export function validateAiChoice(
   vehicle: VehicleConfig,
 ): AiValidation {
   const opts = { ...DEFAULT_PLAN_OPTIONS, ...options };
+  const capActive = options.maxChargerKw !== undefined;
+  if (capActive && (typeof options.maxChargerKw !== 'number' ||
+      !Number.isFinite(options.maxChargerKw) || options.maxChargerKw <= 0)) {
+    return fail('maxChargerKw must be a finite positive number.');
+  }
   const { usableCandidates, route } = bundle;
   const byId = new Map(usableCandidates.map((c) => [c.candidate.stationId, c]));
 
@@ -86,9 +92,20 @@ export function validateAiChoice(
   const seq: ChosenStop[] = [];
 
   for (const c of picked) {
-    if (Number.isFinite(opts.maxChargerKw) && opts.maxChargerKw > 0 &&
-        (c.selectedCharger?.kw ?? c.summary.maxKw) > opts.maxChargerKw) {
-      return fail(`Station ${c.candidate.stationId} has no selected charger within the ${opts.maxChargerKw} kW cap.`);
+    if (capActive) {
+      const evidence = {
+        stationId: c.view.stationId,
+        chargers: c.view.chargers.map(ch => ({ ...ch, connectors: ch.plugs })),
+      } as never;
+      const certified = certifyCappedCharger(evidence, opts.maxChargerKw);
+      if (certified.status !== 'selected') {
+        return fail(`Station ${c.candidate.stationId} has no certified charger within the ${opts.maxChargerKw} kW cap.`);
+      }
+      const s = certified.selected;
+      if (!c.selectedCharger || c.selectedCharger.chargerId !== s.chargerId ||
+          c.selectedCharger.kw !== s.kw || c.selectedCharger.pricePerKwh !== s.pricePerKwh) {
+        return fail(`Station ${c.candidate.stationId} selection metadata does not match live charger evidence.`);
+      }
     }
     const legKm =
       c.candidate.chainageKm - cursorChain + cursorDetour + c.candidate.offRouteKm;

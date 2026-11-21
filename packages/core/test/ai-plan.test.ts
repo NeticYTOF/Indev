@@ -242,20 +242,31 @@ describe('validateAiChoice', () => {
     expect(plan.warnings.some((w) => w.includes('AI'))).toBe(true);
   });
 
-  it('rejects an AI candidate whose selected charger violates the hard kW cap', async () => {
+  it('rejects forged selection metadata and invalid caps before certification', async () => {
     const bundle = handBuiltBundle([50], 300);
     const candidate = bundle.usableCandidates[0]!;
-    candidate.selectedCharger = { chargerId: 8, name: '180 kW', kw: 180, pricePerKwh: 99 };
-    const v = validateAiChoice(bundle, { stationIds: [candidate.candidate.stationId] }, { maxChargerKw: 100 }, HARIER_EV_75);
+    candidate.view.chargers = [{ chargerId: 8, name: '60 kW', type: 'DC', kw: 60, pricePerKwh: 22,
+      lastUsedOn: null, plugs: [{ connectorId: 80, type: 'CCS-2', health: 'working-free', contradiction: false }] }];
+    const id = candidate.candidate.stationId;
+    delete candidate.selectedCharger;
+    let v = validateAiChoice(bundle, { stationIds: [id] }, { maxChargerKw: 100 }, HARIER_EV_75);
     expect(v.ok).toBe(false);
-    if (v.ok) return;
-    expect(v.reason).toContain('kW cap');
+    if (!v.ok) expect(v.reason).toContain('live charger evidence');
+    candidate.selectedCharger = { chargerId: 9, name: 'forged', kw: 60, pricePerKwh: 99 };
+    v = validateAiChoice(bundle, { stationIds: [id] }, { maxChargerKw: 100 }, HARIER_EV_75);
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toContain('live charger evidence');
+    v = validateAiChoice(bundle, { stationIds: [id] }, { maxChargerKw: Number.NaN }, HARIER_EV_75);
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toContain('finite positive');
   });
 
   it('uses the capped selected charger for AI-rebuilt charge time and tariff', async () => {
     const bundle = handBuiltBundle([50], 300);
     const candidate = bundle.usableCandidates[0]!;
     candidate.selectedCharger = { chargerId: 8, name: '60 kW', kw: 60, pricePerKwh: 22 };
+    candidate.view.chargers = [{ chargerId: 8, name: '60 kW', type: 'DC', kw: 60, pricePerKwh: 22,
+      lastUsedOn: null, plugs: [{ connectorId: 80, type: 'CCS-2', health: 'working-free', contradiction: false }] }];
     candidate.summary.maxKw = 180; candidate.summary.pricePerKwh = 999;
     const v = validateAiChoice(bundle, { stationIds: [candidate.candidate.stationId] }, { startSocPct: 20, maxChargerKw: 100 }, HARIER_EV_75);
     expect(v.ok).toBe(true); if (!v.ok) return;

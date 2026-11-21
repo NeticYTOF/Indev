@@ -126,15 +126,26 @@ export function summarizeCcs2(station: StatiqStationDetail): Ccs2Summary {
 }
 
 /** Select the fastest usable CCS2 DC charger known to satisfy a hard kW cap. */
+export type CappedChargerCertification =
+  | { status: 'selected'; selected: PlanSelectedCharger }
+  | { status: 'policy-ineligible' | 'incomplete'; selected: null };
 export function selectedCappedCharger(
   station: StatiqStationDetail,
   maxChargerKw: number,
 ): PlanSelectedCharger | null {
+  const certified = certifyCappedCharger(station, maxChargerKw);
+  return certified.status === 'selected' ? certified.selected : null;
+}
+export function certifyCappedCharger(
+  station: StatiqStationDetail,
+  maxChargerKw: number,
+): CappedChargerCertification {
   let best: PlanSelectedCharger | null = null;
+  let incomplete = false;
   for (const ch of station.chargers ?? []) {
     const usableConnector = (ch.connectors ?? []).some(c => isCcs2Dc(ch, c) && USABLE.includes(classifyPlug(c).health));
     if (!usableConnector) continue;
-    if (typeof ch.kw !== 'number' || !Number.isFinite(ch.kw) || ch.kw <= 0) continue;
+    if (typeof ch.kw !== 'number' || !Number.isFinite(ch.kw) || ch.kw <= 0) { incomplete = true; continue; }
     if (ch.kw > maxChargerKw) continue;
     const tariff = ch.pricePerKwh;
     const pricePerKwh = typeof tariff === 'number' && Number.isFinite(tariff) && tariff >= 0 ? tariff : null;
@@ -142,5 +153,6 @@ export function selectedCappedCharger(
     if (!best || candidate.kw > best.kw ||
         (candidate.kw === best.kw && candidate.chargerId < best.chargerId)) best = candidate;
   }
-  return best;
+  if (best) return { status: 'selected', selected: best };
+  return { status: incomplete ? 'incomplete' : 'policy-ineligible', selected: null };
 }

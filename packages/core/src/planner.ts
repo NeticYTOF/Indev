@@ -20,7 +20,7 @@ import { hasFreshProvenance } from './provenance.js';
  */
 import { cumulativeKm } from './geo.js';
 import { scanCorridor, type CorridorCandidate } from './corridor.js';
-import { classifyPlug, selectedCappedCharger, summarizeCcs2, type Ccs2Summary } from './plugs.js';
+import { certifyCappedCharger, classifyPlug, summarizeCcs2, type Ccs2Summary } from './plugs.js';
 import { detectBrand } from './brands.js';
 import { pMap } from './utils.js';
 import { chargeTimeMin, kwhForSocDelta, socAfterDriving, socRequiredForArrival, HARIER_EV_75, type VehicleConfig } from './vehicle.js';
@@ -610,22 +610,25 @@ async function planCore(
           warnings.push(`Station "${c.name}" (${c.stationId}) has an invalid tariff; its charging cost is unknown.`);
         }
         const concreteMax = opts.maxChargerKw;
-        const capSelected = Number.isFinite(concreteMax) && concreteMax > 0
-          ? selectedCappedCharger(response.station, concreteMax)
+        const certification = Number.isFinite(concreteMax) && concreteMax > 0
+          ? certifyCappedCharger(response.station, concreteMax)
           : null;
-        if (Number.isFinite(concreteMax) && concreteMax > 0 && !capSelected) {
-          const incomplete = summary.hasMissingUsablePower || summary.hasInvalidUsablePower || summary.maxKw == null;
-          throw new Error(incomplete
-            ? `Usable CCS2 charger power is incomplete, so no charger can be certified at or below ${concreteMax} kW`
-            : `No usable CCS2 charger is rated at or below ${concreteMax} kW`);
+        if (certification?.status === 'incomplete') {
+          throw new Error('Usable CCS2 charger power is incomplete, so cap compliance is unknown');
         }
-        detailCache.set(c.stationId, {
-          candidate: c,
-          summary,
-          view: toStationView(response.station, fetchedAt),
-          ...(capSelected ? { selectedCharger: capSelected } : {}),
-        });
-        hooks.stats.candidatesDetailed = detailCache.size;
+        if (certification?.status === 'policy-ineligible') {
+          warnings.push(`Skipping "${c.name}" (${c.stationId}): no usable charger is rated at or below the configured kW cap.`);
+        }
+        const capSelected = certification?.status === 'selected' ? certification.selected : null;
+        if (certification?.status !== 'policy-ineligible') {
+          detailCache.set(c.stationId, {
+            candidate: c,
+            summary,
+            view: toStationView(response.station, fetchedAt),
+            ...(capSelected ? { selectedCharger: capSelected } : {}),
+          });
+          hooks.stats.candidatesDetailed = detailCache.size;
+        }
       } else {
         // 200 with a null station: data inconsistency - an unknown, not a
         // verdict; leave a visible hole instead of passing silently
@@ -644,10 +647,8 @@ async function planCore(
         throw err;
       }
       unknownCandidates.add(c.stationId);
-      warnings.push(err instanceof Error && /power is incomplete/.test(err.message)
+      warnings.push(err instanceof Error && /cap compliance is unknown/.test(err.message)
         ? `Skipping "${c.name}" (${c.stationId}): charger power is incomplete, so cap compliance is unknown.`
-        : err instanceof Error && /at or below .* kW/.test(err.message)
-        ? `Skipping "${c.name}" (${c.stationId}): no usable charger is rated at or below the configured kW cap.`
         : err instanceof Error && err.message === 'Usable connector availability is malformed'
         ? `Skipping "${c.name}" (${c.stationId}): connector availability is invalid; usable charger evidence is unknown.`
         : err instanceof Error && err.message === 'Usable charger power is malformed'
@@ -794,8 +795,8 @@ function toAiCandidate(c: Candidate): PlanCandidate {
     city: c.view.city,
     rating: c.view.rating,
     reviewCount: c.view.reviewCount,
-    maxKw: c.selectedCharger?.kw ?? c.summary.maxKw,
-    pricePerKwh: c.selectedCharger?.pricePerKwh ?? c.summary.pricePerKwh,
+    maxKw: c.selectedCharger ? c.selectedCharger.kw : c.summary.maxKw,
+    pricePerKwh: c.selectedCharger ? c.selectedCharger.pricePerKwh : c.summary.pricePerKwh,
     ...(c.selectedCharger ? { selectedCharger: c.selectedCharger } : {}),
   };
 }
@@ -926,7 +927,7 @@ export function finalize(
     if (!Number.isFinite(chargeMin) || chargeMin < 0) {
       throw new PlanningError('Plan not determined: charger power does not support a finite charging-time estimate.', 'not_determined');
     }
-    const pricePerKwh = cur.cand.selectedCharger?.pricePerKwh ?? cur.cand.summary.pricePerKwh;
+    const pricePerKwh = cur.cand.selectedCharger ? cur.cand.selectedCharger.pricePerKwh : cur.cand.summary.pricePerKwh;
     const rawCost = pricePerKwh != null ? Math.round(chargeKwh * pricePerKwh) : null;
     const estimatedCost = rawCost != null && Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : null;
     if (rawCost != null && estimatedCost == null) warnings.push(`Charging cost at "${cur.cand.view.name}" is unknown because its numeric estimate is outside the supported range.`);

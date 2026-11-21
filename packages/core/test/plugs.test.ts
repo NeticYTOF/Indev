@@ -312,6 +312,14 @@ describe('hard maximum charger power', () => {
     delete (input.chargers[0] as Partial<import('../src/types.js').StatiqCharger>).kw;
     expect(selectedCappedCharger(input, 100)).toBeNull();
   });
+  it('keeps an unknown selected tariff separate from a known sibling tariff', () => {
+    const input = station([
+      { type: 'DC', kw: 180, price: 18, connectors: [conn('available', true, null)] },
+      { type: 'DC', kw: 60, price: null, connectors: [conn('available', true, null)] },
+    ]);
+    const chosen = selectedCappedCharger(input, 100);
+    expect(chosen).toMatchObject({ kw: 60, pricePerKwh: null });
+  });
   it('preserves the uncapped maximum and tariff', () => {
     const input = station([
       { type: 'DC', kw: 60, price: 22, connectors: [conn('available', true, null)] },
