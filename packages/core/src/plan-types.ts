@@ -126,6 +126,8 @@ export interface TripPlan {
   createdAt: string;
   origin: PlaceRef;
   destination: PlaceRef;
+  /** Ordered user stopovers; they do not reset battery or charging continuity. */
+  via?: PlaceRef[];
   vehicle: PlanVehicleMeta;
   status: PlanStatus;
   /** Provenance: live plans only may enter the real saved-trips store. */

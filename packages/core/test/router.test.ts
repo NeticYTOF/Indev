@@ -212,3 +212,42 @@ it.each(['success', 'fetch error', 'body error'] as const)('cleans owned timeout
     vi.useRealTimers();
   }
 });
+
+const okGeometry = [
+  { lat: 28.6139, lon: 77.209 },
+  { lat: 27.8, lon: 76.5 },
+  { lat: 26.9124, lon: 75.7873 },
+];
+
+it.each([
+  { name: 'one', via: [{ lat: 1.5, lon: 1.5 }], url: 'https://router.test/route/v1/driving/1.000000,1.000000;1.500000,1.500000;2.000000,2.000000?overview=full&geometries=geojson' },
+  { name: 'five', via: [
+    { lat: 1.1, lon: 1.1 }, { lat: 1.2, lon: 1.2 }, { lat: 1.3, lon: 1.3 }, { lat: 1.4, lon: 1.4 }, { lat: 1.5, lon: 1.5 },
+  ], url: 'https://router.test/route/v1/driving/1.000000,1.000000;1.100000,1.100000;1.200000,1.200000;1.300000,1.300000;1.400000,1.400000;1.500000,1.500000;2.000000,2.000000?overview=full&geometries=geojson' },
+])('routes through $name ordered via point(s) in one OSRM request', async ({ via, url }) => {
+  const { impl, calls } = fakeFetch(osrmOk);
+  const router = new OsrmRouter({ baseUrl: 'https://router.test', fetchImpl: impl });
+  const result = await router.route(origin, destination, undefined, via);
+  expect(calls).toEqual([url]);
+  expect(result.geometry).toEqual(okGeometry);
+  expect(result.distanceKm).toBeCloseTo(284.9, 1);
+});
+
+it.each([
+  ['six', Array.from({ length: 6 }, (_, i) => ({ lat: 1 + i / 10, lon: 1 + i / 10 }))],
+  ['NaN', [{ lat: Number.NaN, lon: 1 }]],
+  ['out of range', [{ lat: 91, lon: 1 }]],
+] as const)('rejects %s via points before dispatch', async (_name, via) => {
+  const { impl, calls } = fakeFetch(osrmOk);
+  const router = new OsrmRouter({ baseUrl: 'https://router.test', fetchImpl: impl });
+  await expect(router.route(origin, destination, undefined, via)).rejects.toMatchObject({ name: 'RouterError', code: 'InvalidWaypoints' });
+  expect(calls).toHaveLength(0);
+});
+
+it('does not dispatch a preaborted route with via', async () => {
+  const outer = new AbortController(); outer.abort();
+  const counter = { attempts: 0, aborted: 0 };
+  const router = new OsrmRouter({ fetchImpl: abortableFetch(counter) });
+  await expect(router.route(origin, destination, outer.signal, [{ lat: 1.5, lon: 1.5 }])).rejects.toMatchObject({ name: 'AbortError' });
+  expect(counter.attempts).toBe(0);
+});

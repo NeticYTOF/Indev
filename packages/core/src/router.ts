@@ -55,12 +55,23 @@ export class OsrmRouter {
     this.retries = opts.retries ?? 2;
   }
 
-  /** Fastest driving route between two points. */
-  async route(origin: Coords, destination: Coords, signal?: AbortSignal): Promise<RouteResult> {
+  /** Fastest driving route between two points, with optional ordered stopovers. */
+  async route(
+    origin: Coords,
+    destination: Coords,
+    signal?: AbortSignal,
+    via: readonly Coords[] = [],
+  ): Promise<RouteResult> {
     signal?.throwIfAborted();
+    if (
+      !Array.isArray(via) || via.length > 5 ||
+      via.some(c => !c || !Number.isFinite(c.lat) || !Number.isFinite(c.lon) ||
+        Math.abs(c.lat) > 90 || Math.abs(c.lon) > 180)
+    ) throw new RouterError('InvalidWaypoints', 'Via must be 0-5 valid coordinates');
     const coord = (c: Coords) => `${c.lon.toFixed(6)},${c.lat.toFixed(6)}`;
+    const host = `${this.base}/route/v1/driving/`;
     const url =
-      `${this.base}/route/v1/driving/${coord(origin)};${coord(destination)}` +
+      `${host}${[origin, ...via, destination].map(coord).join(';')}` +
       `?overview=full&geometries=geojson`;
     const json = await this.getJson<OsrmResponse>(url, signal);
     signal?.throwIfAborted();
