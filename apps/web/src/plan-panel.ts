@@ -165,6 +165,25 @@ function wirePlanActions(actions: HTMLElement, plan: TripPlan): void {
       const response = await api.saveTrip(plan);
       const candidateId = record(response)?.trip && record(record(response)?.trip)?.id;
       const savedTripId = typeof candidateId === 'string' && candidateId.trim().length > 0 ? candidateId : null;
+      if (!savedTripId) {
+        btn.textContent = 'Save status unknown';
+        const banner = storageWarningElement('Save could not be confirmed. Check saved trips before trying again.');
+        const controls = el(`<div class="plan-actions"><button type="button" class="btn btn-compact btn-ghost" data-check-saved>Check saved trips</button><button type="button" class="btn btn-compact btn-ghost" data-enable-save>Enable save retry</button></div>`);
+        controls.querySelector('[data-check-saved]')?.addEventListener('click', () => {
+          if (!btn.isConnected) return;
+          const owner = document.getElementById('trips-button');
+          if (owner && owner.getAttribute('aria-expanded') !== 'true') owner.click();
+        });
+        controls.querySelector('[data-enable-save]')?.addEventListener('click', () => {
+          if (!btn.isConnected) return;
+          btn.textContent = originalLabel;
+          btn.disabled = false;
+          banner.remove();
+          controls.remove();
+        });
+        actions.after(banner, controls);
+        return;
+      }
       if (savedTripId) { btn.dataset.savedTripId = savedTripId; btn.dataset.unsavedLabel = originalLabel; }
       btn.textContent = 'Saved to your trips';
       const warning = storageWarningText(response);
