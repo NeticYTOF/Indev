@@ -152,10 +152,16 @@ test('saved trip list load states stay distinct from an empty list', async ({ pa
   const search = page.locator('[data-trip-search]');
   const sort = page.locator('[data-trip-sort]');
   const count = page.locator('[data-trip-result-count]');
+  const source = page.locator('[data-trip-source]');
+  const statusFilter = page.locator('[data-trip-status]');
+  const clearFilters = page.locator('[data-trip-filters-clear]');
   await expect(page.locator('.trip-list')).toContainText('Loading…');
   await expect(search).toBeDisabled();
   await expect(sort).toBeDisabled();
   await expect(page.locator('[data-trip-search-clear]')).toBeDisabled();
+  await expect(source).toBeDisabled();
+  await expect(statusFilter).toBeDisabled();
+  await expect(clearFilters).toBeDisabled();
 
   status = 200;
   body = { trips: {} };
@@ -164,6 +170,9 @@ test('saved trip list load states stay distinct from an empty list', async ({ pa
   await expect(page.locator('.trip-list')).toContainText('Saved trip list is unavailable.');
   await expect(search).toBeDisabled();
   await expect(sort).toBeDisabled();
+  await expect(source).toBeDisabled();
+  await expect(statusFilter).toBeDisabled();
+  await expect(clearFilters).toBeDisabled();
 
   status = 503;
   body = { error: 'trips temporarily offline' };
@@ -173,6 +182,35 @@ test('saved trip list load states stay distinct from an empty list', async ({ pa
   await expect(page.locator('.trip-list')).toContainText('Could not load trips: trips temporarily offline');
   await expect(search).toBeDisabled();
   await expect(sort).toBeDisabled();
+  await expect(source).toBeDisabled();
+  await expect(statusFilter).toBeDisabled();
+  await expect(clearFilters).toBeDisabled();
+});
+
+test('ready empty saved list is distinct from failures', async ({ page }, info) => {
+  await page.route(/^https?:\/\//, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') await route.continue();
+    else await route.abort();
+  });
+  await page.route('**/api/trips', (route) => route.fulfill({ json: { trips: [] } }));
+  await page.goto('/');
+  await page.locator('#trips-button').click();
+  const list = page.locator('.trip-list');
+  await expect(page.locator('[data-trip-result-count]')).toHaveText('Showing 0 of 0 saved trips.');
+  await expect(list).toContainText('No saved trips yet. Plan a route, then save it.');
+  await expect(list).not.toContainText('unavailable');
+  await expect(list).not.toContainText('Could not load');
+  await expect(page.locator('.trip-row')).toHaveCount(0);
+  for (const selector of ['[data-trip-search]', '[data-trip-sort]', '[data-trip-source]', '[data-trip-status]']) {
+    await expect(page.locator(selector)).toBeEnabled();
+  }
+  for (const selector of ['[data-trip-search-clear]', '[data-trip-filters-clear]']) {
+    await expect(page.locator(selector)).toBeDisabled();
+  }
+  await expect(page.locator('[data-trip-source]')).toHaveValue('all');
+  await expect(page.locator('[data-trip-status]')).toHaveValue('all');
+  await page.screenshot({ path: info.outputPath('saved-trip-list-empty.png') });
 });
 
 test('selection survives reordering and removal updates the hidden notice', async ({ page }) => {
