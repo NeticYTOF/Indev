@@ -306,8 +306,43 @@ describe('POST /api/ai/plan', () => {
     // and the AI-safe field set is exactly what we designed (ai-plan.test)n
     expect(seenPrompt).toContain('"chosenStationIds"');
   });
-});
+  it('applies a reachable zero-stop AI choice after physical validation', async () => {
+    const shortRoute: RouteResult = {
+      distanceKm: 180,
+      durationMin: 180,
+      geometry: Array.from({ length: 19 }, (_, i) => ({ lat: (i * 180 / KM_PER_DEG) / 18, lon: 0 })),
+    };
+    const app = createApp(await makeDeps({
+      router: { route: async () => shortRoute } as unknown as OsrmRouter,
+      createStatiq: () => fakeStatiq([]),
+      ai: AI_CFG,
+      aiCall: async () => JSON.stringify({ chosenStationIds: [], notes: 'Direct route is reachable.' }),
+    }));
+    const res = await app.request('/api/ai/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ origin: ORIGIN, destination: DEST, startSocPct: 100 }) });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { plan: { stops: unknown[]; totals: { distanceKm: number; chargeTimeMin: number; chargeKwh: number }; warnings: string[] }; ai: { applied: boolean; notes?: string } };
+    expect(body.ai.applied).toBe(true);
+    expect(body.ai.notes).toBe('Direct route is reachable.');
+    expect(body.plan.stops).toHaveLength(0);
+    expect(body.plan.totals.distanceKm).toBeCloseTo(180, 0);
+    expect(body.plan.totals.chargeTimeMin).toBe(0);
+    expect(body.plan.totals.chargeKwh).toBe(0);
+    expect(body.plan.warnings.some(w => w.includes('zero charging stops'))).toBe(true);
+  });
 
+  it('rejects an unreachable zero-stop AI choice with physics evidence', async () => {
+    const app = createApp(await makeDeps({ ai: AI_CFG,
+      aiCall: async () => JSON.stringify({ chosenStationIds: [], notes: 'No stops needed.' }),
+    }));
+    const res = await app.request('/api/ai/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ origin: ORIGIN, destination: DEST, startSocPct: 100 }) });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { plan: { stops: unknown[]; warnings: string[] }; ai: { applied: boolean; reason: string } };
+    expect(body.ai.applied).toBe(false);
+    expect(body.ai.reason).toContain('final leg exceeds the safe running range');
+    expect(body.plan.stops.length).toBeGreaterThan(0);
+    expect(body.plan.warnings.some(w => w.includes('zero charging stops'))).toBe(false);
+  });
+});
 
 it.each([
   ['bad-id', 705, 711], [705, 711, 'bad-id'], [705, 'bad-id', 711], [705, null, 711], [705, {}, 711], [705, [], 711],

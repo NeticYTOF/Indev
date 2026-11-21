@@ -82,7 +82,9 @@ export function parseChoiceJson(content: string): { stationIds?: number[]; notes
     throw new AiProviderError('AI response was not a choice object');
   }
   const choice = parsed as AiChoiceRaw;
-  if (!Array.isArray(choice.chosenStationIds) || choice.chosenStationIds.length === 0 ||
+  // An explicit empty array is a valid zero-stop choice; physical reachability
+  // is decided later by the same planner validator used for non-empty choices.
+  if (!Array.isArray(choice.chosenStationIds) ||
       choice.chosenStationIds.some((id) => typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0)) {
     // Never turn malformed model output into a different stop sequence by
     // dropping elements. Let the route return its computed base plan.

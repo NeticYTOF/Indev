@@ -59,8 +59,8 @@ export function validateAiChoice(
   const { usableCandidates, route } = bundle;
   const byId = new Map(usableCandidates.map((c) => [c.candidate.stationId, c]));
 
-  if (!Array.isArray(choice.stationIds) || choice.stationIds.length === 0) {
-    return fail('The AI returned no station sequence.');
+  if (!Array.isArray(choice.stationIds)) {
+    return fail('The AI returned an invalid station sequence.');
   }
 
   const picked: PlannerCandidate[] = [];
@@ -154,7 +154,9 @@ export function assembleAiPlan(
   const base = bundle.plan;
   const warnings = [
     ...base.warnings,
-    `Stop plan adjusted by AI${ai.notes ? `: ${String(ai.notes).slice(0, 240)}` : ''}.`,
+    seq.length === 0
+      ? `AI selected zero charging stops; code verified the full route satisfies leg and reserve limits${ai.notes ? `: ${String(ai.notes).slice(0, 240)}` : ''}.`
+      : `Stop plan adjusted by AI${ai.notes ? `: ${String(ai.notes).slice(0, 240)}` : ''}.`,
   ];
   // The greedy planner validates and totals against cumulative geometry
   // chainage, not the OSRM-reported distance displayed in metadata. AI

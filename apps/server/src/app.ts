@@ -452,7 +452,7 @@ export function createApp(deps: AppDeps): Hono {
       'You are an EV trip-planning assistant for India. You receive a computed base plan ' +
       'and its candidate charging stations. Choose the best stop sequence respecting: ' +
       'legs no longer than the maxLegKm limit below, with charge/reserve feasibility preserved, fewest stops, brands preferred in order Statiq > Tata > BPCL > HP > others. ' +
-      'You may keep the base sequence if it is already best. Respond with STRICT JSON only: ' +
+      'You may keep the base sequence if it is already best. Use an empty chosenStationIds array only when no charging stop is needed; code will re-check the full route and reject an unreachable empty choice. Respond with STRICT JSON only: ' +
       '{"chosenStationIds": number[], "notes": string}. chosenStationIds must be the station ids in ' +
       'route order, drawn only from the provided candidates. notes is one short sentence for the user.';
     const user = JSON.stringify({
@@ -487,7 +487,7 @@ export function createApp(deps: AppDeps): Hono {
           ).content;
       const { stationIds, notes } = parseChoiceJson(content);
 
-      if (!stationIds || stationIds.length === 0) {
+      if (!stationIds) {
         completeRun(deps, 'ai-invalid', safeUpstreamCalls(statiq), providerFailures.snapshot());
         return c.json({
           plan: bundle.plan,
