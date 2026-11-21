@@ -312,6 +312,30 @@ describe('process-local job endpoints', () => {
     expect(events.length).toBe(1);
     expect(events[0]?.hostReasons.some((r) => r.reasons.includes('schema_invalid'))).toBe(true);
   });
+  it('forwards sanitized final-answer diagnostics to the private observer', async () => {
+    const events: Array<{ outcome: string; finalAnswerEvents?: Array<{ reason: string }> }> = [];
+    let n = 0;
+    const app = createApp(depsWith({ markers: async () => emptyMarkers } as unknown as StatiqClient, {
+      router: { route: async () => ({ distanceKm: 20, durationMin: 20,
+        geometry: [{ lat: 28.6, lon: 77.2 }, { lat: 28.78, lon: 77.2 }] }) } as never,
+      aiToolCall: async () => {
+        n += 1;
+        return n === 1
+          ? { content: '{not json', toolCalls: [] }
+          : { content: '{"chosenStationIds":[]}', toolCalls: [] };
+      },
+      onPlanRunEvent: (event) => { events.push(event); },
+    }));
+    const job = await startJob(app);
+    const res = await waitTerminal(app, job, 'succeeded');
+    expect(res.status).toBe(200);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.finalAnswerEvents).toEqual([
+      { reason: 'invalid_final_json', contentType: 'string', contentLength: 9 },
+    ]);
+    expect(await res.text()).not.toContain('invalid_final_json');
+  });
+
 });
 
 describe('job progress evidence', () => {

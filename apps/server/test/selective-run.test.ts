@@ -156,3 +156,110 @@ describe('AI-first selective run', () => {
     expect(calls).toBe(5);
   });
 });
+
+describe('final-answer host contract', () => {
+  const call = { id: 'c', type: 'function',
+    function: { name: 'get_station_details', arguments: '{"ids":[42]}' } } as const;
+  const toolReply = { content: null, toolCalls: [call] };
+  const finalReply = (ids: number[]) => ({
+    content: JSON.stringify({ chosenStationIds: ids, notes: '' }), toolCalls: [],
+  });
+  const makeDeps = (distanceKm: number, stationCount: number, aiToolCall: never) => ({
+    ai: { baseUrl: 'https://ai.test/v1', apiKey: 'k', model: 'm' },
+    aiToolCall,
+    router: { route: async () => ({ distanceKm, durationMin: distanceKm,
+      geometry: [{ lat: 0, lon: 0 }, { lat: distanceKm / 111.32, lon: 0 }] }) } as never,
+    statiq: {
+      markers: async () => ({ ok: true, live: true, retained: false, source: 'test',
+        count: stationCount, stations: stationCount > 0 ? [{
+          stationId: 42, name: station.name, lat: station.lat, lon: 0,
+          address: null, accessType: 1, isCommunityListed: false, stationUrl: '',
+        }] : [] }),
+      detailsWithMeta: async () => ({ response: { ok: true, live: true,
+        retained: false, source: 'test', station }, fetchedAt: new Date() }),
+    } as never,
+    origin: { label: 'A', lat: 0, lon: 0 },
+    destination: { label: 'B', lat: distanceKm / 111.32, lon: 0 },
+    via: [], resolved: resolveVehicle(), planOptions: distanceKm > 100 ? { startSocPct: 50 } : {},
+    budget: { deadlineMs: 600_000, maxUpstreamCalls: 100 },
+  });
+
+  it('recovers from bad JSON to tool call and a validated final answer', async () => {
+    let n = 0;
+    const replies = [
+      { content: '{not json', toolCalls: [] },
+      toolReply,
+      finalReply([42]),
+    ];
+    const result = await runSelective(makeDeps(285, 1, (async () => replies[n++]) as never));
+    expect(n).toBe(3);
+    expect(result.plan.stops.map((s) => s.station.stationId)).toEqual([42]);
+    expect(result.diagnostics.detailChecksStarted).toBe(1);
+    expect(result.diagnostics.finalAnswerEvents).toEqual([
+      { reason: 'invalid_final_json', contentType: 'string', contentLength: 9 },
+    ]);
+  });
+
+  it('recovers from wrong shape to a valid zero-stop answer', async () => {
+    let n = 0;
+    const replies = [
+      { content: '{"chosenStationIds":"42"}', toolCalls: [] },
+      finalReply([]),
+    ];
+    const result = await runSelective(makeDeps(20, 0, (async () => replies[n++]) as never));
+    expect(n).toBe(2);
+    expect(result.plan.stops).toHaveLength(0);
+    expect(result.diagnostics.finalAnswerEvents?.[0]?.reason).toBe('invalid_final_shape');
+  });
+
+  it('keeps repeated invalid answers bounded', async () => {
+    let n = 0;
+    const err = await runSelective(makeDeps(20, 0, (async () => {
+      n += 1;
+      return { content: '{not json', toolCalls: [] };
+    }) as never)).catch((e: unknown) => e);
+    expect(n).toBe(4);
+    expect(err).toMatchObject({ name: 'SelectiveRunError' });
+    expect((err as { diagnostics: { finalAnswerEvents: unknown[] } }).diagnostics.finalAnswerEvents)
+      .toHaveLength(4);
+  });
+
+  it('accepts a first-turn zero-stop answer on a reachable route', async () => {
+    let n = 0;
+    const result = await runSelective(makeDeps(20, 0, (async () => {
+      n += 1;
+      return finalReply([]);
+    }) as never));
+    expect(n).toBe(1);
+    expect(result.plan.stops).toHaveLength(0);
+    expect(result.diagnostics.finalAnswerEvents).toHaveLength(0);
+  });
+
+  it('rejects unknown IDs without treating valid JSON as a contract violation', async () => {
+    let n = 0;
+    const replies = [finalReply([999999]), toolReply, finalReply([42])];
+    const result = await runSelective(makeDeps(285, 1, (async () => replies[n++]) as never));
+    expect(n).toBe(3);
+    expect(result.plan.stops.map((s) => s.station.stationId)).toEqual([42]);
+    expect(result.diagnostics.finalAnswerEvents).toHaveLength(0);
+  });
+
+  it('hard-rejects finish_reason length before contract handling', async () => {
+    let calls = 0;
+    const aiFetch = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ choices: [{
+        message: { content: '{"chosenStationIds":[]}' }, finish_reason: 'length',
+      }] }), { status: 200 });
+    }) as typeof fetch;
+    const deps = makeDeps(20, 0, undefined as never);
+    const err = await runSelective({ ...deps, aiToolCall: undefined,
+      ai: { ...deps.ai, fetchImpl: aiFetch } }).catch((e: unknown) => e) as Error & {
+        cause?: { reason?: string }; diagnostics: { finalAnswerEvents: unknown[] };
+      };
+    expect(calls).toBe(1);
+    expect(err.name).toBe('SelectiveRunError');
+    expect(err.cause?.reason).toBe('output_limit');
+    expect(err.diagnostics.finalAnswerEvents).toHaveLength(0);
+  });
+});

@@ -44,10 +44,9 @@ import {
   type RunCoverageSnapshot,
 } from '@indeev/core';
 import { PlanJobRegistry, type PlanJobControls } from './plan-job.js';
-import { runSelective } from './selective-run.js';
-import type { AiToolCall } from './ai-provider.js';
-import { SelectiveRunError } from './selective-run.js';
+import { runSelective, SelectiveRunError, type FinalAnswerDiagnostic } from './selective-run.js';
 import { SingleRunSlot } from './run-slot.js';
+import type { AiToolCall } from './ai-provider.js';
 import { DEFAULT_ALLOWED_WEB_ORIGINS } from './env.js';
 import { validSavedPlanMetadata } from './saved-plan-validation.js';
 
@@ -76,6 +75,7 @@ export interface AppDeps {
     hostReasons: Array<{ stationId: number; reasons: string[] }>;
     detailChecksStarted: number;
     detailChecksSettled: number;
+    finalAnswerEvents?: FinalAnswerDiagnostic[];
   }) => void;
   /** AI planning config: all three set = enabled. Off by default. */
   ai?: { baseUrl: string; apiKey: string; model: string };
@@ -198,7 +198,8 @@ function emitPlanRunEvent(
   deps: AppDeps,
   outcome: string,
   diagnostics: { hostReasons: Array<{ stationId: number; reasons: string[] }>;
-    detailChecksStarted: number; detailChecksSettled: number },
+    detailChecksStarted: number; detailChecksSettled: number;
+    finalAnswerEvents?: FinalAnswerDiagnostic[] },
 ): void {
   try {
     deps.onPlanRunEvent?.({
@@ -206,6 +207,8 @@ function emitPlanRunEvent(
       hostReasons: diagnostics.hostReasons.slice(0, 25),
       detailChecksStarted: diagnostics.detailChecksStarted,
       detailChecksSettled: diagnostics.detailChecksSettled,
+      ...(diagnostics.finalAnswerEvents && diagnostics.finalAnswerEvents.length > 0
+        ? { finalAnswerEvents: diagnostics.finalAnswerEvents.slice(0, 5) } : {}),
     });
   } catch { /* diagnostics never alter the run */ }
 }

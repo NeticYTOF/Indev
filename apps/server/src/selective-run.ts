@@ -47,6 +47,20 @@ const tool: ChatToolDefinition = {
 function parseArgs(raw: string): unknown {
   try { return JSON.parse(raw) as unknown; } catch { return null; }
 }
+function parseFinalAnswer(raw: string | null | undefined):
+  { ok: true; value: unknown } | { ok: false } {
+  if (typeof raw !== 'string') return { ok: false };
+  try { return { ok: true, value: JSON.parse(raw) as unknown }; } catch { return { ok: false }; }
+}
+const FINAL_SCHEMA_REMINDER =
+  'Final answer must be one JSON object with chosenStationIds (an array of integer station IDs, ' +
+  'possibly empty) and optional notes (string). No markdown or prose. ' +
+  'Call get_station_details first if live facts are needed.';
+export type FinalAnswerDiagnostic = {
+  reason: 'invalid_final_json' | 'invalid_final_shape';
+  contentType: string;
+  contentLength: number;
+};
 export class SelectiveRunError extends Error {
   constructor(message: string, readonly diagnostics: SelectiveRunResult['diagnostics']) {
     super(message);
@@ -73,6 +87,8 @@ export interface SelectiveRunResult {
     failures: ProviderFailureReport;
     /** Host-only: station IDs and reason codes, never sent to the model. */
     hostReasons: Array<{ stationId: number; reasons: string[] }>;
+    /** Host-only final-answer contract evidence; never raw content. */
+    finalAnswerEvents?: FinalAnswerDiagnostic[];
   };
 }
 type CandidateRow = [number, string, number, number, string | null, number | null, boolean | null];
@@ -111,6 +127,7 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
     candidatesPlanned: 0, candidatesProcessed: 0, candidatesDetailed: 0,
     detailChecksStarted: 0, detailChecksSettled: 0,
     hostReasons: [] as Array<{ stationId: number; reasons: string[] }>,
+    finalAnswerEvents: [] as FinalAnswerDiagnostic[],
   };
   const diag = (): SelectiveRunResult['diagnostics'] => ({
     observedAttempts: runBudget.completedAttempts,
@@ -154,7 +171,8 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
       'If the route is already reachable at the required arrival charge, choose no stops and skip detail fetches. ' +
       'If no certified charger is available and both unique checks and tool rounds remain, and unchecked on-route IDs exist, inspect different unchecked IDs in batches of at most five. ' +
       'Never retry memoized IDs, never stop at the first unsuitable shortlist, and never claim the route is infeasible. ' +
-      'Finish with JSON {"chosenStationIds":number[],"notes":string}.' },
+      'Finish with one JSON object and no tool call: {"chosenStationIds":[],"notes":""}. ' +
+      'Replace the empty array with positive integer IDs only after live facts are verified; no markdown or prose.' },
     { role: 'user', content: JSON.stringify({
       vehicle: deps.resolved.config,
       resolved: {
@@ -188,10 +206,26 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
       throw new SelectiveRunError(lastReason ? `${lastReason} (${protocol})` : protocol, diag());
     }
     if (calls.length === 0) {
-      const choice = typeof reply.content === 'string'
-        ? parseArgs(reply.content) as { chosenStationIds?: unknown; notes?: unknown } | null
-        : null;
-      if (!choice || !Array.isArray(choice.chosenStationIds)) break;
+      const parsed = parseFinalAnswer(reply.content);
+      const finalObject = parsed.ok && typeof parsed.value === 'object' && parsed.value !== null &&
+        !Array.isArray(parsed.value) ? parsed.value : null;
+      const ids = finalObject && 'chosenStationIds' in finalObject ? finalObject.chosenStationIds : undefined;
+      const notes = finalObject && 'notes' in finalObject ? finalObject.notes : undefined;
+      if (!Array.isArray(ids) || (notes !== undefined && typeof notes !== 'string')) {
+        const reason = !parsed.ok ? 'invalid_final_json' : 'invalid_final_shape';
+        const raw = reply.content;
+        diagState.finalAnswerEvents.push({
+          reason,
+          contentType: typeof raw === 'string' ? 'string' : raw === null ? 'null' : typeof raw,
+          contentLength: typeof raw === 'string' ? raw.length : 0,
+        });
+        if (diagState.finalAnswerEvents.length > 5) diagState.finalAnswerEvents.shift();
+        lastReason = reason;
+        messages.push({ role: 'assistant', content: 'final answer withheld: contract violation' });
+        messages.push({ role: 'user', content: FINAL_SCHEMA_REMINDER });
+        continue;
+      }
+      const choice = { chosenStationIds: ids, notes };
       const usable = [...hydrated.values()];
       const totalKm = discovery.route.geometry.length > 0
         ? cumulativeKm(discovery.route.geometry).at(-1) ?? discovery.route.distanceKm
