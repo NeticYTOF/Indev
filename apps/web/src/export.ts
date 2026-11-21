@@ -29,6 +29,11 @@ function projectOntoPolyline(
  * The file plays in any browser; it can be shared as-is.
  */
 import type { TripPlan } from '@indeev/core';
+import { formatInr } from './format.js';
+
+function finiteNumeric(value: unknown, max = Number.MAX_SAFE_INTEGER): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= max ? value : null;
+}
 
 export function buildAnimatedExportSvg(plan: TripPlan): string {
   // project geometry to a 1200x630 viewBox with generous margins
@@ -98,13 +103,15 @@ export function buildAnimatedExportSvg(plan: TripPlan): string {
     })
     .join('');
 
+  const distanceKm = finiteNumeric(plan.routeDistanceKm);
+  const finalSocPct = finiteNumeric(plan.totals.finalSocPct, 100);
   const stats = [
-    { label: 'Distance', value: `${Math.round(plan.routeDistanceKm)} km` },
+    { label: 'Distance', value: distanceKm == null ? '—' : `${Math.round(distanceKm)} km` },
     { label: 'Total time', value: formatMin(plan.totals.totalTimeMin) },
     { label: 'Charging stops', value: String(plan.stops.length) },
     { label: 'Charging time', value: formatMin(plan.totals.chargeTimeMin) },
-    { label: 'Est. cost', value: plan.totals.estPriceInr != null ? `Rs. ${Math.round(plan.totals.estPriceInr).toLocaleString('en-IN')}` : '—' },
-    { label: 'Arrival charge', value: `${Math.round(plan.totals.finalSocPct)}%` },
+    { label: 'Est. cost', value: formatInr(plan.totals.estPriceInr) },
+    { label: 'Arrival charge', value: finalSocPct == null ? '—' : `${Math.round(finalSocPct)}%` },
   ];
 
   const statBlocks = stats
@@ -128,6 +135,9 @@ export function buildAnimatedExportSvg(plan: TripPlan): string {
     + (plan.vehicle.realWorldRangeKm ? ` · real-world ${plan.vehicle.realWorldRangeKm} km` : '')
     + (plan.source === 'synthetic' ? ' · SYNTHETIC DATA (MOCK) — SCHEMATIC GEOMETRY' : '');
 
+  const plannedOn = typeof plan.createdAt === 'string' && Number.isFinite(Date.parse(plan.createdAt))
+    ? new Date(plan.createdAt).toLocaleDateString('en-IN')
+    : '—';
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" font-family="Inter, sans-serif">
   <title>${escapeXml(fullRouteTitle)}</title>
   <rect width="${W}" height="${H}" fill="#0E0E10"/>
@@ -162,7 +172,7 @@ export function buildAnimatedExportSvg(plan: TripPlan): string {
 
   <line x1="${padX}" y1="${H - 100}" x2="${W - padX}" y2="${H - 100}" stroke="#34322E" stroke-width="1"/>
   <g class="fade">${statBlocks}</g>
-  <text class="fade" x="${padX}" y="${H - 16}" font-size="11" fill="#88837B">IndEV — planned ${escapeXml(new Date(plan.createdAt).toLocaleDateString('en-IN'))}${plan.status === 'degraded' ? ' · partial coverage' : ''}${plan.source === 'synthetic' ? ' · synthetic schematic, not live geometry' : ''}</text>
+  <text class="fade" x="${padX}" y="${H - 16}" font-size="11" fill="#88837B">IndEV — planned ${escapeXml(plannedOn)}${plan.status === 'degraded' ? ' · partial coverage' : ''}${plan.source === 'synthetic' ? ' · synthetic schematic, not live geometry' : ''}</text>
 </svg>`;
 }
 
@@ -180,8 +190,10 @@ export function downloadAnimatedExport(plan: TripPlan): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function formatMin(min: number): string {
-  const m = Math.round(min);
+function formatMin(min: unknown): string {
+  const safe = finiteNumeric(min);
+  if (safe == null) return '—';
+  const m = Math.round(safe);
   const h = Math.floor(m / 60);
   const r = m % 60;
   return h > 0 ? `${h} h ${r > 0 ? `${r} min` : ''}`.trim() : `${m} min`;

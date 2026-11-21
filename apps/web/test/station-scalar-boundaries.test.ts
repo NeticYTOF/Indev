@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { formatReviewCount, lastUsedLabel } from '../src/format.js';
+import { formatInr } from '../src/format.js';
 import { stationDirectionsUrl, routeDirectionsUrl, routeDirectionsLinks } from '../src/safe-url.js';
 
 describe('station scalar display boundaries', () => {
@@ -10,6 +11,13 @@ describe('station scalar display boundaries', () => {
   });
   it.each([null, undefined, NaN, Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '128', '<span data-proof>inert</span>', {}, []])('uses unknown rather than markup or an invented zero for %j', value => {
     expect(formatReviewCount(value)).toBe('unknown');
+  });
+  it('formats valid INR zero and Indian grouping', () => {
+    expect(formatInr(0)).toBe('Rs. 0');
+    expect(formatInr(1234567)).toBe('Rs. 12,34,567');
+  });
+  it.each([null, undefined, NaN, Infinity, -1, Number.MAX_SAFE_INTEGER + 1, '128', {}, []])('keeps invalid planned cost %j unavailable', value => {
+    expect(formatInr(value as unknown as number)).toBe('—');
   });
   it('keeps malformed charger entries unknown instead of dereferencing them', () => {
     expect(lastUsedLabel([{ lastUsedOn: '18/11/2026' }])).toBe('18/11/2026');

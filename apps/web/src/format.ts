@@ -21,7 +21,7 @@ export function formatKm(km: number): string {
 
 /** "Rs. 1,234" (Indian digit grouping); null-safe. */
 export function formatInr(rupees: number | null | undefined): string {
-  if (rupees == null) return '—';
+  if (typeof rupees !== 'number' || !Number.isFinite(rupees) || rupees < 0 || rupees > Number.MAX_SAFE_INTEGER) return '—';
   return `Rs. ${Math.round(rupees).toLocaleString('en-IN')}`;
 }
 
