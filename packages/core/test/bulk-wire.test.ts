@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { OsrmRouter } from '../src/router.js';
-import { planTrip } from '../src/planner.js';
+import { planTrip, PlanningError } from '../src/planner.js';
 import {
   StatiqAbortError, StatiqClient, type UpstreamAuditEntry,
 } from '../src/statiq.js';
@@ -458,5 +458,21 @@ describe('real bulk wire lifecycle', () => {
     expect(messageOf(err)).toContain('throttl');
     expect(h.markerCalls).toBe(1);
     expect(h.legacyCalls).toBe(0);
+  });
+
+  it('[planner] terminal snapshot exposes unconfirmed bulk holds distinctly', async () => {
+    const h = harness({ throttleMarkers: true });
+    const err = await planTrip({ router: h.router, statiq: h.client }, O, D(200), OPTS)
+      .catch((e: unknown) => e);
+    const pe = err as PlanningError;
+    expect(pe.code).toBe('not_determined');
+    expect(pe.cause).toBe('throttled');
+    const cov = pe.coverage!;
+    expect(cov.unconfirmedReservations).toBeGreaterThan(0);
+    expect(cov.observedAttempts).toBeLessThan(cov.maxAttempts);
+    expect(cov.candidateInventoryComplete).toBe(false);
+    expect(cov.candidatesPlanned).toBe(0);
+    expect(cov.samplesPlanned).toBeGreaterThan(0);
+    expect('plan' in pe).toBe(false);
   });
 });

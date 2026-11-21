@@ -41,6 +41,7 @@ import {
   type PlaceRef,
   type TripPlan,
   type VehicleSelection,
+  type RunCoverageSnapshot,
 } from '@indeev/core';
 import { planTripDetailed, validateAiChoice, assembleAiPlan, type PlanBundle } from '@indeev/core';
 import { DEFAULT_ALLOWED_WEB_ORIGINS } from './env.js';
@@ -108,6 +109,51 @@ function auditOutcomeFor(err: unknown): string {
     return err.cause ? `${err.code}:${err.cause}` : err.code;
   }
   return 'error';
+}
+
+/**
+ * Admit only OWN, finite, nonnegative numeric fields plus the explicit
+ * boolean. A malformed snapshot is rejected outright: it must never be
+ * presented as truth. No inherited keys, strings, NaN or negatives.
+ */
+function validatedCoverage(value: unknown): RunCoverageSnapshot | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const obj = value as Record<string, unknown>;
+  const own = (key: string): unknown =>
+    Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : undefined;
+  const num = (key: string): number | undefined => {
+    const v = own(key);
+    return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
+  };
+  const samplesPlanned = num('samplesPlanned');
+  const samplesCompleted = num('samplesCompleted');
+  const samplesOk = num('samplesOk');
+  const samplesFailed = num('samplesFailed');
+  const candidatesPlanned = num('candidatesPlanned');
+  const candidatesProcessed = num('candidatesProcessed');
+  const candidatesDetailed = num('candidatesDetailed');
+  const observedAttempts = num('observedAttempts');
+  const maxAttempts = num('maxAttempts');
+  const unconfirmedReservations = num('unconfirmedReservations');
+  const remainingCalls = num('remainingCalls');
+  const remainingEstimateMs = num('remainingEstimateMs');
+  const pacePerCallMs = num('pacePerCallMs');
+  const candidateInventoryComplete = own('candidateInventoryComplete');
+  if (typeof candidateInventoryComplete !== 'boolean' ||
+      samplesPlanned === undefined || samplesCompleted === undefined ||
+      samplesOk === undefined || samplesFailed === undefined ||
+      candidatesPlanned === undefined || candidatesProcessed === undefined ||
+      candidatesDetailed === undefined || observedAttempts === undefined ||
+      maxAttempts === undefined || unconfirmedReservations === undefined ||
+      remainingCalls === undefined || remainingEstimateMs === undefined ||
+      pacePerCallMs === undefined) return undefined;
+  return {
+    samplesPlanned, samplesCompleted, samplesOk, samplesFailed,
+    candidatesPlanned, candidatesProcessed, candidatesDetailed,
+    candidateInventoryComplete,
+    observedAttempts, maxAttempts, unconfirmedReservations,
+    remainingCalls, remainingEstimateMs, pacePerCallMs,
+  };
 }
 
 function safeUpstreamCalls(statiq: StatiqClient): number {
@@ -179,8 +225,14 @@ export function createApp(deps: AppDeps): Hono {
       // audit outcome: the UI needs it to give cause-true guidance (a
       // budget-exhausted run is NOT "the API is throttling - retry now").
       // Absent for cause-less errors (no_route, infeasible).
+      const coverage = validatedCoverage(err.coverage);
       return c.json(
-        { error: err.message, code: err.code, ...(err.cause ? { cause: err.cause } : {}) },
+        {
+          error: err.message,
+          code: err.code,
+          ...(err.cause ? { cause: err.cause } : {}),
+          ...(coverage ? { coverage } : {}),
+        },
         status as never,
       );
     }

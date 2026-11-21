@@ -49,6 +49,7 @@ import {
   type PlanVehicleMeta,
   type StationLiveView,
   type TripPlan,
+  type RunCoverageSnapshot,
 } from './plan-types.js';
 
 export interface PlannerDeps {
@@ -104,6 +105,11 @@ export type NotDeterminedCause =
   | 'candidate-holes'; // per-station lookups failed: impossibility claims unsafe
 
 export class PlanningError extends Error {
+  /**
+   * Additive terminal coverage evidence. Set in ONE place by the
+   * planTripDetailed catch for not_determined outcomes; never a verdict.
+   */
+  coverage?: RunCoverageSnapshot;
   /** Machine-readable outcome for UI/MCP: not_determined is never a plan. */
   constructor(
     message: string,
@@ -233,6 +239,7 @@ export async function planTripDetailed(
     candidatesPlanned: 0,
     candidatesProcessed: 0,
     candidatesDetailed: 0,
+    candidateInventoryComplete: false,
     scanMs: 0,
     detailsStartedAt: null,
   };
@@ -269,17 +276,26 @@ export async function planTripDetailed(
   const bundle = await planCore(deps, origin, destination, opts, vehicle, vehicleMeta, hooks);
   return bundle;
   } catch (err) {
-  if (err instanceof PlanningError) throw err;
-  // Run-fatal upstream stops (first throttle/auth) and per-caller cap
-  // refusals (budget-exhausted; never retroactively cancelling reserved
-  // work) both unwind the run as an honest not_determined
-  if (err instanceof UpstreamRunStoppedError || err instanceof StatiqRunFatalError) {
-    throw notDeterminedFromStop(runBudget, stats);
+  // ONE attachment point: convert wrapper stops into honest not_determined
+  // first, then stamp every not_determined outcome. Diagnostic work is
+  // fenced so it can never change execution, code, cause or message.
+  let outcome: unknown = err;
+  if (!(err instanceof PlanningError)) {
+    // Run-fatal upstream stops (first throttle/auth) and per-caller cap
+    // refusals (budget-exhausted; never retroactively cancelling reserved
+    // work) both unwind the run as an honest not_determined
+    if (err instanceof UpstreamRunStoppedError || err instanceof StatiqRunFatalError) {
+      outcome = notDeterminedFromStop(runBudget, stats);
+    } else if (isAbortLike(err)) {
+      outcome = notDeterminedDeadline(runBudget, stats);
+    }
   }
-  if (isAbortLike(err)) {
-    throw notDeterminedDeadline(runBudget, stats);
+  if (outcome instanceof PlanningError && outcome.code === 'not_determined' &&
+      outcome.coverage === undefined) {
+    try { outcome.coverage = snapshotCoverage(stats, runBudget); }
+    catch { /* diagnostics never alter execution or verdicts */ }
   }
-  throw err;
+  throw outcome;
   } finally {
   // Cancellation cleanup: never let a generous deadline hold the run.
   clearTimeout(deadlineTimer);
@@ -307,6 +323,11 @@ export interface RunProgressStats {
   candidatesProcessed: number;
   /** Candidates successfully detailed into the selection pool. */
   candidatesDetailed: number;
+  /**
+   * True ONLY after scanCorridor resolved. Until then candidate inventory
+   * is unknown, so a 0 count must never read as a complete empty pool.
+   */
+  candidateInventoryComplete: boolean;
   /** Corridor scan phase wall time, ms (set when the scan returns). */
   scanMs: number;
   /** Details-phase start (Date.now() epoch; null until the phase starts). */
@@ -369,6 +390,27 @@ function coverageEvidence(stats: RunProgressStats, budget?: UpstreamBudget): str
   }
   if (timings.length > 0) bits.push(timings.join(', '));
   return bits.length > 0 ? ` ${bits.join('; ')}.` : '';
+}
+
+/** Build ONE terminal coverage snapshot from live counters (diagnostic only). */
+function snapshotCoverage(stats: RunProgressStats, budget: UpstreamBudget): RunCoverageSnapshot {
+  const est = estimateRunWork(stats);
+  return {
+    samplesPlanned: stats.samplesPlanned,
+    samplesCompleted: stats.samplesCompleted,
+    samplesOk: stats.samplesOk,
+    samplesFailed: stats.samplesFailed,
+    candidatesPlanned: stats.candidatesPlanned,
+    candidatesProcessed: stats.candidatesProcessed,
+    candidatesDetailed: stats.candidatesDetailed,
+    candidateInventoryComplete: stats.candidateInventoryComplete,
+    observedAttempts: budget.completedAttempts,
+    maxAttempts: budget.maxAttempts,
+    unconfirmedReservations: budget.reservedButUnknown,
+    remainingCalls: est.remainingCalls,
+    remainingEstimateMs: est.remainingEstimateMs,
+    pacePerCallMs: est.pacePerCallMs,
+  };
 }
 
 /**
@@ -532,6 +574,9 @@ async function planCore(
       hooks.stats.samplesFailed = p.failed;
     },
   });
+  // Inventory is knowable only once the scan CALL resolves. Until this
+  // line, candidatesPlanned=0 means UNKNOWN, never "no candidates found".
+  hooks.stats.candidateInventoryComplete = true;
   const warnings: string[] = [...corridor.warnings];
   // Phase accounting (a completed scan reconciles to the same values the
   // incremental callbacks already carried; the plan-first report arrives

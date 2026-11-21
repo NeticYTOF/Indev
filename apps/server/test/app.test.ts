@@ -1389,3 +1389,39 @@ describe('saved trip stopover wire validation', () => {
     expect(Object.prototype.hasOwnProperty.call(fetched, 'via')).toBe(false);
   });
 });
+
+describe('not_determined coverage contract', () => {
+  it('returns additive typed coverage on failure with no plan', async () => {
+    // OFFLINE: a fatal cap stop from a double, never a live provider call.
+    const statiq = {
+      markers: async (): Promise<StatiqMarkersResponse> => {
+        throw new UpstreamRunStoppedError('budget-exhausted', 1, 1);
+      },
+    } as unknown as StatiqClient;
+    const deps = await makeDeps({
+      planRunBudget: { deadlineMs: 60_000, maxUpstreamCalls: 1 },
+      createStatiq: () => statiq,
+    });
+    const res = await createApp(deps).request('/api/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: ORIGIN, destination: DEST }),
+    });
+    expect(res.status).toBe(422);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body.code).toBe('not_determined');
+    expect(body.cause).toBe('budget-exhausted');
+    expect(body.plan).toBeUndefined();
+    const cov = body.coverage as Record<string, unknown>;
+    expect(cov.candidateInventoryComplete).toBe(false);
+    for (const [key, value] of Object.entries(cov)) {
+      if (key === 'candidateInventoryComplete') {
+        expect(typeof value).toBe('boolean');
+      } else {
+        expect(typeof value).toBe('number');
+        expect(Number.isFinite(value)).toBe(true);
+        expect(value as number).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+});

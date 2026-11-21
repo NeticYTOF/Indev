@@ -189,6 +189,45 @@ export interface PlanRunBudget {
   maxUpstreamCalls: number;
 }
 
+/**
+ * Structured, terminal coverage evidence attached to `not_determined`
+ * planning errors. Advisory only: these numbers report what THIS bounded
+ * run observed, never a route verdict. `candidateInventoryComplete` is the
+ * only claim about the discovered pool, and stays false until the corridor
+ * scan CALL returns - a 0 candidate count during the scan is unknown, not
+ * an empty inventory.
+ */
+export interface RunCoverageSnapshot {
+  /** Marker sample points planned by the corridor scan (plan-first). */
+  samplesPlanned: number;
+  /** Samples with a response received (ok or failed); never a dispatch count. */
+  samplesCompleted: number;
+  samplesOk: number;
+  samplesFailed: number;
+  /** Unique candidate pool of a COMPLETED scan; 0/unknown while in flight. */
+  candidatesPlanned: number;
+  /** Candidate lookups COMPLETED (fetched, empty or failed). */
+  candidatesProcessed: number;
+  candidatesDetailed: number;
+  /** True only once scanCorridor resolved; false during an in-flight/aborted scan. */
+  candidateInventoryComplete: boolean;
+  /** Observed upstream attempts (unresolved bulk holds excluded). */
+  observedAttempts: number;
+  maxAttempts: number;
+  /** Reserved but unconfirmed bulk attempts, held fail-closed. */
+  unconfirmedReservations: number;
+  /**
+   * Advisory remaining calls (>= 0). While candidateInventoryComplete is
+   * false this is only the MINIMUM known remaining samples: undiscovered
+   * candidates are excluded, so it is NOT the full-coverage total.
+   */
+  remainingCalls: number;
+  /** Advisory sustained-pacing wall estimate (ms); meaningful only with a
+   *  known inventory, and never a strict bound. */
+  remainingEstimateMs: number;
+  /** Assumed per-call pace used for that estimate, ms. */
+  pacePerCallMs: number;
+}
 export interface PlanOptions {
   startSocPct?: number;
   /** Ordered user stopovers; validated/copied at plan start. */

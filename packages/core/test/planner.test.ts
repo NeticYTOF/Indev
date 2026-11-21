@@ -672,6 +672,53 @@ describe('fail-closed scan integrity', () => {
   });
 });
 
+describe('not_determined terminal coverage snapshot', () => {
+  const snapStations: StationSpec[] = Array.from({ length: 14 }, (_, i) => ({
+    id: 800 + i,
+    name: `Statiq Snap ${i}`,
+    chainageKm: 50 * (i + 1),
+  }));
+
+  it('mid-scan exhaustion reports unknown inventory and minimum known remaining', async () => {
+    const err = await planTrip(
+      { router: fakeRouter(700), statiq: fakeStatiq(snapStations) }, O, D(700),
+      { runBudget: { deadlineMs: 60_000, maxUpstreamCalls: 10 } },
+    ).catch((e) => e);
+    const pe = err as PlanningError;
+    expect(pe).toBeInstanceOf(PlanningError);
+    expect(pe.code).toBe('not_determined');
+    expect(pe.cause).toBe('budget-exhausted');
+    const cov = pe.coverage!;
+    expect(cov.candidateInventoryComplete).toBe(false);
+    expect(cov.candidatesPlanned).toBe(0);
+    expect(cov.samplesPlanned).toBe(60);
+    expect(cov.samplesCompleted).toBeGreaterThan(0);
+    expect(cov.samplesCompleted).toBeLessThan(60);
+    expect(cov.remainingCalls).toBeGreaterThan(0);
+    expect('plan' in pe).toBe(false);
+  });
+
+  it('exhaustion after a completed scan reports a known inventory', async () => {
+    // 60 marker samples then one detail lookup: the cap lands in details.
+    const err = await planTrip(
+      { router: fakeRouter(700), statiq: fakeStatiq(snapStations) }, O, D(700),
+      { runBudget: { deadlineMs: 60_000, maxUpstreamCalls: 61 } },
+    ).catch((e) => e);
+    const cov = (err as PlanningError).coverage!;
+    expect(cov.candidateInventoryComplete).toBe(true);
+    expect(cov.candidatesPlanned).toBeGreaterThan(1);
+    expect(cov.samplesCompleted).toBe(cov.samplesPlanned);
+    expect(cov.observedAttempts).toBe(cov.maxAttempts);
+    expect(cov.unconfirmedReservations).toBe(0);
+    expect(cov.remainingCalls).toBeGreaterThan(0);
+  });
+
+  it('a successful plan carries no coverage field', async () => {
+    const plan = await planTrip({ router: fakeRouter(284.9), statiq: fakeStatiq([]) }, O, D(284.9));
+    expect('coverage' in plan).toBe(false);
+  });
+});
+
 /**
  * INCOMPLETE CANDIDATE DATA NEVER BECOMES AN IMPOSSIBILITY CLAIM.
  *
