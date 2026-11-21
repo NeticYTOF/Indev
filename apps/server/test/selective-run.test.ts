@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { resolveVehicle } from '@indeev/core';
+import { resolveVehicle, StatiqRunFatalError } from '@indeev/core';
 import { runSelective } from '../src/selective-run.js';
 
 const station = {
@@ -348,4 +348,90 @@ describe('final-answer host contract', () => {
     expect(toolText).not.toMatch(/UNIQUE_PRIVATE_SENTINEL|health|status|available|occupied|charging|address|connector/i);
   });
 
+
+describe('progressive40 detail coverage', () => {
+  const lats = Array.from({ length: 40 }, (_, i) => 0.18 + i * 0.45);
+  const markerStations = lats.map((lat, i) => ({
+    stationId: i + 1, name: `Station ${i + 1}`, lat, lon: 0,
+    address: null, accessType: 1, isCommunityListed: false, stationUrl: '',
+  }));
+  const detailFor = (id: number) => ({
+    response: { ok: true, live: true, retained: false, source: 'test',
+      station: { ...station, stationId: id, lat: lats[id - 1]!, chargers: station.chargers.map((c) => ({ ...c })) } },
+    fetchedAt: new Date(),
+  });
+
+  it('fetchs 40 distinct IDs, never a 41st, and stops after nine AI turns', async () => {
+    let calls = 0;
+    const detail = vi.fn(async (id: number) => detailFor(id));
+    const base = makeDeps(2000, 1, (async () => {
+      calls += 1;
+      if (calls <= 8) {
+        const first = (calls - 1) * 5 + 1;
+        return { content: null, toolCalls: [{ id: `t${calls}`, type: 'function',
+          function: { name: 'get_station_details',
+            arguments: JSON.stringify({ ids: Array.from({ length: 5 }, (_, i) => first + i) }) } }] };
+      }
+      return { content: '{"chosenStationIds":[]}', toolCalls: [] };
+    }) as never);
+    const err = await runSelective({ ...base, coverageProfile: 'progressive40', statiq: {
+      markers: async () => ({ ok: true, live: true, retained: false, source: 'test',
+        count: 40, stations: markerStations }),
+      detailsWithMeta: detail,
+    } as never }).catch((e: unknown) => e) as Error & {
+      diagnostics: {
+        stationEvidence: { total: number; sampled: number; omitted: number; sampleLimit: number };
+        matchedRuleCounts: Record<string, number>;
+      };
+    };
+    expect(calls).toBe(9);
+    expect(detail).toHaveBeenCalledTimes(40);
+    expect(detail.mock.calls.every((args) => Number(args[0]) >= 1 && Number(args[0]) <= 40)).toBe(true);
+    expect(err.name).toBe('SelectiveRunError');
+    expect(err.diagnostics.stationEvidence).toEqual({
+      total: 40, sampled: 20, omitted: 20, sampleLimit: 20,
+    });
+    expect(err.diagnostics.matchedRuleCounts.certified).toBe(40);
+  });
+
+  it('returns early on a valid first-turn zero-stop answer under progressive40', async () => {
+    let calls = 0;
+    const result = await runSelective({ ...makeDeps(20, 0, (async () => {
+      calls += 1;
+      return { content: '{"chosenStationIds":[]}', toolCalls: [] };
+    }) as never), coverageProfile: 'progressive40' });
+    expect(calls).toBe(1);
+    expect(result.plan.stops).toHaveLength(0);
+  });
+
+  it('stops without correction when the caller aborts', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let calls = 0;
+    const err = await runSelective({ ...makeDeps(285, 1, (async () => {
+      calls += 1;
+      return { content: '{"chosenStationIds":[]}', toolCalls: [] };
+    }) as never), signal: controller.signal }).catch((e: unknown) => e);
+    expect(calls).toBe(0);
+    expect(err).toMatchObject({ name: 'SelectiveRunError' });
+  });
+
+  it('does not issue another AI turn after a fatal detail error', async () => {
+    let calls = 0;
+    const base = makeDeps(285, 1, (async () => {
+      calls += 1;
+      return { content: null, toolCalls: [{ id: 'c1', type: 'function',
+        function: { name: 'get_station_details', arguments: '{"ids":[42]}' } }] };
+    }) as never);
+    const err = await runSelective({ ...base, statiq: {
+      markers: async () => ({ ok: true, live: true, retained: false, source: 'test', count: 1,
+        stations: [{ stationId: 42, name: station.name, lat: 1.347, lon: 0,
+          address: null, accessType: 1, isCommunityListed: false, stationUrl: '' }] }),
+      detailsWithMeta: async () => { throw new StatiqRunFatalError('auth', 403, '/stations/details', ''); },
+    } as never }).catch((e: unknown) => e) as Error & { cause?: Error };
+    expect(calls).toBe(1);
+    expect(err.name).toBe('SelectiveRunError');
+    expect(err.cause?.name).toBe('StatiqRunFatalError');
+  });
+});
 });

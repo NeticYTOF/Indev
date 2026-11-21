@@ -19,6 +19,11 @@ export interface SelectiveToolBudget {
 export const DEFAULT_SELECTIVE_TOOL_BUDGET: SelectiveToolBudget = {
   maxRounds: 4, maxToolCalls: 12, maxIdsPerCall: 5, maxTotalIds: 20,
 };
+export type SelectiveCoverageProfile = 'standard20' | 'progressive40';
+export const SELECTIVE_TOOL_BUDGETS: Record<SelectiveCoverageProfile, SelectiveToolBudget> = {
+  standard20: { maxRounds: 4, maxToolCalls: 12, maxIdsPerCall: 5, maxTotalIds: 20 },
+  progressive40: { maxRounds: 8, maxToolCalls: 12, maxIdsPerCall: 5, maxTotalIds: 40 },
+};
 
 export interface AdmittedToolCall {
   ids: number[];
@@ -43,6 +48,9 @@ export class SelectiveToolLedger {
   constructor(allowed: ReadonlySet<number>, budget: SelectiveToolBudget = DEFAULT_SELECTIVE_TOOL_BUDGET) {
     for (const value of [budget.maxRounds, budget.maxToolCalls, budget.maxIdsPerCall, budget.maxTotalIds]) {
       if (!positiveInt(value)) throw new Error('Selective tool budget requires positive safe integers');
+    }
+    if (budget.maxToolCalls * budget.maxIdsPerCall < budget.maxTotalIds) {
+      throw new Error('Selective tool budget cannot admit its total IDs within its call limit');
     }
     this.pool = new Set(allowed);
     this.limits = { ...budget };

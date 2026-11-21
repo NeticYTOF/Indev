@@ -46,6 +46,7 @@ import {
 import { PlanJobRegistry, type PlanJobControls } from './plan-job.js';
 import { runSelective, SelectiveRunError, type FinalAnswerDiagnostic } from './selective-run.js';
 import { SingleRunSlot } from './run-slot.js';
+import { SELECTIVE_TOOL_BUDGETS, type SelectiveCoverageProfile } from './selective-tools.js';
 import type { AiToolCall } from './ai-provider.js';
 import type { HostStationEvidence } from './host-connector-evidence.js';
 import { DEFAULT_ALLOWED_WEB_ORIGINS } from './env.js';
@@ -78,7 +79,14 @@ export interface AppDeps {
     detailChecksSettled: number;
     finalAnswerEvents?: FinalAnswerDiagnostic[];
     stationDiagnostics?: HostStationEvidence[];
+    coverageProfile: SelectiveCoverageProfile;
+    hostReasonsTotal: number;
+    stationEvidence: { total: number; sampled: number; omitted: number; sampleLimit: number };
+    matchedRuleCounts: Record<string, number>;
+    capStateCounts: Record<string, number>;
+    hostReasonsOmitted: number;
   }) => void;
+  selectiveProfile?: SelectiveCoverageProfile;
   /** AI planning config: all three set = enabled. Off by default. */
   ai?: { baseUrl: string; apiKey: string; model: string };
   /** Injectable for tests; defaults to the real provider call. */
@@ -202,12 +210,24 @@ function emitPlanRunEvent(
   diagnostics: { hostReasons: Array<{ stationId: number; reasons: string[] }>;
     detailChecksStarted: number; detailChecksSettled: number;
     finalAnswerEvents?: FinalAnswerDiagnostic[];
-    stationDiagnostics?: HostStationEvidence[] },
+    stationDiagnostics?: HostStationEvidence[];
+    coverageProfile: SelectiveCoverageProfile;
+    hostReasonsTotal: number;
+    stationEvidence: { total: number; sampled: number; omitted: number; sampleLimit: number };
+    matchedRuleCounts: Record<string, number>;
+    capStateCounts: Record<string, number>;
+    hostReasonsOmitted: number },
 ): void {
   try {
     deps.onPlanRunEvent?.({
       outcome,
       hostReasons: diagnostics.hostReasons.slice(0, 25),
+      coverageProfile: diagnostics.coverageProfile,
+      hostReasonsTotal: diagnostics.hostReasonsTotal,
+      stationEvidence: diagnostics.stationEvidence,
+      matchedRuleCounts: diagnostics.matchedRuleCounts,
+      capStateCounts: diagnostics.capStateCounts,
+      hostReasonsOmitted: diagnostics.hostReasonsOmitted,
       detailChecksStarted: diagnostics.detailChecksStarted,
       detailChecksSettled: diagnostics.detailChecksSettled,
       ...(diagnostics.finalAnswerEvents && diagnostics.finalAnswerEvents.length > 0
@@ -268,6 +288,7 @@ async function runLiveAiPlan(
       origin: params.origin, destination: params.destination, via: params.via,
       resolved: params.resolved, planOptions,
       customRequest: params.customRequest, budget: controls.budget,
+      coverageProfile: deps.selectiveProfile,
       signal: controls.signal,
       onStage: (stage, processed, planned, counts) => {
         if (stage === 'discovery') {
@@ -433,6 +454,8 @@ export function createApp(deps: AppDeps): Hono {
         deadlineMs: runBudget.deadlineMs,
         retries: statiqRetries ?? 2, // 2 = the StatiqClient default
       },
+      selectiveProfile: deps.selectiveProfile ?? 'standard20',
+      toolBudget: SELECTIVE_TOOL_BUDGETS[deps.selectiveProfile ?? 'standard20'],
     });
   });
 

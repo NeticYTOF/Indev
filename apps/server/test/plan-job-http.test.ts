@@ -287,7 +287,10 @@ describe('process-local job endpoints', () => {
 
   it('logs host reason codes on failure but never in the response body', async () => {
     const events: Array<{ outcome: string; hostReasons: Array<{ reasons: string[] }>;
-      stationDiagnostics?: Array<{ reasons: string[]; rawChargerCount: number }> }> = [];
+      stationDiagnostics?: Array<{ reasons: string[]; rawChargerCount: number }>;
+      coverageProfile: string; hostReasonsTotal: number; hostReasonsOmitted: number;
+      matchedRuleCounts: Record<string, number>; capStateCounts: Record<string, number>;
+      stationEvidence: { total: number; sampled: number; omitted: number; sampleLimit: number } }> = [];
     const broken = {
       markers: async () => ({
         ok: true, live: true, retained: false, source: 'test', count: 1,
@@ -317,6 +320,11 @@ describe('process-local job endpoints', () => {
       reasons: ['schema_invalid'], rawChargerCount: 1, invalidChargerCount: 1,
     });
     expect(JSON.stringify(events[0])).not.toContain('Broken');
+    expect(events[0]).toMatchObject({
+      coverageProfile: 'standard20', hostReasonsTotal: 1, hostReasonsOmitted: 0,
+      matchedRuleCounts: { schema_invalid: 1 }, capStateCounts: { 'no-ccs2-dc': 1 },
+      stationEvidence: { total: 1, sampled: 1, omitted: 0, sampleLimit: 20 },
+    });
   });
   it('forwards sanitized final-answer diagnostics to the private observer', async () => {
     const events: Array<{ outcome: string; finalAnswerEvents?: Array<{ reason: string }> }> = [];

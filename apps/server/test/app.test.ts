@@ -76,6 +76,20 @@ function liveStatiqFake() {
 }
 
 describe('GET /api/health', () => {
+  it('exposes the exact server-owned detail profile without secrets', async () => {
+    const app = createApp(await makeDeps({ mock: true, selectiveProfile: 'progressive40' }));
+    const health = await app.request('/api/health');
+    expect(health.status).toBe(200);
+    const body = await health.json() as {
+      selectiveProfile: string; toolBudget: Record<string, number>;
+    };
+    expect(body.selectiveProfile).toBe('progressive40');
+    expect(body.toolBudget).toEqual({
+      maxRounds: 8, maxToolCalls: 12, maxIdsPerCall: 5, maxTotalIds: 40,
+    });
+    expect(JSON.stringify(body)).not.toMatch(/AI_API_KEY|STATIQ_API_TOKEN/i);
+  });
+
   it.each([450, 5])('uses or rejects a supplied default-vehicle real-world range (%s km)', async (realWorldRangeKm) => {
     const app = createApp(await makeDeps({ mock: true }));
     const res = await app.request('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ origin: ORIGIN, destination: DEST, vehicle: { realWorldRangeKm } }) });

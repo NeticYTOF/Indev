@@ -11,7 +11,8 @@ import {
   type ResolvedVehicle, type StatiqClient, type TripPlan,
 } from '@indeev/core';
 import { chatCompletionWithTools, type AiToolCall, type ChatToolMessage, type ChatToolDefinition } from './ai-provider.js';
-import { factsFromHydrated, SelectiveToolLedger } from './selective-tools.js';
+import { factsFromHydrated, SelectiveToolLedger, SELECTIVE_TOOL_BUDGETS,
+  type SelectiveCoverageProfile, type SelectiveToolBudget } from './selective-tools.js';
 import { buildHostStationEvidence, type HostStationEvidence } from './host-connector-evidence.js';
 import { buildReachabilityGuidance } from './reachability-guidance.js';
 import { observedPowerFromEvidence } from './observed-power.js';
@@ -30,8 +31,13 @@ export interface SelectiveRunDeps {
   budget: PlanRunBudget;
   signal?: AbortSignal;
   onStage?: (stage: string, processed: number, planned: number, counts?: { ok: number; failed: number }) => void;
+  coverageProfile?: SelectiveCoverageProfile;
 }
 
+const STATION_EVIDENCE_SAMPLE_LIMIT = 20;
+function bumpCount(map: Record<string, number>, key: string): void {
+  map[key] = (map[key] ?? 0) + 1;
+}
 const TOOL_NAME = 'get_station_details';
 const tool: ChatToolDefinition = {
   type: 'function',
@@ -93,8 +99,15 @@ export interface SelectiveRunResult {
     /** Host-only final-answer contract evidence; never raw content. */
     finalAnswerEvents?: FinalAnswerDiagnostic[];
     stationDiagnostics?: HostStationEvidence[];
+    coverageProfile: SelectiveCoverageProfile;
+    toolBudget: SelectiveToolBudget;
+    hostReasonsTotal: number;
+    stationEvidence: { total: number; sampled: number; omitted: number; sampleLimit: number };
+    matchedRuleCounts: Record<string, number>;
+    capStateCounts: Record<string, number>;
+    hostReasonsOmitted: number;
   };
-}
+};
 type CandidateRow = [number, string, number, number, string | null, number | null, boolean | null];
 
 /** Lossless compact view of the on-route allowlist. Every field keeps its
@@ -126,6 +139,8 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
   if (deps.signal?.aborted) controller.abort();
   const timer = setTimeout(() => controller.abort(), Math.max(50, deps.budget.deadlineMs));
   const signal = controller.signal;
+  const coverageProfile = deps.coverageProfile === 'progressive40' ? 'progressive40' : 'standard20';
+  const toolBudget = SELECTIVE_TOOL_BUDGETS[coverageProfile];
   const diagState = {
     samplesOk: 0, samplesPlanned: 0, samplesFailed: 0,
     candidatesPlanned: 0, candidatesProcessed: 0, candidatesDetailed: 0,
@@ -133,6 +148,9 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
     hostReasons: [] as Array<{ stationId: number; reasons: string[] }>,
     finalAnswerEvents: [] as FinalAnswerDiagnostic[],
     stationDiagnostics: [] as HostStationEvidence[],
+    stationEvidenceTotal: 0,
+    matchedRuleCounts: {} as Record<string, number>,
+    capStateCounts: {} as Record<string, number>,
   };
   const diag = (): SelectiveRunResult['diagnostics'] => ({
     observedAttempts: runBudget.completedAttempts,
@@ -141,6 +159,17 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
     remainingBudget: Math.max(0, runBudget.maxAttempts - runBudget.attemptsMade),
     ...diagState,
     failures: failures.snapshot(),
+    coverageProfile, toolBudget,
+    hostReasonsTotal: diagState.hostReasons.length,
+    stationEvidence: {
+      total: diagState.stationEvidenceTotal,
+      sampled: diagState.stationDiagnostics.length,
+      omitted: Math.max(0, diagState.stationEvidenceTotal - diagState.stationDiagnostics.length),
+      sampleLimit: STATION_EVIDENCE_SAMPLE_LIMIT,
+    },
+    matchedRuleCounts: { ...diagState.matchedRuleCounts },
+    capStateCounts: { ...diagState.capStateCounts },
+    hostReasonsOmitted: Math.max(0, diagState.hostReasons.length - 25),
   });
   try {
   stage('discovery');
@@ -152,7 +181,7 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
   stage('shortlist', 0, discovery.candidates.length,
     { ok: discovery.samplesOk, failed: discovery.samplesFailed });
   const pool = new Map(discovery.candidates.map((c) => [c.stationId, c]));
-  const ledger = new SelectiveToolLedger(new Set(pool.keys()));
+  const ledger = new SelectiveToolLedger(new Set(pool.keys()), toolBudget);
   const hydrated = new Map<number, PlannerCandidate>();
   const factCache = new Map<number, unknown>();
   const warnings = [...discovery.warnings];
@@ -302,8 +331,13 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
           warnings.push(...h.warnings);
           const evidence = buildHostStationEvidence(
             id, fetched.response, h.reasons, h.candidate !== null, deps.planOptions.maxChargerKw);
+          diagState.stationEvidenceTotal += 1;
+          bumpCount(diagState.matchedRuleCounts, evidence.matchedRule);
+          bumpCount(diagState.capStateCounts, evidence.capState);
           diagState.stationDiagnostics.push(evidence);
-          if (diagState.stationDiagnostics.length > 20) diagState.stationDiagnostics.shift();
+          if (diagState.stationDiagnostics.length > STATION_EVIDENCE_SAMPLE_LIMIT) {
+            diagState.stationDiagnostics.shift();
+          }
           if (h.candidate) {
             hydrated.set(id, h.candidate);
             factCache.set(id, factsFromHydrated(h.candidate, fetched.response.source ?? null,

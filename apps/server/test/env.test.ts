@@ -100,6 +100,22 @@ describe('loadEnv precedence (fixture .env, no API calls)', () => {
   });
 });
 
+describe('selective coverage profile env (strict opt-in)', () => {
+  it('defaults to standard20 when absent', () => {
+    expect(loadEnv(fixtureDir, {}).selectiveProfile).toBe('standard20');
+  });
+
+  it('accepts the explicit progressive40 profile', () => {
+    expect(loadEnv(fixtureDir, { INDEV_SELECTIVE_PROFILE: 'progressive40' }).selectiveProfile)
+      .toBe('progressive40');
+  });
+
+  it('fails loudly on an unknown profile', () => {
+    expect(() => loadEnv(fixtureDir, { INDEV_SELECTIVE_PROFILE: 'unlimited' }))
+      .toThrow(/INDEV_SELECTIVE_PROFILE/);
+  });
+});
+
 describe('explicit bounded planning-budget overrides (defaults preserved)', () => {
   it('ABSENT overrides = defaults byte-identical: undefined fields', () => {
     const env = loadEnv(fixtureDir, {});

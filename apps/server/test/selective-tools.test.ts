@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { DEFAULT_SELECTIVE_TOOL_BUDGET, SELECTIVE_TOOL_BUDGETS, SelectiveToolLedger } from '../src/selective-tools.js';
 import { chatCompletionWithTools, AiProviderError } from '../src/ai-provider.js';
 
 const deps = {
@@ -56,5 +57,32 @@ describe('strict model tool-call boundary', () => {
     controller.abort();
     await expect(pending).rejects.toBeInstanceOf(AiProviderError);
     vi.restoreAllMocks();
+  });
+});
+
+describe('selective coverage profiles', () => {
+  it('keeps the standard profile at 20 unique details and four rounds', () => {
+    expect(DEFAULT_SELECTIVE_TOOL_BUDGET).toEqual({
+      maxRounds: 4, maxToolCalls: 12, maxIdsPerCall: 5, maxTotalIds: 20,
+    });
+    expect(SELECTIVE_TOOL_BUDGETS.standard20).toEqual(DEFAULT_SELECTIVE_TOOL_BUDGET);
+  });
+
+  it('admits 40 unique IDs in five-ID batches under the progressive profile', () => {
+    const budget = SELECTIVE_TOOL_BUDGETS.progressive40;
+    expect(budget).toEqual({
+      maxRounds: 8, maxToolCalls: 12, maxIdsPerCall: 5, maxTotalIds: 40,
+    });
+    const allowed = new Set(Array.from({ length: 41 }, (_, i) => i + 1));
+    const ledger = new SelectiveToolLedger(allowed, budget);
+    for (let group = 0; group < 8; group += 1) {
+      expect(ledger.nextRound()).toBe(true);
+      const ids = Array.from({ length: 5 }, (_, i) => group * 5 + i + 1);
+      expect(ledger.admit({ ids })?.newIds).toEqual(ids);
+    }
+    expect(ledger.admitted.size).toBe(40);
+    expect(ledger.plannedNewIds).toBe(40);
+    expect(ledger.calls).toBe(8);
+    expect(ledger.admit({ ids: [41] })).toBeNull();
   });
 });

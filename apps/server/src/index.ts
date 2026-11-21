@@ -44,6 +44,9 @@ const app = createApp({
   // the same composed object.
   planRunBudget: effectiveRunBudget,
   ...(env.planRetries !== undefined ? { statiqRetries: env.planRetries } : {}),
+  // Server-owned detail profile, selected by INDEV_SELECTIVE_PROFILE.
+  // Accepted values: standard20 (default), progressive40 (explicit opt-in).
+  selectiveProfile: env.selectiveProfile,
   // Per-launch instance identity for the /api/health provenance echo
   // (launcher-generated UUID; absent = null, plain dev launches)
   ...(env.launchId !== undefined ? { launchId: env.launchId } : {}),
