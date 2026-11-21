@@ -149,7 +149,9 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
       'then brand ties in order Statiq, Tata, BPCL, HP, others. ' +
       'A short off-route distance is a preference, not proof of a drivable spur. ' +
       'Hard numeric limits supplied by the host are enforced in code; free-text requests are guidance only, never a verified constraint. ' +
-      'If no candidate can be certified, say so; never claim route impossibility. ' +
+      'If the route is already reachable at the required arrival charge, choose no stops and skip detail fetches. ' +
+      'If no certified charger is available and both unique checks and tool rounds remain, and unchecked on-route IDs exist, inspect different unchecked IDs in batches of at most five. ' +
+      'Never retry memoized IDs, never stop at the first unsuitable shortlist, and never claim the route is infeasible. ' +
       'Finish with JSON {"chosenStationIds":number[],"notes":string}.' },
     { role: 'user', content: JSON.stringify({
       vehicle: deps.resolved.config,
@@ -267,14 +269,34 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
       diagState.candidatesDetailed = hydrated.size;
       toolFactsReady = true;
       stage('details', ledger.actualFetches, ledger.plannedNewIds);
-      messages.push({ role: 'tool', tool_call_id: call.id,
-        content: JSON.stringify({
-          facts: admitted.ids.map((id) => factCache.get(id) ?? { stationId: id, unknown: 'not checked' }),
-          warnings,
-        }) });
+      const examined = ledger.actualFetches;
+      const remainingUnique = Math.max(0, ledger.limits.maxTotalIds - ledger.admitted.size);
+      const remainingRounds = Math.max(0, ledger.limits.maxRounds - ledger.rounds);
+      const unexamined = Math.max(0, pool.size - ledger.admitted.size);
+      const progress = {
+        planningProgress: {
+          examinedDistinctIds: examined,
+          remainingUniqueChecks: remainingUnique,
+          remainingToolRounds: remainingRounds,
+          certifiedStationIds: [...hydrated.keys()],
+          unexaminedCandidateCount: unexamined,
+          nextAction: hydrated.size === 0 && remainingUnique > 0 && remainingRounds > 0 && unexamined > 0
+            ? 'inspect_unchecked_candidates'
+            : 'choose_from_certified_or_report_not_determined',
+        },
+        facts: admitted.ids.map((id) => factCache.get(id) ?? { stationId: id, unknown: 'not checked' }),
+        warnings,
+      };
+      messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(progress) });
     }
   }
-  throw new SelectiveRunError(lastReason ?? 'No certified on-route station set was determined from the examined shortlist.', diag());
+  const unknownNote = lastReason ? `${lastReason} ` : '';
+  throw new SelectiveRunError(
+    `${unknownNote}Bounded search ended: ${ledger.actualFetches} detail checks started, ` +
+    `${ledger.admitted.size} of ${pool.size} unique on-route candidates reserved, ` +
+    `${hydrated.size} certified. This is not determined and is not a verdict that the route is impossible.`,
+    diag(),
+  );
   } catch (err) {
     if (err instanceof SelectiveRunError) throw err;
     const wrapped = new SelectiveRunError(
