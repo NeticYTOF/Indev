@@ -290,20 +290,24 @@ function parseBulkEnvelope(value: unknown, endpoint: BulkEndpoint, path: string)
   };
 }
 
-function markerResponseFromBulkData(data: unknown): StatiqMarkersResponse | null {
-  if (!ownRecord(data) || !hasFreshProvenance(data)) return null;
-  if (ownDataValue(data, 'live') === false || ownDataValue(data, 'retained') === true) return null;
-  if (ownDataValue(data, 'source') !== 'Statiq station markers (live)') return null;
+function markerResponseFromBulkData(
+  data: unknown,
+  onReject?: (reason: BulkProvenanceReason) => void,
+): StatiqMarkersResponse | null {
+  const reject = (reason: BulkProvenanceReason): null => { onReject?.(reason); return null; };
+  if (!ownRecord(data) || !hasFreshProvenance(data)) return reject('item_marker_data');
+  if (ownDataValue(data, 'live') === false || ownDataValue(data, 'retained') === true) return reject('item_marker_data');
+  if (ownDataValue(data, 'source') !== 'Statiq station markers (live)') return reject('item_marker_data');
   const raw = ownDataValue(data, 'stations');
   const declaredCount = ownDataValue(data, 'count');
-  if (!Array.isArray(raw) || !bulkInt(declaredCount) || declaredCount !== raw.length) return null;
+  if (!Array.isArray(raw) || !bulkInt(declaredCount) || declaredCount !== raw.length) return reject('item_marker_data');
   // Ordinary ok with an empty list is NOT the strict raw-confirmed-empty proof.
   // Only a confirmed-empty item may claim zero stations (see build callback).
-  if (raw.length === 0) return null;
+  if (raw.length === 0) return reject('item_marker_data');
   const stations: StatiqMarker[] = [];
   for (const value of raw) {
-    if (!ownRecord(value) || !hasFreshProvenance(value)) return null;
-    if (ownDataValue(value, 'live') === false || ownDataValue(value, 'retained') === true) return null;
+    if (!ownRecord(value) || !hasFreshProvenance(value)) return reject('item_marker_record');
+    if (ownDataValue(value, 'live') === false || ownDataValue(value, 'retained') === true) return reject('item_marker_record');
     const stationId = ownDataValue(value, 'stationId');
     const name = ownDataValue(value, 'name');
     const lat = ownDataValue(value, 'lat');
@@ -311,13 +315,13 @@ function markerResponseFromBulkData(data: unknown): StatiqMarkersResponse | null
     if (!(bulkInt(stationId) && Number.isSafeInteger(stationId) && (stationId as number) > 0) ||
         typeof name !== 'string' ||
         typeof lat !== 'number' || !Number.isFinite(lat) || Math.abs(lat) > 90 ||
-        typeof lon !== 'number' || !Number.isFinite(lon) || Math.abs(lon) > 180) return null;
+        typeof lon !== 'number' || !Number.isFinite(lon) || Math.abs(lon) > 180) return reject('item_marker_identity');
     const address = ownDataValue(value, 'address');
     const accessType = ownDataValue(value, 'accessType');
     const stationUrl = ownDataValue(value, 'stationUrl');
     if ((address !== undefined && address !== null && typeof address !== 'string') ||
         (accessType !== undefined && accessType !== null && !bulkInt(accessType)) ||
-        (stationUrl !== undefined && stationUrl !== null && typeof stationUrl !== 'string')) return null;
+        (stationUrl !== undefined && stationUrl !== null && typeof stationUrl !== 'string')) return reject('item_marker_record');
     stations.push({
       stationId: stationId as number, name, lat, lon,
       address: address === undefined || address === null ? null : address as string,
@@ -362,34 +366,40 @@ function safeNonNegative(value: unknown): number | null {
 /** Rebuild the worker-normalized detail with NO coercion. Malformed identity,
  *  charger/connector power, tariff, health or type fails the item closed
  *  (unknown); absent optional fields remain null. */
-function stationDetailFromBulk(value: unknown): StatiqStationDetail | null {
-  if (!ownRecord(value)) return null;
+function stationDetailFromBulk(
+  value: unknown,
+  onReject?: (reason: BulkProvenanceReason) => void,
+): StatiqStationDetail | null {
+  const reject = (reason: BulkProvenanceReason): null => { onReject?.(reason); return null; };
+  if (!ownRecord(value)) return reject('item_detail_identity');
   const stationId = safePositive(ownDataValue(value, 'stationId'));
   const name = ownDataValue(value, 'name');
   const lat = ownDataValue(value, 'lat');
   const lon = ownDataValue(value, 'lon');
   if (stationId === null || typeof name !== 'string' ||
       typeof lat !== 'number' || !Number.isFinite(lat) ||
-      typeof lon !== 'number' || !Number.isFinite(lon)) return null;
+      typeof lon !== 'number' || !Number.isFinite(lon)) return reject('item_detail_identity');
   const chargersRaw = ownDataValue(value, 'chargers');
-  if (!Array.isArray(chargersRaw)) return null;
+  if (!Array.isArray(chargersRaw)) return reject('item_detail_charger');
   const chargers: StatiqCharger[] = [];
   for (const chargerValue of chargersRaw) {
-    if (!ownRecord(chargerValue)) return null;
+    if (!ownRecord(chargerValue)) return reject('item_detail_charger');
     const chargerId = safePositive(ownDataValue(chargerValue, 'chargerId'));
     const chargerName = ownDataValue(chargerValue, 'name');
     const chargerType = ownDataValue(chargerValue, 'type');
     const kw = ownDataValue(chargerValue, 'kw');
-    if (chargerId === null || typeof chargerName !== 'string' || typeof chargerType !== 'string' ||
-        typeof kw !== 'number' || !Number.isFinite(kw)) return null;
+    if (chargerId === null || typeof chargerName !== 'string' || typeof chargerType !== 'string') {
+      return reject('item_detail_charger');
+    }
+    if (typeof kw !== 'number' || !Number.isFinite(kw)) return reject('item_detail_power');
     const priceRaw = ownDataValue(chargerValue, 'pricePerKwh');
     if (priceRaw !== undefined && priceRaw !== null &&
-        (typeof priceRaw !== 'number' || !Number.isFinite(priceRaw))) return null;
+        (typeof priceRaw !== 'number' || !Number.isFinite(priceRaw))) return reject('item_detail_tariff');
     const connectorsRaw = ownDataValue(chargerValue, 'connectors');
-    if (!Array.isArray(connectorsRaw)) return null;
+    if (!Array.isArray(connectorsRaw)) return reject('item_detail_connector');
     const connectors: StatiqConnector[] = [];
     for (const connValue of connectorsRaw) {
-      if (!ownRecord(connValue)) return null;
+      if (!ownRecord(connValue)) return reject('item_detail_connector');
       const displayId = safeNonNegative(ownDataValue(connValue, 'displayId'));
       const connectorId = safeNonNegative(ownDataValue(connValue, 'connectorId'));
       const type = ownDataValue(connValue, 'type');
@@ -399,7 +409,7 @@ function stationDetailFromBulk(value: unknown): StatiqStationDetail | null {
       if (displayId === null || connectorId === null ||
           typeof type !== 'string' || typeof status !== 'string' ||
           (availableRaw !== undefined && availableRaw !== null && typeof availableRaw !== 'boolean') ||
-          (noteRaw !== undefined && noteRaw !== null && typeof noteRaw !== 'string')) return null;
+          (noteRaw !== undefined && noteRaw !== null && typeof noteRaw !== 'string')) return reject('item_detail_connector');
       connectors.push({
         displayId, connectorId, type, status,
         available: availableRaw === undefined || availableRaw === null ? null : availableRaw,
@@ -409,7 +419,7 @@ function stationDetailFromBulk(value: unknown): StatiqStationDetail | null {
     const currencyRaw = ownDataValue(chargerValue, 'currency');
     const lastUsedRaw = ownDataValue(chargerValue, 'lastUsedOn');
     if ((currencyRaw !== undefined && currencyRaw !== null && typeof currencyRaw !== 'string') ||
-        (lastUsedRaw !== undefined && lastUsedRaw !== null && typeof lastUsedRaw !== 'string')) return null;
+        (lastUsedRaw !== undefined && lastUsedRaw !== null && typeof lastUsedRaw !== 'string')) return reject('item_detail_charger');
     chargers.push({
       chargerId, name: chargerName, type: chargerType, kw,
       pricePerKwh: priceRaw === undefined ? null : priceRaw,
@@ -420,22 +430,22 @@ function stationDetailFromBulk(value: unknown): StatiqStationDetail | null {
   }
   const amenitiesRaw = ownDataValue(value, 'amenities');
   if (amenitiesRaw !== undefined && amenitiesRaw !== null &&
-      (!Array.isArray(amenitiesRaw) || amenitiesRaw.some((a) => typeof a !== 'string'))) return null;
+      (!Array.isArray(amenitiesRaw) || amenitiesRaw.some((a) => typeof a !== 'string'))) return reject('item_detail_summary');
   const summaryRaw = ownDataValue(value, 'summary');
   let summary: StatiqStationDetail['summary'] = null;
   if (summaryRaw !== undefined && summaryRaw !== null) {
-    if (!ownRecord(summaryRaw)) return null;
+    if (!ownRecord(summaryRaw)) return reject('item_detail_summary');
     const anyDc = ownDataValue(summaryRaw, 'anyDc');
     const ccs2Dc = ownDataValue(summaryRaw, 'ccs2Dc');
     const availableNow = ownDataValue(summaryRaw, 'availableNow');
     const maxKw = strictOptionalNumber(ownDataValue(summaryRaw, 'maxDcCcs2Kw'));
     const counts = ownDataValue(summaryRaw, 'statusCounts');
     if (typeof anyDc !== 'boolean' || typeof ccs2Dc !== 'boolean' ||
-        typeof availableNow !== 'boolean' || !ownRecord(counts)) return null;
+        typeof availableNow !== 'boolean' || !ownRecord(counts)) return reject('item_detail_summary');
     const statusCounts: Record<string, number> = {};
     for (const key of Object.keys(counts)) {
       const n = ownDataValue(counts, key);
-      if (!bulkInt(n) || (n as number) < 0) return null;
+      if (!bulkInt(n) || (n as number) < 0) return reject('item_detail_summary');
       statusCounts[key] = n as number;
     }
     summary = { anyDc, ccs2Dc, maxDcCcs2Kw: maxKw, availableNow, statusCounts };
@@ -444,7 +454,7 @@ function stationDetailFromBulk(value: unknown): StatiqStationDetail | null {
   const navUrl = ownDataValue(value, 'navUrl');
   const stationUrl = ownDataValue(value, 'stationUrl');
   if ((navUrl !== undefined && navUrl !== null && typeof navUrl !== 'string') ||
-      (stationUrl !== undefined && stationUrl !== null && typeof stationUrl !== 'string')) return null;
+      (stationUrl !== undefined && stationUrl !== null && typeof stationUrl !== 'string')) return reject('item_detail_identity');
   return {
     stationId, name, lat, lon,
     address: nullable('address'), area: nullable('area'), city: nullable('city'),
@@ -515,9 +525,23 @@ export class StatiqApiError extends Error {
   }
 }
 
+/** Closed allowlist of bulk provenance rejection categories. Diagnostic
+ *  only - never raw field values, station ids, coordinates, body text, or
+ *  credentials. Used to identify WHICH strict gate rejected a live envelope. */
+export type BulkProvenanceReason =
+  | 'envelope_headers' | 'envelope_json' | 'envelope_contract'
+  | 'envelope_attempts' | 'envelope_requested_items'
+  | 'item_echo_key' | 'item_echo_coordinates' | 'item_echo_vertices' | 'item_echo_station_id'
+  | 'item_status_success' | 'item_detail_identity' | 'item_detail_charger'
+  | 'item_detail_power' | 'item_detail_tariff' | 'item_detail_connector'
+  | 'item_detail_summary' | 'item_marker_identity' | 'item_marker_record'
+  | 'item_marker_data' | 'item_build';
+
 export class StatiqProvenanceError extends StatiqApiError {
-  constructor(path: string) {
-    super(200, path, 'Fresh station provenance could not be verified');
+  constructor(path: string, readonly reason?: BulkProvenanceReason) {
+    super(200, path,
+      'Fresh station provenance could not be verified' +
+      (reason ? ` (${reason})` : ''));
     this.name = 'StatiqProvenanceError';
   }
 }
@@ -793,7 +817,10 @@ export class StatiqClient {
     transportMs: number,
     signal: AbortSignal | undefined,
     context: ProviderCallContext | undefined,
-    build: (item: Record<string, unknown>) => T | null,
+    build: (
+      item: Record<string, unknown>,
+      onReject: (reason: BulkProvenanceReason) => void,
+    ) => T | null,
   ): Promise<BulkItemResult<T>[]> {
     if (this.bulkFailureLatch) throw this.bulkFailureLatch;
     if (this.bulkInFlight) throw new StatiqAbortError('a bulk batch is already active');
@@ -841,14 +868,17 @@ export class StatiqClient {
       if (!bulkJsonMediaType(res.headers?.get('content-type')) ||
           !bulkNoStore(res.headers?.get('cache-control')) ||
           res.headers?.get('x-evroute-upstream') !== 'statiq-live') {
-        throw new StatiqProvenanceError(path);
+        throw new StatiqProvenanceError(path, 'envelope_headers');
       }
       let parsed: unknown;
-      try { parsed = JSON.parse(text); } catch { throw new StatiqProvenanceError(path); }
+      try { parsed = JSON.parse(text); } catch { throw new StatiqProvenanceError(path, 'envelope_json'); }
       const envelope = parseBulkEnvelope(parsed, endpoint, upstreamPath);
-      if (!envelope || envelope.upstreamAttempts > reserved ||
-          envelope.requestedItems !== echoes.length) {
-        throw new StatiqProvenanceError(path);
+      if (!envelope) throw new StatiqProvenanceError(path, 'envelope_contract');
+      if (envelope.upstreamAttempts > reserved) {
+        throw new StatiqProvenanceError(path, 'envelope_attempts');
+      }
+      if (envelope.requestedItems !== echoes.length) {
+        throw new StatiqProvenanceError(path, 'envelope_requested_items');
       }
       // PHASE 1: validate and build EVERY item/echo/identity into a local
       // staging area. NO counter, audit, evidence record or budget mutation
@@ -866,7 +896,8 @@ export class StatiqClient {
       for (let i = 0; i < envelope.items.length; i++) {
         const item = envelope.items[i] as Record<string, unknown>;
         const echo = echoes[i] as BulkItemEcho;
-        if (!this.bulkEchoMatches(item, echo)) throw new StatiqProvenanceError(path);
+        const echoReason = this.bulkEchoMismatchReason(item, echo);
+        if (echoReason) throw new StatiqProvenanceError(path, echoReason);
         const outcome = ownDataValue(item, 'outcome') as BulkItemResult<T>['outcome'];
         const reason = ownDataValue(item, 'reason') as string | null;
         const up = ownDataValue(item, 'upstream') as Record<string, unknown>;
@@ -875,9 +906,12 @@ export class StatiqClient {
           statuses: ownDataValue(up, 'statuses') as BulkStatus[],
           fetchedAt: ownDataValue(up, 'fetchedAt') as string | null,
         };
-        const built = outcome === 'ok' || outcome === 'confirmed-empty' ? build(item) : null;
+        let buildReject: BulkProvenanceReason | undefined;
+        const built = outcome === 'ok' || outcome === 'confirmed-empty'
+          ? build(item, (reason) => { buildReject = reason; })
+          : null;
         if ((outcome === 'ok' || outcome === 'confirmed-empty') && built == null) {
-          throw new StatiqProvenanceError(path);
+          throw new StatiqProvenanceError(path, buildReject ?? 'item_build');
         }
         results.push({ outcome, reason, upstream, ...(built != null ? { response: built } : {}) });
         if (upstream.attempts > 0) stagedAudits.push(...upstream.statuses);
@@ -925,25 +959,34 @@ export class StatiqClient {
     }
   }
 
-  private bulkEchoMatches(item: Record<string, unknown>, echo: BulkItemEcho): boolean {
-    if (ownDataValue(item, 'key') !== echo.key) return false;
-    if (echo.latitude !== undefined && ownDataValue(item, 'latitude') !== echo.latitude) return false;
-    if (echo.longitude !== undefined && ownDataValue(item, 'longitude') !== echo.longitude) return false;
+  private bulkEchoMismatchReason(
+    item: Record<string, unknown>,
+    echo: BulkItemEcho,
+  ): BulkProvenanceReason | null {
+    if (ownDataValue(item, 'key') !== echo.key) return 'item_echo_key';
+    if (echo.latitude !== undefined && ownDataValue(item, 'latitude') !== echo.latitude) {
+      return 'item_echo_coordinates';
+    }
+    if (echo.longitude !== undefined && ownDataValue(item, 'longitude') !== echo.longitude) {
+      return 'item_echo_coordinates';
+    }
     if (echo.vertices !== undefined) {
       const value = ownDataValue(item, 'vertices');
-      if (!Array.isArray(value) || value.length !== echo.vertices.length) return false;
+      if (!Array.isArray(value) || value.length !== echo.vertices.length) return 'item_echo_vertices';
       for (let i = 0; i < echo.vertices.length; i++) {
         const pair = value[i];
         if (!Array.isArray(pair) || pair.length !== 2 ||
-            pair[0] !== echo.vertices[i]![0] || pair[1] !== echo.vertices[i]![1]) return false;
+            pair[0] !== echo.vertices[i]![0] || pair[1] !== echo.vertices[i]![1]) {
+          return 'item_echo_vertices';
+        }
       }
     }
     if (echo.stationId !== undefined &&
         !(bulkInt(ownDataValue(item, 'stationId')) && Number.isSafeInteger(ownDataValue(item, 'stationId')) &&
           (ownDataValue(item, 'stationId') as number) > 0 && ownDataValue(item, 'stationId') === echo.stationId)) {
-      return false;
+      return 'item_echo_station_id';
     }
-    return true;
+    return null;
   }
 
   /** Fetch every corridor sample in ordered bulk batches (12 max per call).
@@ -985,9 +1028,9 @@ export class StatiqClient {
         timing.transportMs,
         signal,
         context,
-        (item) => ownDataValue(item, 'outcome') === 'confirmed-empty'
+        (item, onReject) => ownDataValue(item, 'outcome') === 'confirmed-empty'
           ? emptyMarkersFromBulk()
-          : markerResponseFromBulkData(ownDataValue(item, 'data')),
+          : markerResponseFromBulkData(ownDataValue(item, 'data'), onReject),
       );
       let stopCause: 'throttled' | 'auth' | undefined;
       for (let j = 0; j < items.length; j++) {
@@ -1038,10 +1081,14 @@ export class StatiqClient {
         timing.transportMs,
         signal,
         context,
-        (item) => {
+        (item, onReject) => {
           const station = ownDataValue(ownDataValue(item, 'data'), 'station');
-          const stationDetail = stationDetailFromBulk(station);
-          if (!stationDetail || stationDetail.stationId !== ownDataValue(item, 'stationId')) return null;
+          const stationDetail = stationDetailFromBulk(station, onReject);
+          if (!stationDetail) return null;
+          if (stationDetail.stationId !== ownDataValue(item, 'stationId')) {
+            onReject('item_detail_identity');
+            return null;
+          }
           const fetchedAt = ownDataValue(ownDataValue(item, 'upstream') as Record<string, unknown>, 'fetchedAt');
           return {
             response: { ok: true, live: true, retained: false,
