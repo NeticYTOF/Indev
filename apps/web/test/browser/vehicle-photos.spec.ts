@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { VEHICLE_CATALOG } from '@indeev/core';
-import photoSources from '../../public/vehicle-photo-sources.json';
+import photoSources from '../../public/vehicle-photo-sources.json' with { type: 'json' };
 import { safeHttpUrl } from '../../src/safe-url.js';
 
 async function wire(page: import('@playwright/test').Page): Promise<void> {
