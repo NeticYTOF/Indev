@@ -60,6 +60,42 @@ function validInputs(routeKm: number, opts: GuidanceOptions, vehicle: VehicleCon
     Number.isFinite(vehicle.usableFraction) && vehicle.usableFraction > 0 &&
     Number.isFinite(vehicle.whPerKm) && vehicle.whPerKm > 0;
 }
+function uniquePoints(points: readonly GuidancePoint[]): GuidancePoint[] {
+  const seen = new Set<number>();
+  const unique: GuidancePoint[] = [];
+  for (const point of points) {
+    if (!validPoint(point) || seen.has(point.stationId)) continue;
+    seen.add(point.stationId);
+    unique.push(point);
+  }
+  return unique.sort((a, b) => a.chainageKm - b.chainageKm || a.stationId - b.stationId);
+}
+function spreadPoints(points: readonly GuidancePoint[], limit: number,
+  minKm: number, maxKm: number): GuidancePoint[] {
+  const bands = Math.min(5, points.length);
+  if (bands === 0) return [];
+  const buckets: GuidancePoint[][] = Array.from({ length: bands }, () => []);
+  const width = maxKm > minKm ? (maxKm - minKm) / bands : 1;
+  for (const point of points) {
+    const index = maxKm > minKm
+      ? Math.min(bands - 1, Math.max(0, Math.floor((point.chainageKm - minKm) / width)))
+      : 0;
+    buckets[index]?.push(point);
+  }
+  const result: GuidancePoint[] = [];
+  for (let round = 0; result.length < limit; round += 1) {
+    let added = false;
+    for (const bucket of buckets) {
+      const point = bucket[round];
+      if (point === undefined) continue;
+      result.push(point);
+      added = true;
+      if (result.length >= limit) break;
+    }
+    if (!added) break;
+  }
+  return result;
+}
 function legKm(from: State, point: GuidancePoint): number {
   return point.chainageKm - from.chainage + from.detour + point.offRouteKm;
 }
@@ -90,8 +126,8 @@ export function buildReachabilityGuidance(
 ): ReachabilityGuidance {
   const totalKm = geometry != null && geometry.length > 0
     ? cumulativeKm(geometry).at(-1) ?? routeKm : routeKm;
-  const safeCandidates = candidates.filter(validPoint);
-  const safeCertified = certified.filter(validPoint);
+  const safeCandidates = uniquePoints(candidates);
+  const safeCertified = uniquePoints(certified);
   const uncheckedCandidateCount = safeCandidates.filter((p) => !checkedIds.has(p.stationId)).length;
   if (!validInputs(totalKm, opts, vehicle)) {
     return {
@@ -109,6 +145,10 @@ export function buildReachabilityGuidance(
     Math.max(0, opts.startSocPct - opts.minArrivalSocPct) / 100 /
     vehicle.whPerKm * 1000;
   const initialReachKm = Math.max(0, Math.min(opts.maxLegKm, energyKm));
+  const frontierEnergyKm = usableKwh(vehicle) *
+    Math.max(0, opts.absoluteMaxSocPct - opts.minArrivalSocPct) / 100 /
+    vehicle.whPerKm * 1000;
+  const frontierReachKm = Math.max(0, Math.min(opts.maxLegKm, frontierEnergyKm));
   const states = new Map<number, State>();
   for (const point of [...safeCertified].sort((a, b) => a.chainageKm - b.chainageKm)) {
     let best: State | null = null;
@@ -127,12 +167,14 @@ export function buildReachabilityGuidance(
   const frontier = (destinationStates.length > 0 ? destinationStates : [...states.values()])
     .sort((a, b) => b.score - a.score)[0] ?? origin;
   const unchecked = safeCandidates
-    .filter((p) => !checkedIds.has(p.stationId) && p.chainageKm > frontier.chainage + EPS)
-    .sort((a, b) => a.chainageKm - b.chainageKm);
-  const initialUnchecked = safeCandidates
-    .filter((p) => !checkedIds.has(p.stationId) && canLeg(origin, p, opts, vehicle))
-    .sort((a, b) => a.chainageKm - b.chainageKm);
-  const frontierItems = unchecked.filter((p) => canLeg(frontier, p, opts, vehicle));
+    .filter((p) => !checkedIds.has(p.stationId) && p.chainageKm > frontier.chainage + EPS);
+  const initialUncheckedRaw = safeCandidates
+    .filter((p) => !checkedIds.has(p.stationId) && canLeg(origin, p, opts, vehicle));
+  const initialUnchecked = spreadPoints(initialUncheckedRaw, GUIDANCE_LIMIT, 0, initialReachKm);
+  const frontierUncheckedRaw = unchecked.filter((p) => canLeg(frontier, p, opts, vehicle));
+  const frontierItems = spreadPoints(
+    frontierUncheckedRaw, GUIDANCE_LIMIT, frontier.chainage,
+    Math.min(totalKm, frontier.chainage + frontierReachKm));
   return {
     version: 'reachability-guidance-v1',
     advisoryOnly: true,
@@ -140,7 +182,7 @@ export function buildReachabilityGuidance(
     routeDistanceKm: totalKm,
     directDestinationReachable: finalReachable(origin, totalKm, opts, vehicle),
     initialReachKm,
-    initialUncheckedCount: initialUnchecked.length,
+    initialUncheckedCount: initialUncheckedRaw.length,
     initialUnchecked: initialUnchecked.slice(0, GUIDANCE_LIMIT).map((p) => ({
       stationId: p.stationId, legEstKm: legKm(origin, p),
     })),
@@ -150,7 +192,7 @@ export function buildReachabilityGuidance(
       cursorDetourKm: frontier.detour,
       destinationReachable: finalReachable(frontier, totalKm, opts, vehicle),
     },
-    frontierUncheckedCount: frontierItems.length,
+    frontierUncheckedCount: frontierUncheckedRaw.length,
     frontierUnchecked: frontierItems.slice(0, GUIDANCE_LIMIT).map((p) => ({
       stationId: p.stationId, legEstKm: legKm(frontier, p),
     })),

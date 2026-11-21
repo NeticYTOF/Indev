@@ -108,4 +108,24 @@ describe('advisory reachability guidance', () => {
     expect(guidance.directDestinationReachable).toBe(true);
   });
 
+  it('spreads more than twenty reachable IDs across distance bands deterministically', () => {
+    const points = Array.from({ length: 30 }, (_, i) => p(i + 1, 5 + i * 5));
+    const first = buildReachabilityGuidance(300, points, [], new Set(), opts, vehicle);
+    const second = buildReachabilityGuidance(300, points, [], new Set(), opts, vehicle);
+    const ids = first.initialUnchecked.map((item) => item.stationId);
+    expect(first.initialUncheckedCount).toBe(30);
+    expect(ids).toHaveLength(20);
+    expect(ids).toContain(1);
+    expect(ids).toContain(30);
+    expect(new Set(ids).size).toBe(20);
+    expect(second.initialUnchecked.map((item) => item.stationId)).toEqual(ids);
+  });
+
+  it('deduplicates ties deterministically by chainage then station ID', () => {
+    const points = [p(2, 50), p(1, 50), p(1, 50), p(3, 10)];
+    const guidance = buildReachabilityGuidance(300, points, [], new Set(), opts, vehicle);
+    expect(guidance.uncheckedCandidateCount).toBe(3);
+    expect(guidance.initialUnchecked.map((item) => item.stationId)).toEqual([3, 1, 2]);
+  });
+
 });

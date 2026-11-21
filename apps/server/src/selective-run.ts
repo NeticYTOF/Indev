@@ -14,6 +14,7 @@ import { chatCompletionWithTools, type AiToolCall, type ChatToolMessage, type Ch
 import { factsFromHydrated, SelectiveToolLedger } from './selective-tools.js';
 import { buildHostStationEvidence, type HostStationEvidence } from './host-connector-evidence.js';
 import { buildReachabilityGuidance } from './reachability-guidance.js';
+import { observedPowerFromEvidence } from './observed-power.js';
 
 export interface SelectiveRunDeps {
   ai: { baseUrl: string; apiKey: string; model: string; fetchImpl?: typeof fetch; timeoutMs?: number };
@@ -171,6 +172,7 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
       'Prefer the fewest stops, then lower estimated detour, then brand ties in order Statiq, Tata, BPCL, HP, others. ' +
       'Host reachability guidance is advisory physics only; all candidates remain visible and you choose the IDs. ' +
       'Short detour and reachability guidance are not proof of a drivable spur or charger eligibility. ' +
+      'observedPower is advisory observed-power evidence only; it is not eligibility or certification. ' +
       'Hard numeric limits supplied by the host are enforced in code; free-text requests are guidance only, never a verified constraint. ' +
       'If the route is already reachable at the required arrival charge, choose no stops and skip detail fetches. ' +
       'If no certified charger is available and both unique checks and tool rounds remain, and unchecked on-route IDs exist, inspect different unchecked IDs in batches of at most five. ' +
@@ -298,15 +300,17 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
           const h = hydrateSelective(found, fetched.response, fetched.fetchedAt, deps.planOptions.maxChargerKw);
           diagState.hostReasons.push({ stationId: id, reasons: [...h.reasons] });
           warnings.push(...h.warnings);
-          diagState.stationDiagnostics.push(buildHostStationEvidence(
-            id, fetched.response, h.reasons, h.candidate !== null, deps.planOptions.maxChargerKw));
+          const evidence = buildHostStationEvidence(
+            id, fetched.response, h.reasons, h.candidate !== null, deps.planOptions.maxChargerKw);
+          diagState.stationDiagnostics.push(evidence);
           if (diagState.stationDiagnostics.length > 20) diagState.stationDiagnostics.shift();
           if (h.candidate) {
             hydrated.set(id, h.candidate);
             factCache.set(id, factsFromHydrated(h.candidate, fetched.response.source ?? null,
               typeof fetched.response.live === 'boolean' ? fetched.response.live : null));
           } else {
-            factCache.set(id, { stationId: id, unknown: 'not certified' });
+            factCache.set(id, { stationId: id, unknown: 'not certified',
+              observedPower: observedPowerFromEvidence(evidence, h.reasons) });
           }
         } catch (err) {
           if (isAbortLike(err) || err instanceof UpstreamRunStoppedError || err instanceof StatiqRunFatalError) throw err;

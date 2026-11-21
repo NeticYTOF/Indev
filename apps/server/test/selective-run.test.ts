@@ -290,4 +290,62 @@ describe('final-answer host contract', () => {
     expect(JSON.stringify(user.reachability)).not.toMatch(/occupied|working-free|available|status/i);
   });
 
+  it('projects power-only facts for rejected details without extra fetches', async () => {
+    let n = 0;
+    let toolMessages: Array<{ role: string; content: string | null }> = [];
+    const spec = station.chargers[0]!;
+    const detail = vi.fn(async () => ({
+      response: { ok: true, live: true, retained: false, source: 'test',
+        station: { ...station, chargers: [
+          { ...spec, chargerId: 420, kw: 120,
+            connectors: spec.connectors.map((plug) => ({ ...plug, status: 'faulted',
+              available: false, note: 'UNIQUE_PRIVATE_SENTINEL' })) },
+          { ...spec, chargerId: 421, kw: 30,
+            connectors: spec.connectors.map((plug) => ({ ...plug, status: 'faulted',
+              available: false, note: 'UNIQUE_PRIVATE_SENTINEL' })) },
+        ] } },
+      fetchedAt: new Date(),
+    }));
+    const deps = {
+      ai: { baseUrl: 'https://ai.test/v1', apiKey: 'k', model: 'm' },
+      aiToolCall: async (messages: Array<{ role: string; content: string | null }>) => {
+        n += 1;
+        if (n === 1) return { content: null, toolCalls: [
+          { id: 'c1', type: 'function',
+            function: { name: 'get_station_details', arguments: '{"ids":[42]}' } },
+        ] };
+        toolMessages = messages;
+        throw new Error('stop after rejected fact capture');
+      },
+      router: { route: async () => ({ distanceKm: 285, durationMin: 285,
+        geometry: [{ lat: 0, lon: 0 }, { lat: 2.56, lon: 0 }] }) } as never,
+      statiq: {
+        markers: async () => ({ ok: true, live: true, retained: false, source: 'test', count: 1,
+          stations: [{ stationId: 42, name: station.name, lat: 1.347, lon: 0,
+            address: null, accessType: 1, isCommunityListed: false, stationUrl: '' }] }),
+        detailsWithMeta: detail,
+      } as never,
+      origin: { label: 'A', lat: 0, lon: 0 },
+      destination: { label: 'B', lat: 2.56, lon: 0 },
+      via: [], resolved: resolveVehicle(),
+      planOptions: { startSocPct: 50, maxChargerKw: 60 },
+      budget: { deadlineMs: 600_000, maxUpstreamCalls: 100 },
+    };
+    await runSelective(deps as never).catch(() => undefined);
+    expect(detail).toHaveBeenCalledTimes(1);
+    expect(n).toBe(2);
+    const tool = JSON.parse(String(toolMessages.at(-1)?.content)) as {
+      facts: Array<{ stationId: number; unknown?: string; observedPower?: Record<string, unknown> }>;
+    };
+    expect(tool.facts).toEqual([{ stationId: 42, unknown: 'not certified',
+      observedPower: { capKw: 60, withinCapChargerCount: 1,
+        overCapChargerCount: 1, unknownCapChargerCount: 0, category: 'some-within',
+        advisoryOnly: true,
+        note: 'Observed power only; not eligibility or certification.' },
+    }]);
+    const toolText = toolMessages.filter((m) => m.role === 'tool')
+      .map((m) => m.content ?? '').join('\n');
+    expect(toolText).not.toMatch(/UNIQUE_PRIVATE_SENTINEL|health|status|available|occupied|charging|address|connector/i);
+  });
+
 });
