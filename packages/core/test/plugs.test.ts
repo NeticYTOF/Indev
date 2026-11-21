@@ -18,6 +18,22 @@ describe('classifyPlug (observed Statiq vocabulary)', () => {
     [conn('charging', false, 'Charging'), 'working-occupied', false],
     // consistent faulted -> excluded
     [conn('faulted', false, 'Faulted'), 'faulted', false],
+    // Fault-substring false positives must not reject otherwise valid plugs.
+    [conn('available', true, 'Default'), 'working-free', false],
+    [conn('available', true, 'NoFault'), 'working-free', false],
+    [conn('available', true, 'NoFaults'), 'working-free', false],
+    [conn('available', true, 'NotFaulted'), 'working-free', false],
+    [conn('available', true, 'NoFaultDetected'), 'working-free', false],
+    // Negated-only notes never prove health on unknown vocabulary.
+    [conn('unknown', null, 'Default'), 'uncertain', true],
+    [conn('unknown', null, 'NoFault'), 'uncertain', true],
+    // Genuine and later fault words still win over negation or positive status.
+    [conn('available', true, 'Ground fault'), 'uncertain', true],
+    [conn('available', true, 'No fault previously, now faulted'), 'uncertain', true],
+    [conn('faulted', true, 'NoFault'), 'faulted', false],
+    [conn('available', true, 'DefectiveFault'), 'uncertain', true],
+    [conn('available', true, 'DefaultFault'), 'uncertain', true],
+    [conn('available', true, 'NoFaultDetected Faulted'), 'uncertain', true],
     // available flag + disconnected note contradict status -> uncertain
     [conn('available', false, 'Disconnected'), 'uncertain', true],
     // unavailable + disconnected -> offline

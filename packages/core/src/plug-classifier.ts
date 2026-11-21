@@ -22,6 +22,24 @@ export interface ClassifiableConnector {
 const norm = (s: string | null | undefined): string =>
   (s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
+const DEFAULT_WORDS: Record<string, true> = { default: true, defaults: true };
+interface FaultSignals { positive: boolean; negated: boolean }
+function faultSignals(text: string | null | undefined): FaultSignals {
+  const tokens = (text ?? '').toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  const signals: FaultSignals = { positive: false, negated: false };
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i] as string;
+    const negatedFusion = /^(?:no|not)(?:fault|faults|faulted)(?:detected|found)?$/.test(token);
+    const faultWord = /^(?:fault|faults|faulted)$/.test(token);
+    const precededByNegation = tokens[i - 1] === 'no' || tokens[i - 1] === 'not';
+    if (negatedFusion || (faultWord && precededByNegation)) {
+      signals.negated = true;
+    } else if ((faultWord || /fault/.test(token)) && DEFAULT_WORDS[token] !== true) {
+      signals.positive = true;
+    }
+  }
+  return signals;
+}
 /** Shared normalization for connector type vocabulary. */
 export function connectorSlug(type: string): string {
   return norm(type);
@@ -39,8 +57,8 @@ export function classifyPlugValues(c: ClassifiableConnector): PlugClassification
   const isUnavailable = status.includes('unavailable');
   const positiveStatus =
     !isUnavailable && /^(available|charging|preparing|finishing)$/.test(status);
-  const faultInStatus = status.includes('fault');
-  const faultInNote = note.includes('fault');
+  const faultInStatus = faultSignals(c.status).positive;
+  const faultInNote = faultSignals(c.note).positive;
   const disconnectText = /disconnect|offline/.test(note) || /unavailable|offline/.test(status);
 
   if (faultInNote && positiveStatus) return { health: 'uncertain', contradiction: true };
