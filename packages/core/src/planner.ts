@@ -185,6 +185,16 @@ export async function planTrip(
 }
 
 /**
+ * Optional controls for a caller that owns the run's lifetime (e.g. a
+ * process-local long job). Progress is advisory and never gates execution;
+ * cancel is propagated as an abort into the shared planner signal.
+ */
+export interface PlanRunControls {
+  onProgress?: (stats: RunProgressStats) => void;
+  signal?: AbortSignal;
+}
+
+/**
  * Like planTrip, but also returns this run's rich candidate set and route,
  * so callers (e.g. the AI planner) can validate and rebuild alternatives
  * without re-fetching anything live.
@@ -194,6 +204,7 @@ export async function planTripDetailed(
   origin: { label: string; lat: number; lon: number },
   destination: { label: string; lat: number; lon: number },
   options: PlanOptions = {},
+  controls: PlanRunControls = {},
 ): Promise<PlanBundle> {
   const baseOpts = mergePlanOptions(options);
   const failureCollector = deps.failureCollector ?? createProviderFailureCollector();
@@ -230,6 +241,9 @@ export async function planTripDetailed(
     () => deadlineController.abort(),
     Math.max(50, runBudgetSpec.deadlineMs),
   );
+  const onExternalAbort = () => deadlineController.abort();
+  if (controls.signal?.aborted) onExternalAbort();
+  else controls.signal?.addEventListener('abort', onExternalAbort, { once: true });
   const runBudget = new UpstreamBudget(runBudgetSpec.maxUpstreamCalls);
   const stats: RunProgressStats = {
     samplesPlanned: 0,
@@ -269,6 +283,7 @@ export async function planTripDetailed(
     budget: runBudget,
     failureCollector,
     stats,
+    onProgress: controls.onProgress,
     signal: deadlineController.signal,
   };
 
@@ -299,6 +314,7 @@ export async function planTripDetailed(
   } finally {
   // Cancellation cleanup: never let a generous deadline hold the run.
   clearTimeout(deadlineTimer);
+  controls.signal?.removeEventListener('abort', onExternalAbort);
   // If the run is still in flight anywhere (exception paths), cancel it.
   deadlineController.abort();
   }
@@ -479,6 +495,8 @@ interface GuardHooks {
   budget: UpstreamBudget;
   /** Progress stats updated by planCore for honest failure evidence. */
   stats: RunProgressStats;
+  /** Advisory progress sink; its failure never alters planning. */
+  onProgress?: (stats: RunProgressStats) => void;
   signal: AbortSignal;
   failureCollector: ProviderFailureCollector;
 }
@@ -492,6 +510,10 @@ async function planCore(
   vehicleMeta: PlanVehicleMeta,
   hooks: GuardHooks,
 ): Promise<PlanBundle> {
+  const reportProgress = (): void => {
+    if (!hooks.onProgress) return;
+    try { hooks.onProgress({ ...hooks.stats }); } catch { /* advisory only */ }
+  };
   /** Wrapper threads the deadline; budget enforcement lives in the client
    *  for real statiq deps (per transport attempt) or in reserveCall for
    *  duck-typed doubles (per logical dispatch). */
@@ -572,6 +594,7 @@ async function planCore(
       hooks.stats.samplesCompleted = p.completed;
       hooks.stats.samplesOk = p.ok;
       hooks.stats.samplesFailed = p.failed;
+      reportProgress();
     },
   });
   // Inventory is knowable only once the scan CALL resolves. Until this
@@ -587,6 +610,7 @@ async function planCore(
   hooks.stats.samplesOk = corridor.samples;
   hooks.stats.samplesFailed = corridor.failedSamples.length;
   hooks.stats.candidatesPlanned = corridor.candidates.length;
+  reportProgress();
 
   // FAIL CLOSED: persistent throttling or a scan with too many holes can
   // never be presented as a verified plan.
@@ -705,6 +729,7 @@ async function planCore(
             : {}),
         });
         hooks.stats.candidatesDetailed = detailCache.size;
+        reportProgress();
       }
     } else {
       // 200 with a null station: data inconsistency - an unknown, not a
@@ -756,6 +781,7 @@ async function planCore(
     // processed counts every COMPLETED per-station lookup (fetched, empty
     // or skipped) - run-fatal unwinds do not reach this line.
     hooks.stats.candidatesProcessed += 1;
+    reportProgress();
   };
 
   /** Ordered bulk-details path. Every unique candidate gets exactly one
@@ -788,6 +814,7 @@ async function planCore(
       // processed counts every COMPLETED lookup (fetched, empty or unknown
       // hole); only a successful ingest reaches candidatesDetailed/detailed.
       hooks.stats.candidatesProcessed += 1;
+      reportProgress();
     };
 
     let returned: readonly import('./statiq.js').BulkItemResult<import('./statiq.js').StationDetailsWithMeta>[] = [];
@@ -816,6 +843,7 @@ async function planCore(
   // pruning by brand, power or rank and the same route geometry.
   const CANDIDATE_FETCH_CONCURRENCY = 4;
   hooks.stats.detailsStartedAt = Date.now();
+  reportProgress();
   if (bulkDetails) {
     await fetchAllBulk();
   } else {

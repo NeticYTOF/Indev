@@ -30,10 +30,16 @@ export class AiProviderError extends Error {
 export async function chatCompletion(
   deps: AiProviderDeps,
   messages: ChatMessage[],
+  signal?: AbortSignal,
 ): Promise<{ content: string }> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 45_000);
+  const onExternalAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) onExternalAbort();
+    else signal.addEventListener('abort', onExternalAbort, { once: true });
+  }
   try {
     const res = await fetchImpl(`${deps.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
       method: 'POST',
@@ -67,6 +73,7 @@ export async function chatCompletion(
     );
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', onExternalAbort);
   }
 }
 

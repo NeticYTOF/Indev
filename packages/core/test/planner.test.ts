@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { planTrip, PlanningError } from '../src/planner.js';
+import { planTrip, planTripDetailed, PlanningError } from '../src/planner.js';
 import type { OsrmRouter, RouteResult } from '../src/router.js';
 import type { StatiqClient } from '../src/statiq.js';
 import { StatiqApiError } from '../src/statiq.js';
@@ -716,6 +716,40 @@ describe('not_determined terminal coverage snapshot', () => {
   it('a successful plan carries no coverage field', async () => {
     const plan = await planTrip({ router: fakeRouter(284.9), statiq: fakeStatiq([]) }, O, D(284.9));
     expect('coverage' in plan).toBe(false);
+  });
+});
+
+describe('plan run controls', () => {
+  const specs: StationSpec[] = [{ id: 901, name: 'Statiq Ctrl', chainageKm: 250 }];
+
+  it('reports advisory progress and propagates a caller abort', async () => {
+    const seen: Array<{ planned: number; completed: number }> = [];
+    const controller = new AbortController();
+    const source = fakeStatiq(specs);
+    const statiq = {
+      ...source,
+      markers: async (lat: number, lon: number, signal?: AbortSignal) => {
+        if (signal?.aborted) throw new Error('aborted');
+        return source.markers!(lat, lon, signal);
+      },
+    } as unknown as StatiqClient;
+    const err = await planTripDetailed(
+      { router: fakeRouter(700), statiq }, O, D(700),
+      { runBudget: { deadlineMs: 60_000, maxUpstreamCalls: 10 } },
+      {
+        onProgress: (p) => {
+          seen.push({ planned: p.samplesPlanned, completed: p.samplesCompleted });
+          if (seen.length === 2) controller.abort();
+        },
+        signal: controller.signal,
+      },
+    ).catch((e: unknown) => e);
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    expect(seen[0]!.planned).toBeGreaterThan(0);
+    expect(seen[1]!.completed).toBeGreaterThanOrEqual(seen[0]!.completed);
+    const pe = err as PlanningError;
+    expect(pe.code).toBe('not_determined');
+    expect(pe.cause).toBe('deadline');
   });
 });
 
