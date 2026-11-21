@@ -84,12 +84,21 @@ describe('StatiqClient', () => {
   it('sends the bearer token and parses markers', async () => {
     const { impl, calls } = fakeFetch(() => ({ status: 200, body: JSON.stringify(markersResponse) }));
     const client = new StatiqClient({ token: TOKEN, baseUrl: 'https://example.test/api', fetchImpl: impl, ...FAST });
-    const res = await client.markers(28.6, 77.2);
+    const lat = 28.6, lon = 77.2;
+    const res = await client.markers(lat, lon);
     expect(res.stations[0]?.stationId).toBe(1790);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe('https://example.test/api/stations/markers');
     expect(calls[0]?.headers.Authorization).toBe(`Bearer ${TOKEN}`);
-    expect(JSON.parse(calls[0]?.body ?? '')).toEqual({ latitude: 28.6, longitude: 77.2 });
+    expect(JSON.parse(calls[0]?.body ?? '')).toEqual({
+      latitude: lat,
+      longitude: lon,
+      vertices: [
+        [lon - 0.1, lat - 0.1], [lon + 0.1, lat - 0.1],
+        [lon + 0.1, lat + 0.1], [lon - 0.1, lat + 0.1],
+        [lon - 0.1, lat - 0.1],
+      ],
+    });
   });
 
   it('caches details within the TTL and re-fetches after it', async () => {

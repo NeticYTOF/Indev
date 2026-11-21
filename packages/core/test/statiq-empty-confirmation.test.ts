@@ -66,7 +66,7 @@ function makeHarness(opts: {
   const audit: UpstreamAuditEntry[] = [];
   const dispatchTimes: number[] = [];
   let nowMs = 0;
-  const transport = (async (url: RequestInfo | URL, init?: RequestInit) => {
+  const transport = (async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const hit = opts.replies[calls.length];
     if (!hit) throw new Error('Unexpected extra upstream request');
     const body = JSON.parse(String(init?.body ?? '{}')) as unknown;
