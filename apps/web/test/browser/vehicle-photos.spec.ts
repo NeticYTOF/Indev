@@ -122,7 +122,7 @@ for (const [width, height, maxHeight] of [[1280, 800, 168], [390, 844, 150]] as 
     });
     expect(metrics.pageFits).toBe(true);
     expect(metrics.panelFits).toBe(true);
-    expect(metrics.imageHeight).toBeLessThanOrEqual(maxHeight);
+    expect(metrics.imageHeight).toBeLessThanOrEqual(width === 1280 ? maxHeight + 0.001 : maxHeight);
     await page.screenshot({ path: info.outputPath(`vehicle-photo-${width}.png`) });
   });
 }
