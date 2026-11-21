@@ -39,7 +39,8 @@ for (const [label, body] of [
   });
 }
 
-test("unknown save recovers through drawer check and explicit retry", async ({ page }) => {
+for (const key of ['Enter', 'Space']) {
+  test(`unknown save recovers through drawer check and explicit retry with ${key}`, async ({ page }) => {
   await page.route(/^https?:\/\//, async route => { const host = new URL(route.request().url()).hostname; if (host === "localhost" || host === "127.0.0.1") await route.continue(); else await route.abort(); });
   const plan = (await (await page.request.post("/api/plan", { data: { origin: { label: "Delhi", lat: 28.6, lon: 77.2 }, destination: { label: "Jaipur", lat: 26.9, lon: 75.8 } } })).json()).plan;
   let posts = 0, gets = 0; const warning = 'Storage operation completed, but its writer lock could not be released. Do not retry the operation; stop all writers before manual recovery.';
@@ -57,10 +58,11 @@ test("unknown save recovers through drawer check and explicit retry", async ({ p
   await expect(check).toBeVisible(); await expect(retry).toBeVisible(); expect(await facts()).toEqual(before);
   await check.click(); await expect(page.locator("#trips-drawer")).toBeVisible(); await expect(page.locator("#trips-button")).toHaveAttribute("aria-expanded", "true");
   await expect(page.locator(".trip-row")).toHaveCount(0); await expect.poll(() => gets).toBe(1); await expect(page.locator('[data-trip-result-count]')).toHaveText('Showing 0 of 0 saved trips.'); expect(posts).toBe(1); expect(await facts()).toEqual(before);
-  await page.locator("#trips-drawer [data-close]").click(); await expect(page.locator("#trips-drawer")).toBeHidden(); await retry.click();
+  await page.locator("#trips-drawer [data-close]").click(); await expect(page.locator("#trips-drawer")).toBeHidden(); await retry.focus(); await retry.press(key);
   await expect(banner).toHaveCount(0); await expect(check).toHaveCount(0); await expect(retry).toHaveCount(0);
-  await expect(save).toBeEnabled(); await expect(save).toHaveText(original); expect(posts).toBe(1); expect(await facts()).toEqual(before);
+  await expect(save).toBeEnabled(); await expect(save).toHaveText(original); await expect(save).toBeFocused(); expect(posts).toBe(1); expect(await facts()).toEqual(before);
   await save.click(); await expect.poll(() => posts).toBe(2); await expect(save).toBeDisabled(); await expect(save).toHaveText("Saved to your trips");
   expect(await save.getAttribute("data-saved-trip-id")).toBe("valid-saved");
   await expect(banner).toHaveCount(1); await expect(banner).toContainText("Trip saved."); await expect(banner).toContainText(warning); expect(await facts()).toEqual(before);
-});
+  });
+}

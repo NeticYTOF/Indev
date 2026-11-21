@@ -180,6 +180,7 @@ function wirePlanActions(actions: HTMLElement, plan: TripPlan): void {
           btn.disabled = false;
           banner.remove();
           controls.remove();
+          btn.focus({ preventScroll: true });
         });
         actions.after(banner, controls);
         return;
