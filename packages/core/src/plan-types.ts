@@ -153,6 +153,8 @@ export interface PlanRunBudget {
 
 export interface PlanOptions {
   startSocPct?: number;
+  /** Ordered user stopovers; validated/copied at plan start. */
+  via?: readonly PlaceRef[];
   /** Bounded-run controls: deadline + request budget with cancellation. */
   runBudget?: PlanRunBudget;
   /** Attach AI-safe candidates (no occupancy) to the plan. */
@@ -180,6 +182,7 @@ export interface PlanOptions {
 
 export const DEFAULT_PLAN_OPTIONS: Required<PlanOptions> = {
   startSocPct: 100,
+  via: [],
   minArrivalSocPct: 10, // working estimate
   maxSocPerStopPct: 80, // working estimate (DC taper knee)
   absoluteMaxSocPct: 95, // working estimate

@@ -24,7 +24,7 @@ import { classifyPlug, summarizeCcs2, type Ccs2Summary } from './plugs.js';
 import { detectBrand } from './brands.js';
 import { pMap } from './utils.js';
 import { chargeTimeMin, kwhForSocDelta, socAfterDriving, socRequiredForArrival, HARIER_EV_75, type VehicleConfig } from './vehicle.js';
-import type { OsrmRouter } from './router.js';
+import { RouterError, type OsrmRouter } from './router.js';
 import { isAbortLike, StatiqRunFatalError, type StatiqClient } from './statiq.js';
 import { UpstreamBudget, UpstreamRunStoppedError } from './upstream-budget.js';
 import { estimateRunWork } from './work-estimate.js';
@@ -38,6 +38,7 @@ import {
 import { resolveVehicle, type ResolvedVehicle } from './vehicle-catalog.js';
 import {
   DEFAULT_PLAN_OPTIONS,
+  type PlaceRef,
   type PlanCandidate,
   type PlanOptions,
   type PlanRunBudget,
@@ -134,6 +135,19 @@ export const DEFAULT_RUN_BUDGET: PlanRunBudget = {
   maxUpstreamCalls: 220,
 };
 
+/** Validate and snapshot via places before any provider or routing work. */
+function copiedVia(via: readonly PlaceRef[]): PlaceRef[] {
+  if (!Array.isArray(via) || via.length > 5 || Object.keys(via).length !== via.length)
+    throw new RouterError('InvalidWaypoints', 'via must be a dense array of at most 5 places');
+  return via.map(place => {
+    if (!place || typeof place.label !== 'string' || !place.label.trim() ||
+        !Number.isFinite(place.lat) || !Number.isFinite(place.lon) ||
+        Math.abs(place.lat) > 90 || Math.abs(place.lon) > 180)
+      throw new RouterError('InvalidWaypoints', 'via needs a label and valid coordinates');
+    return { label: place.label, lat: place.lat, lon: place.lon };
+  });
+}
+
 /**
  * Merge options over defaults WITHOUT letting explicit undefined fields
  * erase a default (a classic spread bug that produced NaN-free 0-stop plans).
@@ -145,6 +159,7 @@ function mergePlanOptions(options: PlanOptions): Required<PlanOptions> {
       (clean as Record<string, unknown>)[k] = v;
     }
   }
+  clean.via = copiedVia(clean.via === undefined ? [] : clean.via);
   return { ...DEFAULT_PLAN_OPTIONS, ...clean };
 }
 
@@ -443,7 +458,7 @@ async function planCore(
   // 1) Fastest route (free OSRM).
   let route: Awaited<ReturnType<OsrmRouter['route']>>;
   try {
-    route = await deps.router.route(origin, destination, hooks.signal);
+    route = await deps.router.route(origin, destination, hooks.signal, opts.via);
   } catch (err) {
     try { hooks.failureCollector.record({
       endpointClass: 'none', phase: 'route', code: 'route_failed',
@@ -727,6 +742,7 @@ async function planCore(
     createdAt: new Date().toISOString(),
     origin,
     destination,
+    ...(opts.via.length > 0 ? { via: opts.via.map(place => ({ ...place })) } : {}),
     vehicle: vehicleMeta,
     status,
     source: 'live',

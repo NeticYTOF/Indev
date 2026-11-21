@@ -1056,3 +1056,106 @@ it('one nonfresh marker sample is a hole without consuming its records or failin
   expect(plan.status).toBe('degraded'); expect(plan.stops.some(stop => stop.station.stationId === 999)).toBe(false);
   expect(plan.warnings.filter(warning => warning.includes('could not read the sample'))).toHaveLength(1);
 });
+type PlannerViaFact = { label: string; lat: number; lon: number };
+interface PlannerRouteCall {
+  origin: Coords;
+  destination: Coords;
+  via?: readonly PlannerViaFact[];
+}
+
+function recordingPlannerRouter(totalKm: number, calls: PlannerRouteCall[], hold?: Promise<void>, onDispatch?: () => void): OsrmRouter {
+  return { route: async (origin: Coords, destination: Coords, _signal?: AbortSignal, via?: readonly Coords[]) => {
+    calls.push({ origin: { ...origin }, destination: { ...destination },
+      via: via?.map(point => ({ label: (point as PlannerViaFact).label, lat: point.lat, lon: point.lon })) });
+    onDispatch?.();
+    if (hold) await hold;
+    return makeRoute(totalKm);
+  }} as unknown as OsrmRouter;
+}
+function countingPlannerDeps(counts: { router: number; statiq: number }) {
+  return {
+    router: { route: async () => { counts.router++; return makeRoute(450); } } as unknown as OsrmRouter,
+    statiq: { markers: async () => { counts.statiq++; throw new Error("unexpected provider dispatch"); } } as unknown as StatiqClient,
+  };
+}
+
+for (const [name, via] of [
+  ["one", [{ label: "V One", lat: 1, lon: 1 }]],
+  ["five", [
+    { label: "V1", lat: 1, lon: 1 }, { label: "V2", lat: 2, lon: 2 }, { label: "V3", lat: 3, lon: 3 },
+    { label: "V4", lat: 4, lon: 4 }, { label: "V5", lat: 5, lon: 5 },
+  ]],
+] as const) {
+  it("routes through " + name + " ordered stopover(s) in one full route", async () => {
+    const input: PlannerViaFact[] = via.map(point => ({ label: point.label, lat: point.lat, lon: point.lon }));
+    const expected = input.map(point => ({ ...point }));
+    const calls: PlannerRouteCall[] = [];
+    const stations: StationSpec[] = [{ id: 1, name: "Statiq 250", chainageKm: 250 }];
+    const plan = await planTrip({ router: recordingPlannerRouter(450, calls), statiq: fakeStatiq(stations) }, O, D(450), { via: input });
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.origin).toEqual(O);
+    expect(calls[0]?.destination).toEqual(D(450));
+    expect(calls[0]?.via).toEqual(expected);
+    expect(plan.via).toEqual(expected);
+    expect(plan.routeDistanceKm).toBeCloseTo(450, 1);
+    const baseline = await planTrip({ router: fakeRouter(450), statiq: fakeStatiq(stations) }, O, D(450));
+    expect(plan.geometry).toEqual(baseline.geometry);
+    expect(plan.totals).toEqual(baseline.totals);
+    expect(plan.totals.finalSocPct).toBeGreaterThan(9);
+    expect(plan.stops.map(s => [s.chainageKm, s.arriveSocPct, s.leaveSocPct, s.chargeKwh]))
+      .toEqual(baseline.stops.map(s => [s.chainageKm, s.arriveSocPct, s.leaveSocPct, s.chargeKwh]));
+  });
+}
+
+for (const [name, options] of [
+  ["empty array", { via: [] as readonly PlannerViaFact[] }],
+  ["explicit undefined", { via: undefined }],
+] as const) {
+  it("keeps the A-B plan shape for " + name, async () => {
+    const calls: PlannerRouteCall[] = [];
+    const plan = await planTrip({ router: recordingPlannerRouter(284.9, calls), statiq: fakeStatiq([]) }, O, D(284.9), options);
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.via).toEqual([]);
+    expect(plan).not.toHaveProperty("via");
+    expect(plan.routeDistanceKm).toBeCloseTo(284.9, 1);
+    expect(plan.stops).toHaveLength(0);
+  });
+}
+
+it("copies caller via facts before an awaited router dispatch", async () => {
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let dispatched!: () => void;
+  const routed = new Promise<void>(resolve => { dispatched = resolve; });
+  const input: PlannerViaFact[] = [
+    { label: "Original", lat: 1, lon: 1 }, { label: "Second", lat: 2, lon: 2 },
+  ];
+  const expected = input.map(point => ({ ...point }));
+  const calls: PlannerRouteCall[] = [];
+  const stations: StationSpec[] = [{ id: 1, name: "Statiq 250", chainageKm: 250 }];
+  const pending = planTrip({ router: recordingPlannerRouter(450, calls, held, dispatched), statiq: fakeStatiq(stations) }, O, D(450), { via: input });
+  await routed;
+  input[0]!.label = "Mutated"; input[0]!.lat = 9; input[0]!.lon = 8;
+  input.push({ label: "Extra", lat: 3, lon: 3 });
+  release();
+  const plan = await pending;
+  expect(calls.length).toBe(1);
+  expect(calls[0]?.via).toEqual(expected);
+  expect(plan.via).toEqual(expected);
+  const baseline = await planTrip({ router: fakeRouter(450), statiq: fakeStatiq(stations) }, O, D(450));
+  expect(plan.totals).toEqual(baseline.totals);
+  expect(plan.routeDistanceKm).toBe(baseline.routeDistanceKm);
+});
+
+it.each([
+  ["null", null],
+  ["six", Array.from({ length: 6 }, (_, i) => ({ label: "V" + i, lat: i, lon: 0 }))],
+  ["blank label", [{ label: "  ", lat: 1, lon: 1 }]],
+  ["NaN", [{ label: "V", lat: Number.NaN, lon: 1 }]],
+  ["out of bounds", [{ label: "V", lat: 91, lon: 1 }]],
+  ["sparse", Array(2)],
+])("rejects %s via input before router or provider dispatch", async (_name, via) => {
+  const counts = { router: 0, statiq: 0 };
+  await expect(planTrip(countingPlannerDeps(counts), O, D(450), { via: via as never })).rejects.toMatchObject({ name: "RouterError", code: "InvalidWaypoints" });
+  expect(counts).toEqual({ router: 0, statiq: 0 });
+});
