@@ -25,6 +25,18 @@ function gate(): Gate {
   const promise = new Promise<void>((done) => { resolve = () => { open = true; done(); }; });
   return { promise, resolve, done: () => open };
 }
+async function waitResult<T>(promise: Promise<T>, label: string, limitMs = 5000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_ok, fail) => {
+        timer = setTimeout(() => fail(new Error(`timed out waiting for ${label}`)), limitMs);
+      }),
+    ]);
+  } finally { if (timer !== undefined) clearTimeout(timer); }
+}
+
 async function wait(promise: Promise<void> | (() => boolean), label: string, limitMs = 2000): Promise<void> {
   if (typeof promise === 'function') {
     const start = Date.now();
@@ -245,12 +257,12 @@ describe('real bulk wire lifecycle', () => {
       expect(h.markerCalls).toBe(1);
       controller.abort();
       release.resolve();
-      const outcome = await pending.catch((e: unknown) => e);
+      const outcome = await waitResult(pending.catch((e: unknown) => e), 'aborted bulk result');
       expect(outcome).toBeInstanceOf(StatiqAbortError);
       expect(h.audit).toHaveLength(0);
     } finally {
       release.resolve();
-      await pending.catch(() => undefined);
+      await waitResult(pending.catch(() => undefined), 'aborted bulk cleanup');
     }
   });
 
@@ -266,12 +278,12 @@ describe('real bulk wire lifecycle', () => {
       expect(h.detailCalls).toBe(1);
       controller.abort();
       release.resolve();
-      const outcome = await pending.catch((e: unknown) => e);
+      const outcome = await waitResult(pending.catch((e: unknown) => e), 'aborted bulk result');
       expect(outcome).toBeInstanceOf(StatiqAbortError);
       expect(h.audit).toHaveLength(0);
     } finally {
       release.resolve();
-      await pending.catch(() => undefined);
+      await waitResult(pending.catch(() => undefined), 'aborted bulk cleanup');
     }
   });
 
@@ -288,14 +300,14 @@ describe('real bulk wire lifecycle', () => {
       expect(h.markerCalls).toBe(1);
       controller.abort();
       release.resolve();
-      const message = messageOf(await pending);
+      const message = messageOf(await waitResult(pending, 'planner cancellation result'));
       expect(message).toContain('not determined');
       expect(message).toContain('route samples covered 0/');
       expect(h.markerCalls).toBe(1);
       expect(h.audit).toHaveLength(0);
     } finally {
       release.resolve();
-      await pending.catch(() => undefined);
+      await waitResult(pending.catch(() => undefined), 'aborted bulk cleanup');
     }
   });
 
@@ -312,13 +324,13 @@ describe('real bulk wire lifecycle', () => {
       expect(h.detailCalls).toBe(1);
       controller.abort();
       release.resolve();
-      const message = messageOf(await pending);
+      const message = messageOf(await waitResult(pending, 'planner cancellation result'));
       expect(message).toContain('not determined');
       expect(message).toContain('candidates processed 0/');
       expect(h.audit.length).toBe(18); // marker batch already audited, late detail frozen
     } finally {
       release.resolve();
-      await pending.catch(() => undefined);
+      await waitResult(pending.catch(() => undefined), 'aborted bulk cleanup');
     }
   });
 
@@ -331,14 +343,14 @@ describe('real bulk wire lifecycle', () => {
       await wait(() => h.markerBatchCount() >= 2, 'second batch dispatch');
       expect(h.markerCalls).toBe(2);
       second.resolve();
-      const message = messageOf(await errP);
+      const message = messageOf(await waitResult(errP, 'later batch failure result'));
       expect(message).toContain('not determined');
       expect(message).toContain('11 of 23 route samples could not be scanned');
       expect(message).not.toContain('23 of 23');
       expect(h.audit.length).toBe(12); // only first batch audited
     } finally {
       second.resolve();
-      await errP.catch(() => undefined);
+      await waitResult(errP.catch(() => undefined), 'later batch cleanup');
     }
   });
 
@@ -369,17 +381,21 @@ describe('real bulk wire lifecycle', () => {
       expect(h.audit).toHaveLength(0); // first batch still gated/unsettled
       expect(budget.attemptsMade).toBe(2); // pessimistic hold, not settled
       release.resolve();
-      const outcome = await pending;
+      const outcome = await waitResult(pending, 'cap-drained detailsBulk');
       expect(outcome).toBeInstanceOf(UpstreamRunStoppedError);
+      expect((outcome as UpstreamRunStoppedError).cause).toBe('budget-exhausted');
+      // First chunk (ids 1,2) succeeded: 2 verified upstream attempts and
+      // 2 completed attempts, then the SECOND chunk (id 3) was refused.
+      expect(h.audit).toHaveLength(2);
+      expect(budget.completedAttempts).toBe(2);
       expect(h.detailCalls).toBe(1); // no second dispatch
-      expect(h.audit).toHaveLength(2); // first chunk's verified attempts
       expect(budget.attemptsMade).toBe(2);
       const frozen = { audit: h.audit.length, detailCalls: h.detailCalls, attempts: budget.attemptsMade };
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
       expect({ audit: h.audit.length, detailCalls: h.detailCalls, attempts: budget.attemptsMade }).toEqual(frozen);
     } finally {
       release.resolve();
-      await pending.catch(() => undefined);
+      await waitResult(pending.catch(() => undefined), 'cap test cleanup');
     }
   });
 
@@ -400,16 +416,25 @@ describe('real bulk wire lifecycle', () => {
     });
     const budget = new UpstreamBudget(20);
     client.attachRunBudget(budget);
-    const first = await client.markersBulk([{ lat: 28.6, lon: 77.2 }], undefined, ctx).catch((e: unknown) => e);
+    const first = await waitResult(
+      client.markersBulk([{ lat: 28.6, lon: 77.2 }], undefined, ctx).catch((e: unknown) => e),
+      'initial latch-free dispatch');
     expect(first).toBeInstanceOf(Error);
+    expect((first as Error).message).toBe('transport down'); // initial wire error
     expect(bulkDispatch).toBe(1);
     expect(budget.attemptsMade).toBe(1);
-    const second = await client.markersBulk([{ lat: 28.7, lon: 77.3 }], undefined, ctx).catch((e: unknown) => e);
+    const second = await waitResult(
+      client.markersBulk([{ lat: 28.7, lon: 77.3 }], undefined, ctx).catch((e: unknown) => e),
+      'latched bulk call');
     expect(second).toBeInstanceOf(Error);
+    expect(second).toBe(first); // same latched error object, not a new wire attempt
+    expect((second as Error).message).toBe('transport down');
     expect(bulkDispatch).toBe(1); // latched: no second dispatch
     expect(budget.attemptsMade).toBe(1);
-    await expect(client.markers(1, 1)).rejects.toBeInstanceOf(Error);
-    expect(legacyDispatch).toBe(0); // no legacy fallback after latch
+    const legacy = await waitResult(
+      client.markers(1, 1).catch((e: unknown) => e), 'latched legacy call');
+    expect(legacy).toBe(first); // latch also refuses legacy, no fallback
+    expect(legacyDispatch).toBe(0);
   });
 
   it('[client transport] one active batch refuses a concurrent second batch', async () => {
@@ -423,7 +448,7 @@ describe('real bulk wire lifecycle', () => {
       expect(h.markerCalls).toBe(1);
     } finally {
       release.resolve();
-      await first.catch(() => undefined);
+      await waitResult(first.catch(() => undefined), 'single-flight first batch cleanup');
     }
   });
 
