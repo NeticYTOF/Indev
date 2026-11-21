@@ -38,17 +38,17 @@ test('deleting the same saved trip allows the displayed plan to be saved again',
 test("unrelated or failed DELETE does not reset the saved plan state", async ({ page }) => {
   await page.route(/^https?:\/\//, async route => { const host = new URL(route.request().url()).hostname; if (host === "localhost" || host === "127.0.0.1") await route.continue(); else await route.abort(); });
   const plan = (await (await page.request.post("/api/plan", { data: { origin: { label: "Delhi", lat: 28.6, lon: 77.2 }, destination: { label: "Jaipur", lat: 26.9, lon: 75.8 } } })).json()).plan;
-  let savedA: Record<string, unknown> | null = null, removedB = false; const deletes: Record<string, number> = {};
+  const saved: { current: Record<string, unknown> | null } = { current: null }; let removedB = false; const deletes: Record<string, number> = {};
   await page.route("**/api/plan", route => route.fulfill({ json: { plan } }));
   await page.route("**/api/geocode*", route => route.fulfill({ json: { hits: [{ name: "Delhi", label: "Delhi", lat: 28, lon: 77 }] } }));
   await page.route("**/api/trips", async route => {
-    if (route.request().method() === "GET") return route.fulfill({ json: { trips: savedA ? [savedA, ...(removedB ? [] : [{ ...savedA, id: "unrelated-b", name: "Saved B" }])] : [] } });
-    const post = route.request().postDataJSON() as { plan: Record<string, unknown> }; savedA = { ...post.plan, name: "Saved A", stations: [] }; return route.fulfill({ json: { trip: savedA } });
+    if (route.request().method() === "GET") return route.fulfill({ json: { trips: saved.current ? [saved.current, ...(removedB ? [] : [{ ...saved.current, id: "unrelated-b", name: "Saved B" }])] : [] } });
+    const post = route.request().postDataJSON() as { plan: Record<string, unknown> }; saved.current = { ...post.plan, name: "Saved A", stations: [] }; return route.fulfill({ json: { trip: saved.current } });
   });
   await page.route("**/api/trips/*", async route => {
     expect(route.request().method()).toBe("DELETE");
     const id = new URL(route.request().url()).pathname.split("/").at(-1) ?? ""; deletes[id] = (deletes[id] ?? 0) + 1;
-    if (id === savedA?.id) return route.fulfill({ status: 503, json: { error: "Synthetic delete failure" } });
+    if (id === saved.current?.id) return route.fulfill({ status: 503, json: { error: "Synthetic delete failure" } });
     removedB = true; return route.fulfill({ json: { ok: true } });
   });
   await page.goto("/");
@@ -63,7 +63,7 @@ test("unrelated or failed DELETE does not reset the saved plan state", async ({ 
   await page.locator(".trip-row").filter({ hasText: "Saved B" }).getByRole("button", { name: "Delete", exact: true }).click();
   await expect.poll(() => deletes["unrelated-b"]).toBe(1); await expect(page.locator(".trip-row")).toHaveCount(1);
   await expect(save).toHaveText("Saved to your trips"); await expect(save).toBeDisabled();
-  const savedId = String(savedA?.id ?? "");
+  const savedId = String(saved.current?.id ?? "");
   await page.locator(".trip-row").filter({ hasText: "Saved A" }).getByRole("button", { name: "Delete", exact: true }).click();
   await expect.poll(() => deletes[savedId]).toBe(1);
   await expect(page.getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
