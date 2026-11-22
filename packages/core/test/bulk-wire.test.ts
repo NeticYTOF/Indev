@@ -7,10 +7,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import { OsrmRouter } from '../src/router.js';
-import { planTrip, PlanningError } from '../src/planner.js';
-import {
-  StatiqAbortError, StatiqClient, type UpstreamAuditEntry,
-} from '../src/statiq.js';
+import { planTrip, planTripDetailed, PlanningError } from '../src/planner.js';
+import { StatiqAbortError, StatiqClient, StatiqProvenanceError, type UpstreamAuditEntry } from '../src/statiq.js';
+import { scanCorridor } from '../src/corridor.js';
 import { UpstreamBudget, UpstreamRunStoppedError } from '../src/upstream-budget.js';
 import type { ProviderCallContext } from '../src/provider-failure.js';
 import { endpointRouter } from './support/road-fixture.js';
@@ -331,19 +330,25 @@ describe('real bulk wire lifecycle', () => {
     }
   });
 
-  it('[planner] explicit later-batch transport failure retains first 12 samples', async () => {
+  it('[planner] later-batch transport failure preserves confirmed progress and original cause', async () => {
     const second = gate();
     const h = harness({ routeKm: 260, markerGates: [undefined, second] as Gate[],
       markerModes: ['ok', 'transport-fail'] });
-    const errP = planTrip({ router: h.router, statiq: h.client }, O, D(260), OPTS).catch((e: unknown) => e);
+    const progress: Array<{ samplesCompleted: number; samplesPlanned: number;
+      samplesOk: number; samplesFailed: number }> = [];
+    const errP = planTripDetailed({ router: h.router, statiq: h.client }, O, D(260), OPTS,
+      { onProgress: (p) => progress.push({ samplesCompleted: p.samplesCompleted,
+        samplesPlanned: p.samplesPlanned, samplesOk: p.samplesOk,
+        samplesFailed: p.samplesFailed }) }).catch((e: unknown) => e);
     try {
       await wait(() => h.markerBatchCount() >= 2, 'second batch dispatch');
       expect(h.markerCalls).toBe(2);
       second.resolve();
       const message = messageOf(await waitResult(errP, 'later batch failure result'));
-      expect(message).toContain('not determined');
-      expect(message).toContain('11 of 23 route samples could not be scanned');
-      expect(message).not.toContain('23 of 23');
+      expect(message).toContain('marker batch 2 failed');
+      expect(message).not.toContain('route samples could not be scanned');
+      expect(progress.at(-1)).toMatchObject({ samplesCompleted: 12, samplesPlanned: 23,
+        samplesOk: 12, samplesFailed: 0 });
       expect(h.audit.length).toBe(12); // only first batch audited
     } finally {
       second.resolve();
@@ -471,5 +476,55 @@ describe('real bulk wire lifecycle', () => {
     expect(cov.candidatesPlanned).toBe(0);
     expect(cov.samplesPlanned).toBeGreaterThan(0);
     expect('plan' in pe).toBe(false);
+  });
+});
+
+describe('whole-bulk contract propagation', () => {
+  const bulkRoute = [{ lat: 0, lon: 0 }, { lat: 200 / KM_PER_DEG, lon: 0 }];
+
+  it('unwinds a bad first envelope without synthetic completed samples', async () => {
+    const h = harness({ markerModes: ['bad-envelope'] });
+    const progress: Array<{ completed: number; planned: number }> = [];
+    const err = await scanCorridor(h.client, bulkRoute, {
+      stepKm: 12, onProgress: (p) => progress.push(p),
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StatiqProvenanceError);
+    expect(progress).toHaveLength(1);
+    expect(progress[0]).toMatchObject({ completed: 0 });
+    expect(progress[0]!.planned).toBeGreaterThan(0);
+    expect(h.markerCalls).toBe(1);
+    expect(h.detailCalls).toBe(0);
+  });
+
+  it('preserves earlier completed progress when a later envelope fails', async () => {
+    const h = harness({ markerModes: ['ok', 'bad-envelope'] });
+    const progress: Array<{ completed: number; planned: number }> = [];
+    const err = await scanCorridor(h.client, bulkRoute, {
+      stepKm: 12, onProgress: (p) => progress.push(p),
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StatiqProvenanceError);
+    expect(h.markerCalls).toBe(2);
+    expect(progress.at(-1)!.completed).toBeGreaterThan(0);
+    expect(progress.at(-1)!.completed).toBeLessThan(progress.at(-1)!.planned);
+    expect(h.detailCalls).toBe(0);
+  });
+
+  it('keeps verified per-item unknown outcomes as honest holes', async () => {
+    const goodMarker = { stationId: 1, name: 'Fixture', lat: 150 / KM_PER_DEG, lon: 0,
+      address: null, accessType: 1, isCommunityListed: false, stationUrl: '' };
+    const items = [
+      { outcome: 'ok', reason: null, response: { ok: true, live: true, retained: false,
+        source: 'synthetic-test', count: 1, stations: [goodMarker] } },
+      { outcome: 'unknown', reason: 'upstream_timeout', response: undefined },
+    ];
+    const client = { markersBulk: async (_points: unknown, _signal: unknown, _context: unknown,
+      onItem?: (item: unknown, index: number) => void) => {
+      items.forEach((item, i) => onItem?.(item, i));
+      return items;
+    } } as never;
+    const result = await scanCorridor(client, bulkRoute, { stepKm: 100 });
+    expect(result.candidates.map((c) => c.stationId)).toEqual([1]);
+    expect(result.failedSamples.length).toBeGreaterThan(0);
+    expect(result.samples).toBeGreaterThan(0);
   });
 });

@@ -4,7 +4,7 @@
  * Offline only - no provider calls.
  */
 import { describe, expect, it } from 'vitest';
-import { planTrip } from '../src/planner.js';
+import { planTrip, planTripDetailed } from '../src/planner.js';
 import type { OsrmRouter, RouteResult } from '../src/router.js';
 import { StatiqRunFatalError, type StatiqClient, type BulkItemResult, type StationDetailsWithMeta } from '../src/statiq.js';
 import type { StatiqStationDetail, StatiqMarkersResponse } from '../src/types.js';
@@ -219,14 +219,19 @@ describe('planTrip bulk adoption', () => {
       })),
     } as unknown as StatiqClient;
     const router = endpointRouter();
-    const error = await planTrip({ router, statiq },
+    const progress: Array<{ samplesCompleted: number; samplesPlanned: number;
+      samplesOk: number; samplesFailed: number }> = [];
+    const error = await planTripDetailed({ router, statiq },
       { label: 'Origin', lat: 0, lon: 0 }, { label: 'Destination', lat: 260 / KM_PER_DEG, lon: 0 },
-      { startSocPct: 50 }).catch((e: unknown) => e);
+      { startSocPct: 50 },
+      { onProgress: (p) => progress.push({ samplesCompleted: p.samplesCompleted,
+        samplesPlanned: p.samplesPlanned, samplesOk: p.samplesOk,
+        samplesFailed: p.samplesFailed }) }).catch((e: unknown) => e);
     expect(summaryCalls).toBe(1);
     const message = error instanceof Error ? error.message : String(error);
-    // 12 early samples survived (23 planned - 11 later holes = 12 covered);
-    // the honest scan-coverage message carries the retained count.
-    expect(message).toContain('11 of 23 route samples could not be scanned');
-    expect(message).not.toContain('23 of 23');
+    expect(message).toContain('later marker batch failed');
+    expect(message).not.toContain('route samples could not be scanned');
+    expect(progress.at(-1)).toMatchObject({ samplesCompleted: 12, samplesPlanned: 23,
+      samplesOk: 12, samplesFailed: 0 });
   });
 });

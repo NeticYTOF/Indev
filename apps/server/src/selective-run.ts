@@ -267,7 +267,12 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
   const discovery = await discoverSelective(
     { router: deps.router, statiq: deps.statiq, failureCollector: failures },
     deps.origin, deps.destination, opts, signal,
-    (p) => stage('discovery', p.completed, p.planned, { ok: p.ok, failed: p.failed }),
+    (p) => {
+      diagState.samplesPlanned = p.planned;
+      diagState.samplesOk = p.ok;
+      diagState.samplesFailed = p.failed;
+      stage('discovery', p.completed, p.planned, { ok: p.ok, failed: p.failed });
+    },
   );
   stage('shortlist', 0, discovery.candidates.length,
     { ok: discovery.samplesOk, failed: discovery.samplesFailed });

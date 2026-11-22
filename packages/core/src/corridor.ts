@@ -261,7 +261,6 @@ export async function scanCorridor(
       report();
     };
     let returned: readonly BulkItemResult<StatiqMarkersResponse>[] = [];
-    let batchFailed = false;
     try {
       returned = await bulkSource.markersBulk(
         samplePoints.map((p) => ({ lat: p.lat, lon: p.lon })),
@@ -270,30 +269,19 @@ export async function scanCorridor(
         ingestBulkItem,
       );
     } catch (err) {
-      if (
-        isAbortLike(err) ||
-        err instanceof UpstreamRunStoppedError ||
-        err instanceof StatiqRunFatalError
-      ) {
-        throw err;
-      }
-      // A later-batch failure leaves earlier completed samples intact; only
-      // the samples that never received a verified item become holes.
-      for (let i = 0; i < samplePoints.length; i++) {
-        if (!processed.has(i)) ingestBulkItem(undefined, i);
-      }
-      report();
-      batchFailed = true;
+      // A throw is a WHOLE bulk-call failure. The real client latches such
+      // contract/unknown states and cannot safely dispatch again. Earlier
+      // onItem progress survives via onProgress, but never turn the unheard
+      // samples into verified inventory or synthetic completed holes.
+      throw err;
     }
-    if (!batchFailed) {
-      // Callback+return clients: the Set prevents double ingestion. Return-only
-      // doubles (no callback) are now covered by this loop. No re-fetch.
-      for (let i = 0; i < returned.length; i++) ingestBulkItem(returned[i], i);
-      // Any planned sample with neither a callback nor a returned item is an
-      // honest coverage hole (never silently dropped).
-      for (let i = 0; i < samplePoints.length; i++) {
-        if (!processed.has(i)) ingestBulkItem(undefined, i);
-      }
+    // Callback+return clients: the Set prevents double ingestion. Return-only
+    // doubles (no callback) are covered here. No re-fetch.
+    for (let i = 0; i < returned.length; i++) ingestBulkItem(returned[i], i);
+    // Any planned sample with neither a callback nor a returned item is an
+    // honest coverage hole (never silently dropped).
+    for (let i = 0; i < samplePoints.length; i++) {
+      if (!processed.has(i)) ingestBulkItem(undefined, i);
     }
   } else {
     await pMap(samplePoints, concurrency, async (p, i) => {
