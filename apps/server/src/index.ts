@@ -1,7 +1,7 @@
 import { serve } from '@hono/node-server';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { CountersStore, OsrmRouter, PhotonGeocoder, TripsStore } from '@indeev/core';
+import { CheckedIdHistoryStore, CountersStore, OsrmRouter, PhotonGeocoder, TripsStore } from '@indeev/core';
 import { aiEnabled, loadEnv } from './env.js';
 import { createApp, SERVER_RUN_BUDGET } from './app.js';
 import { buildStatiqFactory } from './statiq-factory.js';
@@ -23,6 +23,7 @@ mkdirSync(env.dataDir, { recursive: true });
 const storeSuffix = env.mock ? '.mock' : '';
 const trips = new TripsStore({ filePath: join(env.dataDir, `saved-trips${storeSuffix}.json`) });
 const counters = new CountersStore({ filePath: join(env.dataDir, `counters${storeSuffix}.json`) });
+const checkedIdHistory = new CheckedIdHistoryStore({ filePath: join(env.dataDir, `checked-id-history${storeSuffix}.json`) });
 
 // The EFFECTIVE planning envelope for this launch: explicit validated
 // overrides (malformed ones failed LOUDLY at boot) or the server defaults -
@@ -37,6 +38,7 @@ const app = createApp({
   mock: env.mock,
   trips,
   counters,
+  checkedIdHistory,
   router: new OsrmRouter(),
   geocoder: new PhotonGeocoder(),
   // The effective budget flows into createApp (both planning handlers +

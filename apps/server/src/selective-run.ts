@@ -19,6 +19,8 @@ import { factsFromHydrated, SelectiveToolLedger, SELECTIVE_TOOL_BUDGETS,
 import { buildHostStationEvidence, type HostStationEvidence } from './host-connector-evidence.js';
 import { buildReachabilityGuidance } from './reachability-guidance.js';
 import { observedPowerFromEvidence } from './observed-power.js';
+import { admitWithCheckedIdHistory,
+  type HistoryAdmissionInput } from './history-admission.js';
 
 export interface SelectiveRunDeps {
   ai: { baseUrl: string; apiKey: string; model: string; fetchImpl?: typeof fetch; timeoutMs?: number };
@@ -35,6 +37,23 @@ export interface SelectiveRunDeps {
   signal?: AbortSignal;
   onStage?: (stage: string, processed: number, planned: number, counts?: { ok: number; failed: number }) => void;
   coverageProfile?: SelectiveCoverageProfile;
+  /** Prior-run checked IDs only; availability gates their advisory use. */
+  history?: SelectiveHistoryState;
+  /** Called immediately after a fresh successful detail response. */
+  onFreshDetailSuccess?: (stationId: number) => void;
+}
+export interface SelectiveHistoryState {
+  available: boolean;
+  priorCheckedIds: readonly number[];
+}
+export interface SelectiveHistoryDiagnostics {
+  available: boolean;
+  priorCheckedCount: number;
+  requests: number;
+  deferredIds: number;
+  bridgeIds: number;
+  memoizedBypasses: number;
+  freshDetailsRecorded: number;
 }
 
 const STATION_EVIDENCE_SAMPLE_LIMIT = 20;
@@ -55,9 +74,57 @@ const tool: ChatToolDefinition = {
     },
   },
 };
+const toolWithHistory: ChatToolDefinition = {
+  type: 'function',
+  function: {
+    name: TOOL_NAME,
+    description: 'Fetch live details only for listed on-route station IDs.',
+    parameters: {
+      type: 'object',
+      properties: {
+        ids: { type: 'array', items: { type: 'integer', minimum: 1 }, maxItems: 5, minItems: 1 },
+        historicalRefreshReason: { type: 'string', enum: ['necessary_bridge'] },
+      },
+      required: ['ids'],
+      additionalProperties: false,
+    },
+  },
+};
 
-function parseArgs(raw: string): unknown {
-  try { return JSON.parse(raw) as unknown; } catch { return null; }
+function parseToolArgs(raw: string): { ok: true; raw: unknown } | { ok: false } {
+  try {
+    return { ok: true, raw: JSON.parse(raw) as unknown };
+  } catch {
+    return { ok: false };
+  }
+}
+function readHistoryPolicyArgs(raw: unknown): {
+  ok: true; ids: number[]; historicalRefreshReason?: 'necessary_bridge';
+} | { ok: false } {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false };
+  const keys = Object.keys(raw).sort().join(',');
+  if (keys !== 'ids' && keys !== 'historicalRefreshReason,ids') return { ok: false };
+  if (!('ids' in raw) || !Array.isArray(raw.ids)) return { ok: false };
+  const ids: number[] = [];
+  for (const id of raw.ids) {
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0) return { ok: false };
+    ids.push(id);
+  }
+  let historicalRefreshReason: 'necessary_bridge' | undefined;
+  if ('historicalRefreshReason' in raw) {
+    if (raw.historicalRefreshReason !== 'necessary_bridge') return { ok: false };
+    historicalRefreshReason = 'necessary_bridge';
+  }
+  return { ok: true, ids, ...(historicalRefreshReason ? { historicalRefreshReason } : {}) };
+}
+function freshIdentityBoundSuccess(response: unknown, stationId: number): boolean {
+  if (response === null || typeof response !== 'object' || Array.isArray(response)) return false;
+  if (!('ok' in response) || response.ok !== true) return false;
+  if (!('live' in response) || response.live !== true) return false;
+  if (!('retained' in response) || response.retained !== false) return false;
+  if (!('station' in response) || response.station === null ||
+      typeof response.station !== 'object' || Array.isArray(response.station)) return false;
+  return 'stationId' in response.station && response.station.stationId === stationId;
 }
 function parseFinalAnswer(raw: string | null | undefined):
   { ok: true; value: unknown } | { ok: false } {
@@ -161,6 +228,10 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
     capStateCounts: {} as Record<string, number>,
     toolAdmission: emptyAdmissionAggregate(),
     normalTurns: 0, finalTurns: 0, admittedUniqueIds: 0, noFitDeclared: false,
+    history: { available: deps.history?.available === true,
+      priorCheckedCount: deps.history?.available === true ? deps.history.priorCheckedIds.length : 0,
+      requests: 0, deferredIds: 0, bridgeIds: 0,
+      memoizedBypasses: 0, freshDetailsRecorded: 0 },
   };
   const diag = (): SelectiveRunResult['diagnostics'] => ({
     observedAttempts: runBudget.completedAttempts,
@@ -213,6 +284,15 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
   diagState.samplesFailed = discovery.samplesFailed;
   diagState.candidatesPlanned = discovery.candidates.length;
   const candidates = compactCandidates(discovery.candidates);
+  const priorIds = deps.history?.available === true
+    ? deps.history.priorCheckedIds.filter((id) => pool.has(id)) : [];
+  const priorSet = new Set(priorIds);
+  const currentNewIds = [...pool.keys()].filter((id) => !priorSet.has(id));
+  const historyActive = deps.history?.available === true;
+  const historyClause = historyActive
+    ? 'Prior-run checked IDs are advisory checks only, never health or eligibility; every current candidate remains visible. ' +
+      'Ordinary prior IDs are deferred while unchecked current-new IDs remain; historicalRefreshReason:"necessary_bridge" is deliberate refresh intent, never verified physical necessity. '
+    : '';
   const messages: ChatToolMessage[] = [
     { role: 'system', content:
       'Choose on-route charging stops from the supplied station metadata. ' +
@@ -226,6 +306,7 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
       'If the route is already reachable at the required arrival charge, choose no stops and skip detail fetches. ' +
       'If no certified charger is available and both unique checks and tool rounds remain, and unchecked on-route IDs exist, inspect different unchecked IDs in batches of at most five. ' +
       'Never retry memoized IDs, never stop at the first unsuitable shortlist, and never claim the route is infeasible. ' +
+      historyClause +
       'Finish with one JSON object and no tool call: {"chosenStationIds":[],"notes":"","status":"ok"}. ' +
       'Only after the allowed checks are exhausted, if no certified feasible plan exists, use status "not_determined" with an empty ID array; never claim the route is impossible.' },
     { role: 'user', content: JSON.stringify({
@@ -238,8 +319,11 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
       trip: {
         origin: deps.origin, destination: deps.destination, via: deps.via,
         routeDistanceKm: discovery.route.distanceKm,
-
       },
+      ...(historyActive ? { history: {
+        priorCheckedIds: priorIds, currentNewCandidateIds: currentNewIds,
+        semantics: 'Prior IDs are checks only, not health; all current candidates remain selectable. ' +
+          'necessary_bridge is explicit refresh intent, not proven necessity.' } } : {}),
       request: deps.customRequest ?? null, candidates, warnings,
       reachability: buildReachabilityGuidance(discovery.route.distanceKm,
         discovery.candidates.map((c) => ({ stationId: c.stationId,
@@ -257,7 +341,8 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
     const closed = forcedFinal;
     if (forcedFinal) reservedFinalConsumed = true;
     if (closed) diagState.finalTurns += 1; else diagState.normalTurns += 1;
-    const activeTools = closed ? [] : [tool];
+    const activeTool = historyActive ? toolWithHistory : tool;
+    const activeTools = closed ? [] : [activeTool];
     const reply = deps.aiToolCall
       ? await deps.aiToolCall(messages, activeTools, signal, ledger.limits.maxToolCalls)
       : await chatCompletionWithTools(deps.ai, messages, activeTools,
@@ -386,7 +471,36 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
     }
     messages.push({ role: 'assistant', content: reply.content, tool_calls: calls });
     for (const call of calls) {
-      const admitted = ledger.admit(parseArgs(call.function.arguments), signal);
+      const parsedTool = parseToolArgs(call.function.arguments);
+      let deferIds: Set<number> | undefined;
+      let historyReasons: Record<string, string> = {};
+      if (parsedTool.ok && historyActive) {
+        const policyArgs = readHistoryPolicyArgs(parsedTool.raw);
+        if (policyArgs.ok) {
+          const policyInput: HistoryAdmissionInput = {
+            currentPoolIds: [...pool.keys()],
+            aiRequestedIds: policyArgs.ids,
+            priorCheckedIds: [...deps.history!.priorCheckedIds],
+            currentRunAdmittedIds: [...ledger.admitted],
+            historyAvailable: true,
+            ...(policyArgs.historicalRefreshReason
+              ? { historicalRefreshReason: policyArgs.historicalRefreshReason }
+              : {}),
+          };
+          const policy = admitWithCheckedIdHistory(policyInput);
+          if (policy.ok) {
+            deferIds = new Set(policy.deferredIds);
+            historyReasons = policy.reasonByRequestedId;
+            diagState.history.requests += 1;
+            diagState.history.deferredIds += policy.deferredIds.length;
+            diagState.history.bridgeIds += Object.values(policy.reasonByRequestedId)
+              .filter((reason) => reason === 'explicit_necessary_bridge').length;
+            diagState.history.memoizedBypasses += policy.memoizedIds.length;
+          }
+        }
+      }
+      const rawArgs = parsedTool.ok ? parsedTool.raw : null;
+      const admitted = ledger.admit(rawArgs, signal, deferIds, historyActive);
       diagState.toolAdmission = {
         ...ledger.admission,
         rejectedByReason: { ...ledger.admission.rejectedByReason },
@@ -406,6 +520,10 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
           const fetched = await deps.statiq.detailsWithMeta(id, signal, {
             endpointClass: 'stations/details', phase: 'details', sampleOrdinal: null,
           });
+          if (freshIdentityBoundSuccess(fetched.response, id)) {
+            try { deps.onFreshDetailSuccess?.(id); } catch { /* advisory sink only */ }
+            diagState.history.freshDetailsRecorded += 1;
+          }
           const h = hydrateSelective(found, fetched.response, fetched.fetchedAt, deps.planOptions.maxChargerKw);
           diagState.hostReasons.push({ stationId: id, reasons: [...h.reasons] });
           warnings.push(...h.warnings);
@@ -454,6 +572,8 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
           startSocPct: opts.startSocPct, minArrivalSocPct: opts.minArrivalSocPct,
           absoluteMaxSocPct: opts.absoluteMaxSocPct, maxLegKm: opts.maxLegKm,
         }, deps.resolved.config, discovery.route.geometry);
+      const currentNewCandidateIds = [...pool.keys()].filter((id) =>
+        !priorSet.has(id) && !ledger.admitted.has(id));
       const progress = {
         planningProgress: {
           examinedDistinctIds: examined,
@@ -465,6 +585,13 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
             ? 'inspect_unchecked_candidates'
             : 'choose_from_certified_or_report_not_determined',
         },
+      ...(historyActive ? {
+        deferred: admitted.deferredIds.map((id) => ({
+          stationId: id, reason: historyReasons[id] ?? 'deferred',
+        })),
+        history: { priorCheckedIds: priorIds, currentNewCandidateIds,
+          semantics: 'Prior IDs are checks only, not certification; necessary_bridge is explicit refresh intent.' },
+      } : {}),
         facts: admitted.ids.map((id) => factCache.get(id) ?? { stationId: id, unknown: 'not checked' }),
         warnings,
         reachability: guidance,

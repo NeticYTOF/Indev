@@ -43,6 +43,10 @@ import {
   type TripPlan,
   type VehicleSelection,
   type RunCoverageSnapshot,
+  type CheckedIdHistoryStore,
+  type CheckedIdHistoryLoad,
+  type CheckedIdHistoryStatus,
+  type CheckedIdHistoryWrite,
 } from '@indeev/core';
 import { PlanJobRegistry, type PlanJobControls } from './plan-job.js';
 import { runSelective, SelectiveRunError, type FinalAnswerDiagnostic } from './selective-run.js';
@@ -56,6 +60,15 @@ import type { AiToolCall } from './ai-provider.js';
 import type { HostStationEvidence } from './host-connector-evidence.js';
 import { DEFAULT_ALLOWED_WEB_ORIGINS } from './env.js';
 import { validSavedPlanMetadata } from './saved-plan-validation.js';
+import { buildCheckedIdScopeKey } from './checked-id-scope.js';
+
+export interface CheckedIdHistoryRunDiagnostics {
+  load: CheckedIdHistoryStatus;
+  save: CheckedIdHistoryStatus | 'not_attempted';
+  added: number;
+  priorCheckedCount: number;
+  recordedCount: number;
+}
 
 
 export interface AppDeps {
@@ -94,8 +107,11 @@ export interface AppDeps {
     coverage: { normalTurns: number; finalTurns: number;
       maxUniqueIds: number; admittedUniqueIds: number; unusedUniqueIds: number };
     noFitDeclared: boolean;
+    history?: CheckedIdHistoryRunDiagnostics;
   }) => void;
   selectiveProfile?: SelectiveCoverageProfile;
+  /** Optional IDs-only checked-station history. Absent means unchanged behavior. */
+  checkedIdHistory?: CheckedIdHistoryStore;
   /** AI planning config: all three set = enabled. Off by default. */
   ai?: { baseUrl: string; apiKey: string; model: string };
   /** Injectable for tests; defaults to the real provider call. */
@@ -230,6 +246,7 @@ function emitPlanRunEvent(
     coverage: { normalTurns: number; finalTurns: number;
       maxUniqueIds: number; admittedUniqueIds: number; unusedUniqueIds: number };
     noFitDeclared: boolean },
+  history?: CheckedIdHistoryRunDiagnostics,
 ): void {
   try {
     deps.onPlanRunEvent?.({
@@ -250,6 +267,7 @@ function emitPlanRunEvent(
         ? { finalAnswerEvents: diagnostics.finalAnswerEvents.slice(0, 5) } : {}),
       ...(diagnostics.stationDiagnostics && diagnostics.stationDiagnostics.length > 0
         ? { stationDiagnostics: diagnostics.stationDiagnostics.slice(0, 20) } : {}),
+      ...(history ? { history } : {}),
     });
   } catch { /* diagnostics never alter the run */ }
 }
@@ -296,6 +314,39 @@ async function runLiveAiPlan(
   if (safeRange != null && Number.isFinite(safeRange)) {
     planOptions.maxLegKm = Math.min(planOptions.maxLegKm ?? DEFAULT_PLAN_OPTIONS.maxLegKm, safeRange);
   }
+  const coverageProfile = deps.selectiveProfile ?? 'standard20';
+  const historyStore = deps.checkedIdHistory;
+  let historyLoad: CheckedIdHistoryLoad = { status: 'unavailable', checkedIds: [] };
+  let scopeKey: string | null = null;
+  try {
+    if (historyStore !== undefined && !deps.mock) {
+      scopeKey = buildCheckedIdScopeKey({ origin: params.origin, destination: params.destination,
+        via: params.via, resolved: params.resolved, planOptions,
+        coverageProfile, customRequest: params.customRequest });
+      historyLoad = await historyStore.load(scopeKey);
+    }
+  } catch {
+    historyLoad = { status: 'unavailable', checkedIds: [] };
+  }
+  const checkedThisRun = new Set<number>();
+  let historySave: CheckedIdHistoryWrite | undefined;
+  let historyPersisted = false;
+  const historyDiag = (): CheckedIdHistoryRunDiagnostics => ({
+    load: historyLoad.status,
+    save: historySave?.status ?? 'not_attempted',
+    added: historySave?.added ?? 0,
+    priorCheckedCount: historyLoad.status === 'active' ? historyLoad.checkedIds.length : 0,
+    recordedCount: checkedThisRun.size,
+  });
+  const persistHistory = async (): Promise<void> => {
+    if (historyPersisted || historyStore === undefined || scopeKey === null || checkedThisRun.size === 0) return;
+    historyPersisted = true;
+    try {
+      historySave = await historyStore.record(scopeKey, [...checkedThisRun]);
+    } catch {
+      historySave = { ok: false, status: 'unavailable', added: 0 };
+    }
+  };
   const progress = {
     samplesPlanned: 0, samplesCompleted: 0, samplesOk: 0, samplesFailed: 0,
     candidatesPlanned: 0, candidatesProcessed: 0, candidatesDetailed: 0,
@@ -308,8 +359,11 @@ async function runLiveAiPlan(
       origin: params.origin, destination: params.destination, via: params.via,
       resolved: params.resolved, planOptions,
       customRequest: params.customRequest, budget: controls.budget,
-      coverageProfile: deps.selectiveProfile,
+      coverageProfile,
+      history: { available: historyLoad.status === 'active',
+        priorCheckedIds: historyLoad.checkedIds },
       signal: controls.signal,
+      onFreshDetailSuccess: (stationId) => { checkedThisRun.add(stationId); },
       onStage: (stage, processed, planned, counts) => {
         if (stage === 'discovery') {
           progress.samplesCompleted = processed;
@@ -340,9 +394,11 @@ async function runLiveAiPlan(
     completeRun(deps, 'ok',
       Math.max(run.diagnostics.observedAttempts, safeUpstreamCalls(statiq)),
       run.diagnostics.failures);
-    emitPlanRunEvent(deps, 'ok', run.diagnostics);
+    await persistHistory();
+    emitPlanRunEvent(deps, 'ok', run.diagnostics, historyDiag());
     return { plan: run.plan, ai: { applied: true, ...(run.notes ? { notes: run.notes } : {}) } };
   } catch (err) {
+    await persistHistory();
     if (controls.signal?.aborted) throw new Error('aborted');
     const failure = err instanceof PlanningError
       ? err
@@ -369,8 +425,10 @@ async function runLiveAiPlan(
     completeRun(deps, auditOutcomeFor(failure),
       diag?.observedAttempts ?? safeUpstreamCalls(statiq),
       diag?.failures ?? emptyProviderFailureReport());
-    if (diag) emitPlanRunEvent(deps, auditOutcomeFor(failure), diag);
+    if (diag) emitPlanRunEvent(deps, auditOutcomeFor(failure), diag, historyDiag());
     throw failure;
+  } finally {
+    await persistHistory();
   }
 }
 

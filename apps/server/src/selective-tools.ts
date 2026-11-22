@@ -37,6 +37,11 @@ export interface ToolAdmissionAggregate {
   newIds: number;
   memoIds: number;
 }
+export interface ToolDeferralAggregate {
+  requestedIds: number;
+  deferredIds: number;
+  calls: number;
+}
 export function emptyAdmissionAggregate(): ToolAdmissionAggregate {
   return {
     attemptedCalls: 0, admittedCalls: 0, rejectedCalls: 0,
@@ -51,6 +56,7 @@ export interface AdmittedToolCall {
   ids: number[];
   newIds: number[];
   memoIds: number[];
+  deferredIds: number[];
 }
 
 function positiveInt(value: unknown): value is number {
@@ -66,6 +72,7 @@ export class SelectiveToolLedger {
   readonly admitted = new Set<number>();
   private readonly pool: ReadonlySet<number>;
   readonly limits: SelectiveToolBudget;
+  readonly deferral: ToolDeferralAggregate = { requestedIds: 0, deferredIds: 0, calls: 0 };
   readonly admission: ToolAdmissionAggregate = emptyAdmissionAggregate();
 
   constructor(allowed: ReadonlySet<number>, budget: SelectiveToolBudget = DEFAULT_SELECTIVE_TOOL_BUDGET) {
@@ -85,7 +92,8 @@ export class SelectiveToolLedger {
     return true;
   }
 
-  admit(raw: unknown, signal?: AbortSignal): AdmittedToolCall | null {
+  admit(raw: unknown, signal?: AbortSignal, deferIds?: ReadonlySet<number>,
+    allowHistoricalRefreshReason = false): AdmittedToolCall | null {
     const reject = (reason: ToolAdmissionRejectReason): null => {
       this.admission.rejectedCalls += 1;
       this.admission.rejectedByReason[reason] += 1;
@@ -96,31 +104,50 @@ export class SelectiveToolLedger {
     if (this.calls >= this.limits.maxToolCalls) return reject('call_cap');
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw) ||
         Object.getPrototypeOf(raw) !== Object.prototype) return reject('invalid_shape');
-    const keys = Object.keys(raw);
-    if (keys.length !== 1 || keys[0] !== 'ids') return reject('invalid_shape');
+    const keys = Object.keys(raw).sort().join(',');
+    const extended = keys === 'historicalRefreshReason,ids';
+    if (keys !== 'ids' && !extended) return reject('invalid_shape');
+    if (extended && !allowHistoricalRefreshReason) return reject('invalid_shape');
+    if ('historicalRefreshReason' in raw && raw.historicalRefreshReason !== 'necessary_bridge') {
+      return reject('invalid_shape');
+    }
     const ids = 'ids' in raw ? raw.ids : undefined;
     if (!Array.isArray(ids) || ids.length === 0 || ids.length > this.limits.maxIdsPerCall) {
       return reject('invalid_shape');
     }
     this.admission.requestedIds += ids.length;
     const seen = new Set<number>();
+    const keptIds: number[] = [];
     const newIds: number[] = [];
+    const deferredIds: number[] = [];
     const memoIds: number[] = [];
     for (const id of ids) {
       if (!positiveInt(id)) return reject('invalid_id');
       if (seen.has(id)) return reject('duplicate_id');
       if (!this.pool.has(id)) return reject('unknown_id');
       seen.add(id);
+      if (deferIds?.has(id) === true && !this.admitted.has(id)) {
+        deferredIds.push(id);
+        continue;
+      }
+      keptIds.push(id);
       if (this.admitted.has(id)) memoIds.push(id); else newIds.push(id);
     }
     if (this.admitted.size + newIds.length > this.limits.maxTotalIds) return reject('total_cap');
-    for (const id of seen) this.admitted.add(id);
+    for (const id of [...memoIds, ...newIds]) this.admitted.add(id);
     this.calls += 1;
     this.plannedNewIds += newIds.length;
-    this.admission.admittedCalls += 1;
+    if (memoIds.length + newIds.length > 0) this.admission.admittedCalls += 1;
+    if (deferIds !== undefined) {
+      this.deferral.requestedIds += ids.length;
+      if (deferredIds.length > 0) {
+        this.deferral.calls += 1;
+        this.deferral.deferredIds += deferredIds.length;
+      }
+    }
     this.admission.newIds += newIds.length;
     this.admission.memoIds += memoIds.length;
-    return { ids: [...seen], newIds, memoIds };
+    return { ids: keptIds, newIds, memoIds, deferredIds };
   }
 
   /** Called by the host only after a real detail fetch settles. */
