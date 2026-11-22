@@ -996,6 +996,7 @@ async function planCore(
     destination,
     ...(opts.via.length > 0 ? { via: opts.via.map(place => ({ ...place })) } : {}),
     vehicle: vehicleMeta,
+    startSocPct: opts.startSocPct,
     status,
     source: 'live',
     routeDistanceKm: certifiedRoute.totalDistanceKm,

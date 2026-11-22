@@ -97,10 +97,12 @@ describe('toSavedTrip', () => {
     // station reference is minimal: exactly the reference fields, never
     // rating/reviews/plugs/chargers/station detail
     expect(Object.keys(st).sort()).toEqual([
+      'arrivalEtaMin',
       'arriveSocPct',
       'chainageKm',
       'chargeKwh',
       'chargeTimeMin',
+      'departureEtaMin',
       'detourKm',
       'estPriceInr',
       'lat',

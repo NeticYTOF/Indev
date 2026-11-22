@@ -709,7 +709,7 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     if (deps.mock) {
-      const plan = mockPlan(origin, destination, resolved);
+      const plan = mockPlan(origin, destination, resolved, startSoc.value);
       await recordPlanCounter(deps.counters, plan);
       // synthetic plans make zero upstream calls; the run audit stays honest
       completeRun(deps, 'ok', 0);
@@ -804,7 +804,7 @@ export function createApp(deps: AppDeps): Hono {
     // MOCK MODE: even an explicitly configured AI must never reach upstream.
     // Serve the same synthetic plan /api/plan would, with an honest label.
     if (deps.mock) {
-      const plan = mockPlan(origin, destination, resolved);
+      const plan = mockPlan(origin, destination, resolved, startSoc.value);
       await recordPlanCounter(deps.counters, plan);
       completeRun(deps, 'ok', 0);
       return c.json({
@@ -1265,6 +1265,7 @@ function mockPlan(
   origin: { label: string; lat: number; lon: number },
   destination: { label: string; lat: number; lon: number },
   resolved: ResolvedVehicle,
+  startSocPct?: number,
 ): TripPlan {
   const now = new Date().toISOString();
   return {
@@ -1279,6 +1280,7 @@ function mockPlan(
       claimedRangeKm: resolved.claimedRangeKm,
       realWorldRangeKm: resolved.realWorldRangeKm,
     },
+    ...(startSocPct !== undefined ? { startSocPct } : {}),
     status: 'ok',
     source: 'synthetic',
     routeDistanceKm: 415.2,

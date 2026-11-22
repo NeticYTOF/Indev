@@ -30,6 +30,9 @@ export interface SavedStationRef {
   pricePerKwh: number | null;
   estPriceInr: number | null;
   chargeTimeMin: number;
+  /** Plan-derived minutes from trip start; absent in older saved records. */
+  arrivalEtaMin?: number;
+  departureEtaMin?: number;
 }
 
 export interface SavedTrip {
@@ -41,6 +44,8 @@ export interface SavedTrip {
   /** Ordered user stopovers; copied only when non-empty. */
   via?: TripPlan['via'];
   vehicle: TripPlan['vehicle'];
+  /** Validated starting charge from the originating plan, when available. */
+  startSocPct?: number;
   /** Scan integrity at planning time (degraded plans show visible holes). */
   status: TripPlan['status'];
   /** Provenance: live vs synthetic; synthetic trips never enter the live store. */
@@ -53,8 +58,17 @@ export interface SavedTrip {
   totals: TripPlan['totals'];
 }
 
+function savedSoc(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100
+    ? value : undefined;
+}
+function savedEta(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
 /** Reduce a live plan to the minimal saved form (no station detail data). */
 export function toSavedTrip(plan: TripPlan, name?: string): SavedTrip {
+  const startSocPct = savedSoc(plan.startSocPct);
   return {
     id: plan.id || randomUUID(),
     name: name?.trim() || tripName(plan),
@@ -63,26 +77,33 @@ export function toSavedTrip(plan: TripPlan, name?: string): SavedTrip {
     destination: plan.destination,
     ...(plan.via?.length ? { via: plan.via.map(place => ({ label: place.label, lat: place.lat, lon: place.lon })) } : {}),
     vehicle: plan.vehicle,
+    ...(startSocPct !== undefined ? { startSocPct } : {}),
     status: plan.status,
     source: plan.source,
     routeDistanceKm: plan.routeDistanceKm,
     routeDurationMin: plan.routeDurationMin,
     geometry: plan.geometry.map((p) => [p.lat, p.lon] as [number, number]),
-    stations: plan.stops.map((s) => ({
-      stationId: s.station.stationId,
-      name: s.station.name,
-      lat: s.station.lat,
-      lon: s.station.lon,
-      chainageKm: s.chainageKm,
-      legKm: s.legKm,
-      detourKm: s.detourKm,
-      arriveSocPct: s.arriveSocPct,
-      leaveSocPct: s.leaveSocPct,
-      chargeKwh: s.chargeKwh,
-      pricePerKwh: s.pricePerKwh,
-      estPriceInr: s.estPriceInr,
-      chargeTimeMin: s.chargeTimeMin,
-    })),
+    stations: plan.stops.map((s) => {
+      const arrivalEtaMin = savedEta(s.arrivalEtaMin);
+      const departureEtaMin = savedEta(s.departureEtaMin);
+      return {
+        stationId: s.station.stationId,
+        name: s.station.name,
+        lat: s.station.lat,
+        lon: s.station.lon,
+        chainageKm: s.chainageKm,
+        legKm: s.legKm,
+        detourKm: s.detourKm,
+        arriveSocPct: s.arriveSocPct,
+        leaveSocPct: s.leaveSocPct,
+        chargeKwh: s.chargeKwh,
+        pricePerKwh: s.pricePerKwh,
+        estPriceInr: s.estPriceInr,
+        chargeTimeMin: s.chargeTimeMin,
+        ...(arrivalEtaMin !== undefined ? { arrivalEtaMin } : {}),
+        ...(departureEtaMin !== undefined ? { departureEtaMin } : {}),
+      };
+    }),
     totals: plan.totals,
   };
 }

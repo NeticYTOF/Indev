@@ -33,9 +33,12 @@ export function validSavedPlanMetadata(plan: unknown): boolean {
       !positive(vehicle.batteryKwh) ||
       !nullable(vehicle.claimedRangeKm, positive) || !nullable(vehicle.realWorldRangeKm, positive) ||
       !fields(totals, ['distanceKm', 'driveTimeMin', 'chargeTimeMin', 'totalTimeMin', 'chargeKwh']) ||
-      !nullable(totals.estPriceInr, nonnegative) || !soc(totals.finalSocPct)) return false;
+      !nullable(totals.estPriceInr, nonnegative) || !soc(totals.finalSocPct) ||
+      (plan.startSocPct !== undefined && !soc(plan.startSocPct))) return false;
   return plan.stops.every(stop => record(stop) &&
     fields(stop, ['chainageKm', 'legKm', 'detourKm', 'chargeKwh', 'chargeTimeMin']) &&
     soc(stop.arriveSocPct) && soc(stop.leaveSocPct) &&
+    (stop.arrivalEtaMin === undefined || nonnegative(stop.arrivalEtaMin)) &&
+    (stop.departureEtaMin === undefined || nonnegative(stop.departureEtaMin)) &&
     nullable(stop.pricePerKwh, nonnegative) && nullable(stop.estPriceInr, nonnegative));
 }

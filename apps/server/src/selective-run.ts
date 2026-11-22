@@ -595,6 +595,7 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
           batteryKwh: deps.resolved.batteryKwh, claimedRangeKm: deps.resolved.claimedRangeKm,
           realWorldRangeKm: deps.resolved.realWorldRangeKm,
         },
+        startSocPct: opts.startSocPct,
         status: 'ok', source: 'live',
         routeDistanceKm: discovery.route.distanceKm, routeDurationMin: discovery.route.durationMin,
         geometry: discovery.route.geometry,

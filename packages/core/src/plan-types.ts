@@ -171,6 +171,8 @@ export interface TripPlan {
   /** Ordered user stopovers; they do not reset battery or charging continuity. */
   via?: PlaceRef[];
   vehicle: PlanVehicleMeta;
+  /** Validated starting charge (0..100) recorded from this plan's request. */
+  startSocPct?: number;
   status: PlanStatus;
   /** Provenance: live plans only may enter the real saved-trips store. */
   source: PlanSource;
