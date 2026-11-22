@@ -1,18 +1,19 @@
 # IndEV potholes
 
-Last updated: 22 November 2026, 11:58 IST
+Last updated: 22 November 2026, 12:24 IST
 
 This is the project issue ledger, not a claim that the app is finished. "Verified offline" means tests or source inspection passed. It does not mean a live route completed or a charger was physically checked.
 
 ## Current state
 
-- Latest verified published baseline: [`d9f9b91`](https://github.com/NeticYTOF/Indev/commit/d9f9b917635f02c86fdb4f9331535bb325e8a0b7).
-- Fresh public audit for that baseline: 1,233 repository tests plus 22 independent audit cases, with application/browser type checks and the web build passing.
+- Latest verified published baseline: [`6a7c99f`](https://github.com/NeticYTOF/Indev/commit/6a7c99f877d6161b34fff527054b28272ab6f342).
+- Fresh public audit for that baseline: 1,272 repository tests plus 9 independent parse-boundary cases, with application/browser type checks and the web build passing.
 - A genuine completed live route and its uncut, normal-speed screen recording are still missing.
-- The latest live Delhi to Jaipur run examined 35 of 378 candidate stations. None of those 35 was certified under the active working-CCS2 and 60 kW rules. The other 343 were unchecked. This is an incomplete search, not proof that the route has no usable charger.
+- The latest genuine live Delhi to Jaipur run used Tata Harrier EV 75 kWh at 50% start and a hard 60 kW cap. It examined 37 of 378 candidate stations (33 historical revisits plus 4 new), found 0 certified stations, and left 341 unchecked. There was no API provenance or transport failure: 24 marker and 37 detail requests were all HTTP 200. Eight admitted tool calls requested 37 unique IDs with no rejected or memoized IDs; 3 of 40 unique checks remained unused. Nine AI turns completed; the ninth final answer was invalid JSON. Provider-reported cost was 0.01623206, currency unspecified. Gateway charges and whether that figure is an all-in total remain unverified. The failed original recording remains private. This is honest failure, not a route verdict.
 - Reserve/charge-to parity was published in [`79157a6`](https://github.com/NeticYTOF/Indev/commit/79157a6948e4d848a735b9060078cebbef281c58). The available-status positive-fault planning policy was published in [`a880aa1`](https://github.com/NeticYTOF/Indev/commit/a880aa1aade418c96169ab9b56de3a4f9e9af7e2). Vehicle charging-time estimates remain unvalidated physics.
 - Actual-road certification for the selected final sequence was published in [`d9f9b91`](https://github.com/NeticYTOF/Indev/commit/d9f9b917635f02c86fdb4f9331535bb325e8a0b7): 1,233 repository tests plus 22 independent cases passed in the fresh public audit, with application/browser type checks and the web build passing.
-- The parse-only `/api/ai/parse` backend is implemented in this change and independently verified offline before publication: 1,272 repository tests plus 9 independent parse-boundary cases passed, with application/browser type checks and the web build passing. There is no UI wiring and no end-to-end natural-language planning; no live provider acceptance or new route success is claimed.
+- The parse-only `/api/ai/parse` backend was published in [`6a7c99f`](https://github.com/NeticYTOF/Indev/commit/6a7c99f877d6161b34fff527054b28272ab6f342) with the 1,272 repository plus 9 independent parse audit above. There is no UI wiring and no end-to-end natural-language planning.
+- The tool-free final-turn `response_format: json_object` adapter hint is implemented and independently verified offline before publication: 1,273 repository tests plus 6 independent cases passed, with application/browser type checks and the web build passing. It is a format correction only: not a live-format guarantee, not route repair, and not evidence of charger eligibility. Route history/default exploration remains unresolved and no second live run was made.
 
 ## Open blockers
 
@@ -47,9 +48,9 @@ Sources:
 
 **Status: open, acceptance missing.**
 
-The last recorded run reached a failed terminal state after approximately 137 seconds. It made 24 marker requests and 35 detail requests, all recorded as HTTP 200, but found no certified station in the checked subset. HTTP success alone therefore does not solve the charger-evidence problem.
+The latest genuine run failed terminally with the Harrier 75 kWh at 50% start and a hard 60 kW cap. It made 24 marker and 37 detail requests, all HTTP 200; no API provenance or transport failure occurred. It checked 37 unique IDs (33 historical revisits plus 4 new), certified none, and left 341 unchecked. Eight tool calls were admitted with 37 requested IDs, no rejected or memo IDs, and 3 of 40 unique checks unused. Nine AI turns completed; the ninth final answer was invalid JSON. Provider-reported cost was 0.01623206, currency unspecified. Gateway charges and whether that figure is an all-in total remain unverified. The failed original recording is private. The older approximately 137-second run with 35 detail checks and no certified station remains history, not the latest result.
 
-Its model made nine completed responses, but the final response was invalid JSON. This is separate from charger eligibility. No successful route or successful recording should be inferred from completed model responses, passing tests or published code.
+Invalid final JSON is separate from charger eligibility. No successful route or recording should be inferred from completed model responses, passing tests or published code.
 
 **Exit condition:** a fresh, genuine Delhi to Jaipur route completes with the intended vehicle, starting charge, hard 60 kW cap, working CCS2 policy and reserve/range checks intact. Capture the actual run uncut at normal speed. No replay, mocks, accelerated footage or tests-only substitute.
 
@@ -57,9 +58,8 @@ Its model made nine completed responses, but the final response was invalid JSON
 
 **Status: bounded coverage implemented; route-level uncertainty remains.**
 
-The standard profile admits at most 20 unique detail IDs. The optional server-selected progressive profile admits at most 40. The progressive run settled 35 checks and left 343 candidates unchecked.
+The standard profile admits at most 20 unique detail IDs; the optional progressive profile admits at most 40. The latest genuine run used progressive40, settled 37 checks, left 3 of 40 unused, and left 341 candidates unchecked. The earlier 35-check run is historical. Do not turn an exhausted allowance into an impossibility verdict, silently raise request rates, or describe partial diagnostic samples as the whole run.
 
-Increasing the allowance from 20 to 40 did not produce a certified route. Do not turn an exhausted allowance into an impossibility verdict, silently raise request rates, or describe partial diagnostic samples as the whole run.
 
 **Exit condition:** a certified feasible sequence, or a truthful not-determined outcome showing remaining coverage. Full-route impossibility needs sufficient evidence, not merely an exhausted model/tool allowance.
 
@@ -128,7 +128,7 @@ The original planner routed every candidate-to-stop leg, every chosen stop leg a
 
 The correction routes only the final selected sequence, aggregates via segments into charging-to-charging energy legs, uses actual routed distance and duration for range, reserve, charge-to, final SoC, ETAs and totals, preserves via order, and fails closed on ambiguous or incomplete road certificates. It adds no candidate fanout, automatic retries beyond the scoped zero-retry leg option, new AI turns or rate/budget increases.
 
-The public archive for `d9f9b91` independently matched all 22 staged blobs; 1,233 repository tests plus 22 independent cases, application/browser type checks and the web build passed. This does not establish a live route. The latest live Delhi to Jaipur run still examined only 35 of 378 candidate stations; 343 remain unchecked, and physical charger status uncertainty is unchanged.
+The public archive for `d9f9b91` independently matched all 22 staged blobs; 1,233 repository tests plus 22 independent cases, application/browser type checks and the web build passed. This does not establish a live route. The latest live Delhi to Jaipur run examined 37 of 378 candidate stations (33 historical revisits plus 4 new), certified 0, and left 341 unchecked; physical charger status uncertainty is unchanged. The older 35-check/343-unchecked run remains historical.
 
 ## Verified published corrections
 

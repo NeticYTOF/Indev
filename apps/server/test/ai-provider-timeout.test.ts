@@ -133,6 +133,28 @@ describe('exact HackClub completion policy', () => {
     }
   });
 
+  it('adds JSON-object output format only to tool-free turns', async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const capture = (async (_url: unknown, init?: RequestInit) => {
+      sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify(okBody), { status: 200 });
+    }) as typeof fetch;
+    const tool = { type: 'function', function: {
+      name: 'get_station_details', description: 'test tool',
+      parameters: { type: 'object', properties: { ids: { type: 'array' } } },
+    } };
+    await chatCompletionWithTools({ ...deps, fetchImpl: capture },
+      [{ role: 'user', content: 'x' }], [tool], ['get_station_details']);
+    await chatCompletionWithTools({ ...deps, fetchImpl: capture },
+      [{ role: 'user', content: 'x' }], [], []);
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).not.toHaveProperty('response_format');
+    expect(sent[0]).toMatchObject({ tool_choice: 'auto' });
+    expect(sent[0]?.tools).toHaveLength(1);
+    expect(sent[1]).not.toHaveProperty('tools');
+    expect(sent[1]).toMatchObject({ tool_choice: 'none', response_format: { type: 'json_object' } });
+  });
+
   it('rejects parseable finish_reason:length in both paths before accepting output', async () => {
     const truncated = { choices: [{
       message: { content: JSON.stringify({ chosenStationIds: [] }),

@@ -199,7 +199,7 @@ export async function chatCompletionWithTools(
           model: deps.model, temperature: 0.2, messages,
           ...(tools.length > 0
             ? { tools, tool_choice: 'auto' }
-            : { tool_choice: 'none' }),
+            : { tool_choice: 'none', response_format: { type: 'json_object' } }),
         })),
         signal: watch.signal,
       }),
