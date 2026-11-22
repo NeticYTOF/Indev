@@ -61,6 +61,7 @@ export class OsrmRouter {
     destination: Coords,
     signal?: AbortSignal,
     via: readonly Coords[] = [],
+    options: { retries?: number } = {},
   ): Promise<RouteResult> {
     signal?.throwIfAborted();
     if (
@@ -73,7 +74,11 @@ export class OsrmRouter {
     const url =
       `${host}${[origin, ...via, destination].map(coord).join(';')}` +
       `?overview=full&geometries=geojson`;
-    const json = await this.getJson<OsrmResponse>(url, signal);
+    const retryLimit = options.retries === undefined ? this.retries : options.retries;
+    if (!Number.isSafeInteger(retryLimit) || retryLimit < 0) {
+      throw new RouterError('InvalidRetries', 'Router retry override must be a nonnegative integer');
+    }
+    const json = await this.getJson<OsrmResponse>(url, signal, retryLimit);
     signal?.throwIfAborted();
     if (json.code !== 'Ok' || !json.routes || json.routes.length === 0) {
       throw new RouterError(json.code ?? 'Unknown', `No route: ${json.message ?? json.code}`);
@@ -99,9 +104,9 @@ export class OsrmRouter {
     };
   }
 
-  private async getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
+  private async getJson<T>(url: string, signal?: AbortSignal, retryLimit = this.retries): Promise<T> {
     let lastError: unknown;
-    for (let attempt = 0; attempt <= this.retries; attempt++) {
+    for (let attempt = 0; attempt <= retryLimit; attempt++) {
       signal?.throwIfAborted();
       if (attempt > 0) {
         // The run deadline also cancels retry waits, not only active fetches.

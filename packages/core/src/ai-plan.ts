@@ -17,6 +17,7 @@ import type { PlanOptions, PlanStop, PlanTotals, TripPlan,
   ResolvedPlanOptions } from './plan-types.js';
 import { certifyCappedViewChargers } from './plugs.js';
 import { socAfterDriving, socRequiredUncapped, type VehicleConfig } from './vehicle.js';
+import type { CertifiedRouteLegs } from './route-legs.js';
 export interface AiChoice {
   stationIds: number[];
   notes?: string;
@@ -43,6 +44,7 @@ export function validateAiChoice(
   choice: AiChoice,
   options: PlanOptions,
   vehicle: VehicleConfig,
+  certified?: CertifiedRouteLegs,
 ): AiValidation {
   const fail = (reason: string): AiValidation => ({ ok: false, reason });
   let opts: ResolvedPlanOptions;
@@ -100,7 +102,8 @@ export function validateAiChoice(
         return fail(`Station ${c.candidate.stationId} selection metadata does not match live charger evidence.`);
       }
     }
-    const legKm =
+    const routed = certified?.legs.find((leg) => leg.stationId === c.candidate.stationId);
+    const legKm = routed?.distanceKm ??
       c.candidate.chainageKm - cursorChain + cursorDetour + c.candidate.offRouteKm;
     if (legKm > opts.maxLegKm + 1e-6) {
       return fail(`A ${Math.round(legKm)} km leg exceeds the ${opts.maxLegKm} km safe running range.`);
@@ -123,7 +126,7 @@ export function validateAiChoice(
   }
 
   // final leg to destination
-  const finalLegKm = totalKm - cursorChain + cursorDetour;
+  const finalLegKm = certified?.legs.at(-1)?.distanceKm ?? totalKm - cursorChain + cursorDetour;
   if (finalLegKm > opts.maxLegKm + 1e-6) {
     return fail(`The ${Math.round(finalLegKm)} km final leg exceeds the safe running range.`);
   }
@@ -140,11 +143,12 @@ export function validateAiChoice(
 /** Rebuild a full TripPlan from a validated sequence, reusing the exact
  * number pipeline of the greedy planner. */
 export function assembleAiPlan(
-  bundle: Pick<PlanBundle, 'plan' | 'route'>,
+  bundle: Pick<PlanBundle, 'route'> & { plan: Omit<TripPlan, 'stops' | 'totals'> },
   seq: ChosenStop[],
   ai: { applied: true; notes?: string },
   options: PlanOptions,
   vehicle: VehicleConfig,
+  certified: CertifiedRouteLegs,
 ): TripPlan {
   const opts = resolvePlanOptions(options);
   const base = bundle.plan;
@@ -158,13 +162,16 @@ export function assembleAiPlan(
   // chainage, not the OSRM-reported distance displayed in metadata. AI
   // rebuild must use the same number or final-leg/SoC evidence diverges.
   const totalKm = validatedRouteKm(bundle.route.geometry, base.routeDistanceKm);
-  const stops: PlanStop[] = finalize(seq, totalKm, bundle.route, opts, vehicle, warnings);
-  const totals: PlanTotals = computeTotals(stops, totalKm, bundle.route, opts, vehicle);
+  const stops: PlanStop[] = finalize(seq, totalKm, bundle.route, opts, vehicle, warnings, certified);
+  const totals: PlanTotals = computeTotals(stops, totalKm, bundle.route, opts, vehicle, certified);
   return {
     ...base,
     stops,
     totals,
     warnings,
+    routeDistanceKm: certified.totalDistanceKm,
+    routeDurationMin: certified.totalDurationMin,
+    geometry: certified.geometry,
   };
 }
 

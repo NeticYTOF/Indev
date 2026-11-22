@@ -29,6 +29,8 @@ import { RouterError, type OsrmRouter } from './router.js';
 import { isAbortLike, StatiqRunFatalError, type StatiqClient } from './statiq.js';
 import { UpstreamBudget, UpstreamRunStoppedError } from './upstream-budget.js';
 import { estimateRunWork } from './work-estimate.js';
+import { certifySelectedRouteLegs, RouteCertificationError,
+  type CertifiedRouteLeg, type CertifiedRouteLegs } from './route-legs.js';
 import type { StatiqStationDetail } from './types.js';
 import {
   createProviderFailureCollector,
@@ -90,6 +92,7 @@ interface Cursor {
 interface ChosenStop {
   cand: Candidate;
   legKm: number;
+  routedLeg?: CertifiedRouteLeg;
   arriveSocPct: number;
 }
 
@@ -103,7 +106,8 @@ export type NotDeterminedCause =
   | 'deadline' // time budget reached; run cancelled
   | 'sample-throttled' // a corridor sample saw a 429 (fail-closed scan)
   | 'scan-coverage' // too many failed samples: coverage incomplete
-  | 'candidate-holes'; // per-station lookups failed: impossibility claims unsafe
+  | 'candidate-holes' // per-station lookups failed: impossibility claims unsafe
+  | 'route-leg'; // final selected sequence failed actual road certification
 
 export class PlanningError extends Error {
   /**
@@ -960,8 +964,29 @@ async function planCore(
     };
   }
 
-  const stops = finalize(chosen, totalKm, route, opts, vehicle, warnings);
-  const totals = computeTotals(stops, totalKm, route, opts, vehicle);
+  let certifiedRoute: CertifiedRouteLegs;
+  try {
+    certifiedRoute = await certifySelectedRouteLegs(deps.router, route, origin, destination,
+      opts.via, chosen.map((c) => ({ stationId: c.cand.candidate.stationId,
+        label: c.cand.view.name, coords: { lat: c.cand.candidate.lat, lon: c.cand.candidate.lon },
+        chainageKm: c.cand.candidate.chainageKm })), hooks.signal);
+  } catch (err) {
+    if (isAbortLike(err)) throw err;
+    throw new PlanningError(
+      `The selected stop sequence failed actual road certification: ${
+        err instanceof Error ? err.message : String(err)}`,
+      'not_determined', 'route-leg',
+    );
+  }
+  const routedByStation = new Map(certifiedRoute.legs
+    .filter((leg) => leg.stationId !== null)
+    .map((leg) => [leg.stationId as number, leg]));
+  for (const c of chosen) {
+    const leg = routedByStation.get(c.cand.candidate.stationId);
+    if (leg) { c.legKm = leg.distanceKm; c.routedLeg = leg; }
+  }
+  const stops = finalize(chosen, totalKm, route, opts, vehicle, warnings, certifiedRoute);
+  const totals = computeTotals(stops, totalKm, route, opts, vehicle, certifiedRoute);
 
   const status: PlanStatus = corridor.failedSamples.length > 0 || unknownCandidates.size > 0 ? 'degraded' : 'ok';
   const plan: TripPlan = {
@@ -973,9 +998,9 @@ async function planCore(
     vehicle: vehicleMeta,
     status,
     source: 'live',
-    routeDistanceKm: route.distanceKm,
-    routeDurationMin: route.durationMin,
-    geometry: route.geometry,
+    routeDistanceKm: certifiedRoute.totalDistanceKm,
+    routeDurationMin: certifiedRoute.totalDurationMin,
+    geometry: certifiedRoute.geometry,
     stops,
     totals,
     stationsSeen: corridor.stationsSeen,
@@ -1116,14 +1141,27 @@ export function finalize(
   opts: ResolvedPlanOptions,
   vehicle: VehicleConfig,
   warnings: string[],
+  certified?: CertifiedRouteLegs,
 ): PlanStop[] {
+  const routedByStation = new Map((certified?.legs ?? [])
+    .filter((leg) => leg.stationId !== null)
+    .map((leg) => [leg.stationId as number, leg]));
   const stops: PlanStop[] = [];
   let etaMin = 0;
   let departureSoc = opts.startSocPct;
 
-  for (let i = 0; i < chosen.length; i++) {
+  for (let i = 0; i < chosen.length; i += 1) {
     const cur = chosen[i] as ChosenStop;
-    const legKm = cur.legKm;
+    const routed = cur.routedLeg ?? routedByStation.get(cur.cand.candidate.stationId);
+    if (certified && routed === undefined) {
+      throw new PlanningError(`Missing actual road certificate for stop ${cur.cand.candidate.stationId}.`,
+        'not_determined', 'route-leg');
+    }
+    const legKm = routed?.distanceKm ?? cur.legKm;
+    if (certified && (!Number.isFinite(legKm) || legKm < 0)) {
+      throw new PlanningError('Certified road leg distance is invalid.',
+        'not_determined', 'route-leg');
+    }
     // Selection reserves a conservative buffer. Final numbers must carry
     // actual departure energy forward, including charge not needed at an
     // early stop, rather than resetting every later arrival to that buffer.
@@ -1136,13 +1174,17 @@ export function finalize(
     const arriveSocPct = socAfterDriving(legKm, departureSoc, vehicle);
 
     // Charge at this stop covers the NEXT hop (or the final run to the destination).
-    const nextChain = i + 1 < chosen.length ? (chosen[i + 1] as ChosenStop).cand.candidate.chainageKm : totalKm;
-    const nextDetour = i + 1 < chosen.length ? (chosen[i + 1] as ChosenStop).cand.candidate.offRouteKm : 0;
-    const nextLegKm =
-      nextChain -
-      cur.cand.candidate.chainageKm +
-      cur.cand.candidate.offRouteKm +
-      nextDetour;
+    const nextRouted = i + 1 < chosen.length
+      ? (chosen[i + 1] as ChosenStop).routedLeg ??
+        routedByStation.get((chosen[i + 1] as ChosenStop).cand.candidate.stationId)
+      : certified?.legs.at(-1);
+    const nextLegKm = nextRouted?.distanceKm ?? (
+      i + 1 < chosen.length
+        ? (chosen[i + 1] as ChosenStop).cand.candidate.chainageKm -
+          cur.cand.candidate.chainageKm + cur.cand.candidate.offRouteKm +
+          (chosen[i + 1] as ChosenStop).cand.candidate.offRouteKm
+        : certified?.legs.at(-1)?.distanceKm ??
+          totalKm - cur.cand.candidate.chainageKm + cur.cand.candidate.offRouteKm);
     const neededSoc = socRequiredUncapped(nextLegKm, opts.minArrivalSocPct + 2, vehicle);
 
     let leaveSoc: number;
@@ -1160,9 +1202,10 @@ export function finalize(
       leaveSoc = leave;
     } else {
       if (neededSoc > Math.min(opts.absoluteMaxSocPct, 100) + 1e-6) {
-        throw new PlanningError(
-          `The leg leaving "${cur.cand.view.name}" is ${nextLegKm.toFixed(0)} km; even a full charge cannot cover it safely.`,
-        );
+        const message = `The leg leaving "${cur.cand.view.name}" is ${nextLegKm.toFixed(0)} km; even a full charge cannot cover it safely.`;
+        throw certified
+          ? new PlanningError(message, 'not_determined', 'route-leg')
+          : new PlanningError(message);
       }
       leaveSoc = Math.max(arriveSocPct, Math.min(opts.maxSocPerStopPct, neededSoc));
       if (neededSoc > opts.maxSocPerStopPct && neededSoc > arriveSocPct) {
@@ -1187,7 +1230,7 @@ export function finalize(
     const estimatedCost = rawCost != null && Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : null;
     if (rawCost != null && estimatedCost == null) warnings.push(`Charging cost at "${cur.cand.view.name}" is unknown because its numeric estimate is outside the supported range.`);
 
-    etaMin += legTimeMin(legKm, route);
+    etaMin += routed?.durationMin ?? legTimeMin(legKm, route);
     stops.push({
       station: cur.cand.view,
       chainageKm: round1(cur.cand.candidate.chainageKm),
@@ -1220,6 +1263,7 @@ export function computeTotals(
   route: { distanceKm: number; durationMin: number },
   opts: ResolvedPlanOptions,
   vehicle: VehicleConfig,
+  certified?: CertifiedRouteLegs,
 ): PlanTotals {
   const chargeMin = stops.reduce((s, x) => s + x.chargeTimeMin, 0);
   const kwh = stops.reduce((s, x) => s + x.chargeKwh, 0);
@@ -1231,20 +1275,31 @@ export function computeTotals(
   // Each off-route stop requires leaving and rejoining the base route.
   // Match the proportional travel-time model already used by stop ETAs;
   // otherwise the trip total silently omits driving that its legs include.
-  const detourKm = 2 * stops.reduce((sum, stop) => sum + stop.detourKm, 0);
-  const driveMin = route.durationMin + legTimeMin(detourKm, route);
+  const driveMin = certified?.totalDurationMin ??
+    route.durationMin + legTimeMin(2 * stops.reduce((sum, stop) => sum + stop.detourKm, 0), route);
   if (!Number.isFinite(chargeMin) || chargeMin < 0 || !Number.isFinite(driveMin + chargeMin)) {
     throw new PlanningError('Plan not determined: charging metadata does not support a finite trip-time estimate.', 'not_determined');
   }
   const last = stops.at(-1);
-  const finalLegKm = last ? totalKm - last.chainageKm + last.detourKm : totalKm;
+  const finalLegKm = certified?.legs.at(-1)?.distanceKm ??
+    (last ? totalKm - last.chainageKm + last.detourKm : totalKm);
+  if (finalLegKm > opts.maxLegKm + 1e-6 ||
+      socAfterDrivingUncapped(finalLegKm, last ? last.leaveSocPct : opts.startSocPct, vehicle) <
+        opts.minArrivalSocPct - 1e-6) {
+    throw new PlanningError('The actual final road leg fails the reserve or safe-range check.',
+      'not_determined', 'route-leg');
+  }
+  if (!Number.isFinite(finalLegKm) || finalLegKm < 0) {
+    throw new PlanningError('Certified final road leg distance is invalid.',
+      'not_determined', 'route-leg');
+  }
   const finalSoc = socAfterDriving(
     finalLegKm,
     last ? last.leaveSocPct : opts.startSocPct,
     vehicle,
   );
   return {
-    distanceKm: totalKm,
+    distanceKm: certified?.totalDistanceKm ?? totalKm,
     driveTimeMin: Math.round(driveMin),
     chargeTimeMin: Math.round(chargeMin),
     totalTimeMin: Math.round(driveMin + chargeMin),

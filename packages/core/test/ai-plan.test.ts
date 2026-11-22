@@ -2,11 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { planTripDetailed, finalize, type PlanBundle, type PlannerCandidate } from '../src/planner.js';
 import { assembleAiPlan, validateAiChoice } from '../src/ai-plan.js';
 import { DEFAULT_PLAN_OPTIONS, type TripPlan } from '../src/plan-types.js';
-import { HARIER_EV_75, chargeTimeMin, kwhForSocDelta, socAfterDriving, socRequiredForArrival } from '../src/vehicle.js';
+import { HARIER_EV_75, chargeTimeMin, kwhForSocDelta, socAfterDriving, socRequiredForArrival, socRequiredUncapped } from '../src/vehicle.js';
 import type { OsrmRouter, RouteResult } from '../src/router.js';
 import type { StatiqClient } from '../src/statiq.js';
 import type { StatiqDetailsResponse, StatiqMarkersResponse, StatiqStationDetail, StatiqCharger } from '../src/types.js';
 import type { Coords } from '../src/geo.js';
+import { certificateForChoice, endpointRouter } from './support/road-fixture.js';
 
 const KM_PER_DEG = 111.32;
 
@@ -35,7 +36,13 @@ function makeRoute(totalKm: number): RouteResult {
 }
 
 function fakeRouter(totalKm: number): OsrmRouter {
-  return { route: async () => makeRoute(totalKm) } as unknown as OsrmRouter;
+  let first = true;
+  const endpoint = endpointRouter();
+  return { route: async (from: Coords, to: Coords, signal?: AbortSignal,
+    via: readonly Coords[] = []) => {
+    if (first) { first = false; return makeRoute(totalKm); }
+    return endpoint.route(from, to, signal, via);
+  } } as unknown as OsrmRouter;
 }
 
 interface StationSpec {
@@ -232,7 +239,8 @@ describe('validateAiChoice', () => {
     const v = validateAiChoice(bundle, { stationIds: alt }, {}, HARIER_EV_75);
     expect(v.ok).toBe(true);
     if (!v.ok) return;
-    const plan = assembleAiPlan(bundle, v.seq, { applied: true, notes: 'prefers even spacing' }, {}, HARIER_EV_75);
+    const certificate = await certificateForChoice(bundle, alt, endpointRouter());
+    const plan = assembleAiPlan(bundle, v.seq, { applied: true, notes: 'prefers even spacing' }, {}, HARIER_EV_75, certificate);
     expect(plan.stops.map((s) => s.station.stationId)).toEqual(alt);
     for (const s of plan.stops) {
       expect(s.arriveSocPct).toBeGreaterThanOrEqual(10 - 0.5);
@@ -285,7 +293,8 @@ describe('validateAiChoice', () => {
     const v = validateAiChoice(bundle, { stationIds: bundle.plan.stops.map(s => s.station.stationId) },
       { maxChargerKw: 100 }, HARIER_EV_75);
     expect(v.ok).toBe(true); if (!v.ok) return;
-    const rebuilt = assembleAiPlan(bundle, v.seq, { applied: true }, { maxChargerKw: 100 }, HARIER_EV_75);
+    const certificate = await certificateForChoice(bundle, v.seq.map((s) => s.cand.candidate.stationId), endpointRouter());
+    const rebuilt = assembleAiPlan(bundle, v.seq, { applied: true }, { maxChargerKw: 100 }, HARIER_EV_75, certificate);
     const stop = rebuilt.stops.find(s => s.station.stationId === mixed.id);
     expect(stop).toBeDefined(); if (!stop) return;
     expect(stop.pricePerKwh).toBeNull();
@@ -513,7 +522,7 @@ describe('AI-safe candidates', () => {
   });
 });
 
-it('AI rebuild charges the final stop from geometry chainage, not OSRM metadata', () => {
+it('AI rebuild charges the final stop from geometry chainage, not OSRM metadata', async () => {
   const geometryKm = 700;
   const bundle = handBuiltBundle([300, 550], geometryKm);
   // OSRM metadata can differ from the geometry chainage used for validation.
@@ -521,19 +530,31 @@ it('AI rebuild charges the final stop from geometry chainage, not OSRM metadata'
   const validation = validateAiChoice(bundle, { stationIds: [idAt(300), idAt(550)] }, {}, HARIER_EV_75);
   expect(validation.ok).toBe(true);
   if (!validation.ok) return;
-  const plan = assembleAiPlan(bundle, validation.seq, { applied: true }, {}, HARIER_EV_75);
+  const certificate = await certificateForChoice(bundle, [idAt(300), idAt(550)], endpointRouter());
+  const plan = assembleAiPlan(bundle, validation.seq, { applied: true }, {}, HARIER_EV_75, certificate);
 
-  const geometryTotalKm = routeLengthKmForTest(bundle.route.geometry);
+  const actualFinalLegKm = certificate.legs.at(-1)!.distanceKm;
   const last = plan.stops.at(-1)!;
-  const finalLegKm = geometryTotalKm - last.chainageKm + last.detourKm;
+  const incomingLegKm = certificate.legs.find((leg) => leg.stationId === last.station.stationId)!.distanceKm;
+  const firstArriveSoc = socAfterDriving(certificate.legs[0]!.distanceKm,
+    DEFAULT_PLAN_OPTIONS.startSocPct, HARIER_EV_75);
   const buffer = DEFAULT_PLAN_OPTIONS.minArrivalSocPct + 2;
-  const expectedArriveSoc = buffer;
-  const expectedLeaveSoc = socRequiredForArrival(finalLegKm, buffer, HARIER_EV_75);
-  const expectedChargeKwh = kwhForSocDelta(expectedArriveSoc, expectedLeaveSoc, HARIER_EV_75);
-  const expectedDestinationSoc = Math.round(socAfterDriving(finalLegKm, expectedLeaveSoc, HARIER_EV_75));
+  const firstNeededSoc = socRequiredUncapped(incomingLegKm, buffer, HARIER_EV_75);
+  const previousLeave = firstNeededSoc > DEFAULT_PLAN_OPTIONS.maxSocPerStopPct + 1e-6 &&
+    firstArriveSoc < firstNeededSoc
+    ? Math.min(DEFAULT_PLAN_OPTIONS.absoluteMaxSocPct, firstNeededSoc)
+    : Math.max(firstArriveSoc, Math.min(DEFAULT_PLAN_OPTIONS.maxSocPerStopPct, firstNeededSoc));
+  const actualArriveSoc = socAfterDriving(incomingLegKm, previousLeave, HARIER_EV_75);
+  const finalNeededSoc = socRequiredUncapped(actualFinalLegKm, buffer, HARIER_EV_75);
+  const expectedLeaveSoc = finalNeededSoc > DEFAULT_PLAN_OPTIONS.maxSocPerStopPct + 1e-6 &&
+    actualArriveSoc < finalNeededSoc
+    ? Math.min(DEFAULT_PLAN_OPTIONS.absoluteMaxSocPct, finalNeededSoc)
+    : Math.max(actualArriveSoc, Math.min(DEFAULT_PLAN_OPTIONS.maxSocPerStopPct, finalNeededSoc));
+  const expectedChargeKwh = kwhForSocDelta(actualArriveSoc, expectedLeaveSoc, HARIER_EV_75);
+  const expectedDestinationSoc = Math.round(socAfterDriving(actualFinalLegKm, expectedLeaveSoc, HARIER_EV_75));
 
-  expect(plan.totals.distanceKm).toBeCloseTo(geometryTotalKm, 6);
-  expect(last.arriveSocPct).toBeCloseTo(Math.round(expectedArriveSoc * 10) / 10, 1);
+  expect(plan.totals.distanceKm).toBeCloseTo(certificate.totalDistanceKm, 6);
+  expect(last.arriveSocPct).toBeCloseTo(Math.round(actualArriveSoc * 10) / 10, 1);
   expect(last.leaveSocPct).toBeCloseTo(Math.round(expectedLeaveSoc * 10) / 10, 1);
   expect(last.chargeKwh).toBeCloseTo(Math.round(expectedChargeKwh * 10) / 10, 1);
   expect(plan.totals.finalSocPct).toBe(expectedDestinationSoc);
@@ -546,7 +567,7 @@ it('AI rebuild charges the final stop from geometry chainage, not OSRM metadata'
   ).at(-1)!;
   const metadataFinalLegKm = bundle.plan.routeDistanceKm - metadataLast.chainageKm + metadataLast.detourKm;
   const metadataExpectedLeave = socRequiredForArrival(metadataFinalLegKm, buffer, HARIER_EV_75);
-  expect(metadataFinalLegKm).toBeLessThan(finalLegKm - 40);
+  expect(metadataFinalLegKm).toBeLessThan(actualFinalLegKm - 40);
   expect(metadataLast.leaveSocPct).toBeCloseTo(Math.round(metadataExpectedLeave * 10) / 10, 1);
   expect(metadataLast.chargeKwh).toBeLessThan(last.chargeKwh);
 });
@@ -564,7 +585,8 @@ it('AI alternatives inherit degraded numeric evidence and unknown cost without r
   expect(bundle.usableCandidates.some(candidate => candidate.candidate.stationId === brokenId)).toBe(false);
   const validation = validateAiChoice(bundle, { stationIds: bundle.plan.stops.map(stop => stop.station.stationId) }, {}, HARIER_EV_75);
   expect(validation.ok).toBe(true); if (!validation.ok) return;
-  const plan = assembleAiPlan(bundle, validation.seq, { applied: true }, {}, HARIER_EV_75);
+  const certificate = await certificateForChoice(bundle, validation.seq.map((s) => s.cand.candidate.stationId), endpointRouter());
+  const plan = assembleAiPlan(bundle, validation.seq, { applied: true }, {}, HARIER_EV_75, certificate);
   expect(plan.status).toBe('degraded'); expect(plan.totals.estPriceInr).toBeNull();
   expect(Number.isFinite(plan.totals.totalTimeMin)).toBe(true);
   expect(plan.warnings.join(' ')).toContain('power is invalid');

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { resolveVehicle, StatiqRunFatalError } from '@indeev/core';
 import { runSelective } from '../src/selective-run.js';
+import { endpointRouter } from '../../../packages/core/test/support/road-fixture.js';
 
 const station = {
   stationId: 42, name: 'Statiq Select', lat: 1.347, lon: 0,
@@ -57,12 +58,7 @@ describe('AI-first selective run', () => {
     const stages: string[] = [];
     const result = await runSelective({
       ai: { baseUrl: 'https://ai.test/v1', apiKey: 'k', model: 'm', fetchImpl: aiFetch },
-      router: {
-        route: async () => ({
-          distanceKm: 285, durationMin: 285,
-          geometry: [{ lat: 0, lon: 0 }, { lat: 2.56, lon: 0 }],
-        }),
-      } as never,
+      router: endpointRouter() as never,
       statiq,
       origin: { label: 'A', lat: 0, lon: 0 },
       destination: { label: 'B', lat: 2.56, lon: 0 },
@@ -107,8 +103,7 @@ describe('AI-first selective run', () => {
     }) as typeof fetch;
     const result = await runSelective({
       ai: { baseUrl: 'https://ai.test/v1', apiKey: 'k', model: 'm', fetchImpl: aiFetch },
-      router: { route: async () => ({ distanceKm: 285, durationMin: 285,
-        geometry: [{ lat: 0, lon: 0 }, { lat: 2.56, lon: 0 }] }) } as never,
+      router: endpointRouter() as never,
       statiq,
       origin: { label: 'A', lat: 0, lon: 0 }, destination: { label: 'B', lat: 2.56, lon: 0 },
       via: [], resolved: resolveVehicle(), planOptions: {},
@@ -146,8 +141,7 @@ describe('AI-first selective run', () => {
     await expect(runSelective({
       ai: { baseUrl: 'https://ai.test/v1', apiKey: 'k', model: 'm' },
       aiToolCall,
-      router: { route: async () => ({ distanceKm: 285, durationMin: 285,
-        geometry: [{ lat: 0, lon: 0 }, { lat: 2.56, lon: 0 }] }) } as never,
+      router: endpointRouter() as never,
       statiq,
       origin: { label: 'A', lat: 0, lon: 0 }, destination: { label: 'B', lat: 2.56, lon: 0 },
       via: [], resolved: resolveVehicle(), planOptions: {},
@@ -167,8 +161,7 @@ describe('final-answer host contract', () => {
   const makeDeps = (distanceKm: number, stationCount: number, aiToolCall: never) => ({
     ai: { baseUrl: 'https://ai.test/v1', apiKey: 'k', model: 'm' },
     aiToolCall,
-    router: { route: async () => ({ distanceKm, durationMin: distanceKm,
-      geometry: [{ lat: 0, lon: 0 }, { lat: distanceKm / 111.32, lon: 0 }] }) } as never,
+    router: endpointRouter() as never,
     statiq: {
       markers: async () => ({ ok: true, live: true, retained: false, source: 'test',
         count: stationCount, stations: stationCount > 0 ? [{
@@ -317,8 +310,7 @@ describe('final-answer host contract', () => {
         toolMessages = messages;
         throw new Error('stop after rejected fact capture');
       },
-      router: { route: async () => ({ distanceKm: 285, durationMin: 285,
-        geometry: [{ lat: 0, lon: 0 }, { lat: 2.56, lon: 0 }] }) } as never,
+      router: endpointRouter() as never,
       statiq: {
         markers: async () => ({ ok: true, live: true, retained: false, source: 'test', count: 1,
           stations: [{ stationId: 42, name: station.name, lat: 1.347, lon: 0,
@@ -548,8 +540,7 @@ describe('original reserve and target AI limits', () => {
     }) as typeof fetch;
     await runSelective({
       ai: { baseUrl: 'https://ai.test/v1', apiKey: 'k', model: 'm', fetchImpl: aiFetch },
-      router: { route: async () => ({ distanceKm: 100, durationMin: 100,
-        geometry: [{ lat: 0, lon: 0 }, { lat: 0.899, lon: 0 }] }) } as never,
+      router: endpointRouter() as never,
       statiq: { markers: async () => ({ ok: true, live: true, retained: false,
         source: 'test', count: 0, stations: [] }) } as never,
       origin: { label: 'A', lat: 0, lon: 0 },

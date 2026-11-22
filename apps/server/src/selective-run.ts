@@ -7,6 +7,7 @@ import {
   UpstreamBudget, assembleAiPlan, computeTotals, cumulativeKm, finalize,
   createProviderFailureCollector, isAbortLike, StatiqRunFatalError, UpstreamRunStoppedError,
   discoverSelective, hydrateSelective, validateAiChoice, socAfterDrivingUncapped,
+  certifySelectedRouteLegs, type CertifiedRouteLegs,
   resolvePlanOptions,
   type CorridorCandidate, type OsrmRouter, type PlanOptions, type PlanRunBudget, type PlannerCandidate, type ProviderFailureReport,
   type ResolvedVehicle, type StatiqClient, type TripPlan,
@@ -322,11 +323,8 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
       }
       const choice = { chosenStationIds: ids, notes };
       const usable = [...hydrated.values()];
-      const totalKm = discovery.route.geometry.length > 0
-        ? cumulativeKm(discovery.route.geometry).at(-1) ?? discovery.route.distanceKm
-        : discovery.route.distanceKm;
-      const baseStops = finalize([], totalKm, discovery.route, opts, deps.resolved.config, warnings);
-      const plan: TripPlan = {
+      const byId = new Map(usable.map((c) => [c.candidate.stationId, c]));
+      const plan: Omit<TripPlan, 'stops' | 'totals'> = {
         id: crypto.randomUUID(), createdAt: new Date().toISOString(),
         origin: deps.origin, destination: deps.destination,
         ...(deps.via.length > 0 ? { via: deps.via.map((v) => ({ ...v })) } : {}),
@@ -337,25 +335,49 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
         },
         status: 'ok', source: 'live',
         routeDistanceKm: discovery.route.distanceKm, routeDurationMin: discovery.route.durationMin,
-        geometry: discovery.route.geometry, stops: baseStops,
-        totals: computeTotals(baseStops, totalKm, discovery.route, opts, deps.resolved.config),
+        geometry: discovery.route.geometry,
         stationsSeen: discovery.candidates.length, warnings,
       };
       const bundle = { plan, usableCandidates: usable, route: discovery.route };
-      const validation = validateAiChoice(bundle,
+      const initialValidation = validateAiChoice(bundle,
         { stationIds: choice.chosenStationIds, notes: typeof choice.notes === 'string' ? choice.notes : undefined },
         deps.planOptions, deps.resolved.config);
-      if (!validation.ok) {
+      if (!initialValidation.ok) {
         messages.push({ role: 'assistant', content: reply.content });
-        lastReason = validation.reason;
-        messages.push({ role: 'user', content: `Choice rejected: ${validation.reason}. Choose again or report no fit.` });
+        lastReason = initialValidation.reason;
+        messages.push({ role: 'user', content: `Choice rejected: ${initialValidation.reason}. Choose again or report no fit.` });
         continue;
+      }
+      let certified: CertifiedRouteLegs;
+      try {
+        certified = await certifySelectedRouteLegs(deps.router, discovery.route,
+          deps.origin, deps.destination, deps.via, choice.chosenStationIds.map((id) => {
+            const c = byId.get(id);
+            return { stationId: id, label: c?.candidate.name ?? `station ${id}`,
+              coords: { lat: c?.candidate.lat ?? 0, lon: c?.candidate.lon ?? 0 },
+              chainageKm: c?.candidate.chainageKm ?? 0 };
+          }), signal);
+      } catch (err) {
+        if (isAbortLike(err)) throw err;
+        throw new SelectiveRunError(
+          `The selected stops failed actual road certification: ${
+            err instanceof Error ? err.message : String(err)}`, diag());
+      }
+      plan.routeDistanceKm = certified.totalDistanceKm;
+      plan.routeDurationMin = certified.totalDurationMin;
+      plan.geometry = certified.geometry;
+      const validation = validateAiChoice(bundle,
+        { stationIds: choice.chosenStationIds, notes: typeof choice.notes === 'string' ? choice.notes : undefined },
+        deps.planOptions, deps.resolved.config, certified);
+      if (!validation.ok) {
+        throw new SelectiveRunError(
+          `The selected stops failed actual road certification: ${validation.reason}`, diag());
       }
       stage('finalize');
       if (signal.aborted) break;
       const rebuilt = assembleAiPlan(bundle, validation.seq,
         { applied: true, notes: typeof choice.notes === 'string' ? choice.notes : undefined },
-        deps.planOptions, deps.resolved.config);
+        deps.planOptions, deps.resolved.config, certified);
       return {
         plan: rebuilt,
         notes: typeof choice.notes === 'string' ? choice.notes : undefined,

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { resolveVehicle } from '@indeev/core';
 import { runSelective } from '../src/selective-run.js';
+import { endpointRouter } from '../../../packages/core/test/support/road-fixture.js';
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 function deferred<T>() {
@@ -23,8 +24,7 @@ function deps(geometry: Array<{ lat: number; lon: number }>, markers: () => Prom
     run: {
       ai: { baseUrl: 'https://ai.test/v1', apiKey: 'test-key', model: 'test-model' },
       aiToolCall: ai,
-      router: { route: async () => ({ distanceKm: geometry.length > 1 ? 20 : 0,
-        durationMin: 24, geometry }) } as never,
+      router: endpointRouter() as never,
       statiq: { markers } as never,
       origin: { label: 'A', lat: 0, lon: 0 },
       destination: { label: 'B', lat: geometry.length > 1 ? 0.18 : 0, lon: 0 },
@@ -70,15 +70,21 @@ describe('discovery progress carries typed ok/failed counts', () => {
     const stages: Stage[] = [];
     const d = deps([{ lat: 0, lon: 0 }], async () => ({ ok: true, live: true,
       retained: false, source: 'test', count: 0, stations: [] }));
-    const pending = runSelective({ ...d.run, onStage: (...args) => { stages.push(args); } });
+    const degenerateRouter = { route: async () => ({ distanceKm: 0, durationMin: 0,
+      geometry: [{ lat: 0, lon: 0 }] }) } as never;
+    const pending = runSelective({ ...d.run, router: degenerateRouter,
+      aiToolCall: async () => {
+        await d.gate.promise;
+        return { content: JSON.stringify({ chosenStationIds: [], status: 'not_determined' }),
+          toolCalls: [] };
+      },
+      onStage: (...args) => { stages.push(args); } });
     try {
       for (let i = 0; i < 20; i += 1) await tick();
       expect(stages.find((s) => s[0] === 'shortlist')?.[3]).toEqual({ ok: 0, failed: 0 });
       d.gate.resolve();
-      const result = await pending;
-      expect(result.diagnostics.samplesPlanned).toBe(0);
-      expect(result.diagnostics.samplesOk).toBe(0);
-      expect(result.diagnostics.samplesFailed).toBe(0);
+      await expect(pending).rejects.toMatchObject({ name: 'SelectiveRunError',
+        diagnostics: { samplesPlanned: 0, samplesOk: 0, samplesFailed: 0 } });
     } finally {
       d.gate.resolve();
       await pending.catch(() => {});

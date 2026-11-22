@@ -107,8 +107,11 @@ describe('lossless compact candidate projection', () => {
     }) as typeof fetch;
     await runSelective({
       ai: { baseUrl: 'https://ai.test/v1', apiKey: 'k', model: 'm', fetchImpl: aiFetch },
-      router: { route: async () => ({ distanceKm: 180, durationMin: 180,
-        geometry: [{ lat: 0, lon: 0 }, { lat: 1.62, lon: 0 }] }) } as never,
+      router: { route: async (from, to) => {
+        const roadKm = Math.hypot((to.lat - from.lat) * 111.32,
+          (to.lon - from.lon) * 111.32) + 1;
+        return { distanceKm: roadKm, durationMin: roadKm, geometry: [from, to] };
+      } } as never,
       statiq,
       origin: { label: 'A', lat: 0, lon: 0 }, destination: { label: 'B', lat: 1.62, lon: 0 },
       via: [], resolved: resolveVehicle(), planOptions: {},

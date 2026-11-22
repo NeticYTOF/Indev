@@ -5,8 +5,9 @@ import type { OsrmRouter, RouteResult } from '../src/router.js';
 import type { StatiqClient } from '../src/statiq.js';
 import { StatiqApiError } from '../src/statiq.js';
 import { resolveVehicle } from '../src/vehicle-catalog.js';
-import type { Coords } from '../src/geo.js';
+import { haversineKm, type Coords } from '../src/geo.js';
 import type { StatiqDetailsResponse, StatiqMarkersResponse, StatiqStationDetail, StatiqCharger } from '../src/types.js';
+import { endpointRouter } from './support/road-fixture.js';
 
 const KM_PER_DEG = 111.32;
 
@@ -21,7 +22,13 @@ function makeRoute(totalKm: number): RouteResult {
 }
 
 function fakeRouter(totalKm: number): OsrmRouter {
-  return { route: async () => makeRoute(totalKm) } as unknown as OsrmRouter;
+  let first = true;
+  const endpoint = endpointRouter();
+  return { route: async (from: Coords, to: Coords, signal?: AbortSignal,
+    via: readonly Coords[] = []) => {
+    if (first) { first = false; return makeRoute(totalKm); }
+    return endpoint.route(from, to, signal, via);
+  } } as unknown as OsrmRouter;
 }
 
 interface StationSpec {
@@ -75,7 +82,8 @@ function stationDetail(spec: StationSpec): StatiqStationDetail {
     stationId: spec.id,
     name: spec.name,
     lat: spec.chainageKm / KM_PER_DEG,
-    lon: 0,
+    lon: (spec.offRouteKm ?? 0) /
+      (KM_PER_DEG * Math.cos((spec.chainageKm / KM_PER_DEG) * Math.PI / 180)),
     address: null,
     area: null,
     city: null,
@@ -311,11 +319,11 @@ describe('planTrip', () => {
     ];
     const plan = await planTrip({ router: fakeRouter(700), statiq: fakeStatiq(stations) }, O, D(700));
     expect(plan.stops.length).toBeGreaterThan(1);
-    const roundTripDetours = 2 * plan.stops.reduce((sum, stop) => sum + stop.detourKm, 0);
-    expect(roundTripDetours).toBeGreaterThan(5);
-    // Fixture routing has one driving minute per km. Off-route distances
-    // already enter individual leg ETAs and must also enter trip totals.
-    expect(plan.totals.driveTimeMin).toBe(Math.round(700 + roundTripDetours));
+    const estimatedDetours = 2 * plan.stops.reduce((sum, stop) => sum + stop.detourKm, 0);
+    expect(estimatedDetours).toBeGreaterThan(5);
+    // Certified endpoint-aware legs already include leave/rejoin travel.
+    expect(plan.totals.distanceKm).toBeGreaterThan(haversineKm(O, D(700)));
+    expect(plan.totals.driveTimeMin).toBe(Math.round(plan.totals.distanceKm));
     expect(plan.totals.totalTimeMin).toBe(plan.totals.driveTimeMin + plan.totals.chargeTimeMin);
   });
 
@@ -1146,12 +1154,18 @@ interface PlannerRouteCall {
 }
 
 function recordingPlannerRouter(totalKm: number, calls: PlannerRouteCall[], hold?: Promise<void>, onDispatch?: () => void): OsrmRouter {
+  const endpoint = endpointRouter();
   return { route: async (origin: Coords, destination: Coords, _signal?: AbortSignal, via?: readonly Coords[]) => {
+    const first = calls.length === 0;
     calls.push({ origin: { ...origin }, destination: { ...destination },
       via: via?.map(point => ({ label: (point as PlannerViaFact).label, lat: point.lat, lon: point.lon })) });
     onDispatch?.();
     if (hold) await hold;
-    return makeRoute(totalKm);
+    if (first) {
+      return { distanceKm: totalKm, durationMin: totalKm,
+        geometry: [origin, ...(via ?? []), destination] };
+    }
+    return endpoint.route(origin, destination, _signal, via);
   }} as unknown as OsrmRouter;
 }
 function countingPlannerDeps(counts: { router: number; statiq: number }) {
@@ -1162,11 +1176,10 @@ function countingPlannerDeps(counts: { router: number; statiq: number }) {
 }
 
 for (const [name, via] of [
-  ["one", [{ label: "V One", lat: 1, lon: 1 }]],
-  ["five", [
-    { label: "V1", lat: 1, lon: 1 }, { label: "V2", lat: 2, lon: 2 }, { label: "V3", lat: 3, lon: 3 },
-    { label: "V4", lat: 4, lon: 4 }, { label: "V5", lat: 5, lon: 5 },
-  ]],
+  ["one", [{ label: "V One", lat: 100 / KM_PER_DEG, lon: 0 }]],
+  ["five", [75, 150, 225, 300, 375].map((km, i) => ({
+    label: `V${i + 1}`, lat: km / KM_PER_DEG, lon: 0,
+  }))],
 ] as const) {
   it("routes through " + name + " ordered stopover(s) in one full route", async () => {
     const input: PlannerViaFact[] = via.map(point => ({ label: point.label, lat: point.lat, lon: point.lon }));
@@ -1174,18 +1187,24 @@ for (const [name, via] of [
     const calls: PlannerRouteCall[] = [];
     const stations: StationSpec[] = [{ id: 1, name: "Statiq 250", chainageKm: 250 }];
     const plan = await planTrip({ router: recordingPlannerRouter(450, calls), statiq: fakeStatiq(stations) }, O, D(450), { via: input });
-    expect(calls.length).toBe(1);
     expect(calls[0]?.origin).toEqual(O);
     expect(calls[0]?.destination).toEqual(D(450));
     expect(calls[0]?.via).toEqual(expected);
+    expect(calls.length).toBe(1 + via.length + plan.stops.length + 1);
     expect(plan.via).toEqual(expected);
-    expect(plan.routeDistanceKm).toBeCloseTo(450, 1);
+    const viaIndexes = expected.map((point) => plan.geometry.findIndex(
+      (coord) => coord.lat === point.lat && coord.lon === point.lon,
+    ));
+    expect(viaIndexes.every((index) => index >= 0)).toBe(true);
+    expect(viaIndexes).toEqual([...viaIndexes].sort((a, b) => a - b));
     const baseline = await planTrip({ router: fakeRouter(450), statiq: fakeStatiq(stations) }, O, D(450));
-    expect(plan.geometry).toEqual(baseline.geometry);
-    expect(plan.totals).toEqual(baseline.totals);
-    expect(plan.totals.finalSocPct).toBeGreaterThan(9);
-    expect(plan.stops.map(s => [s.chainageKm, s.arriveSocPct, s.leaveSocPct, s.chargeKwh]))
-      .toEqual(baseline.stops.map(s => [s.chainageKm, s.arriveSocPct, s.leaveSocPct, s.chargeKwh]));
+    expect(plan.stops.map((s) => [s.chainageKm, s.arriveSocPct, s.leaveSocPct, s.chargeKwh]))
+      .toEqual(baseline.stops.map((s) => [s.chainageKm, s.arriveSocPct, s.leaveSocPct, s.chargeKwh]));
+    const { distanceKm: viaKm, ...viaOtherTotals } = plan.totals;
+    const { distanceKm: baselineKm, ...baselineOtherTotals } = baseline.totals;
+    expect(viaOtherTotals).toEqual(baselineOtherTotals);
+    expect(viaKm).toBeCloseTo(baselineKm, 9);
+    expect(plan.routeDistanceKm).toBeCloseTo(baseline.routeDistanceKm, 9);
   });
 }
 
@@ -1210,7 +1229,8 @@ it("copies caller via facts before an awaited router dispatch", async () => {
   let dispatched!: () => void;
   const routed = new Promise<void>(resolve => { dispatched = resolve; });
   const input: PlannerViaFact[] = [
-    { label: "Original", lat: 1, lon: 1 }, { label: "Second", lat: 2, lon: 2 },
+    { label: "Original", lat: 100 / KM_PER_DEG, lon: 0 },
+    { label: "Second", lat: 200 / KM_PER_DEG, lon: 0 },
   ];
   const expected = input.map(point => ({ ...point }));
   const calls: PlannerRouteCall[] = [];
@@ -1221,12 +1241,15 @@ it("copies caller via facts before an awaited router dispatch", async () => {
   input.push({ label: "Extra", lat: 3, lon: 3 });
   release();
   const plan = await pending;
-  expect(calls.length).toBe(1);
+  expect(calls.length).toBeGreaterThan(1); // initial via route, then certified legs
   expect(calls[0]?.via).toEqual(expected);
   expect(plan.via).toEqual(expected);
   const baseline = await planTrip({ router: fakeRouter(450), statiq: fakeStatiq(stations) }, O, D(450));
-  expect(plan.totals).toEqual(baseline.totals);
-  expect(plan.routeDistanceKm).toBe(baseline.routeDistanceKm);
+  const { distanceKm: planDistanceKm, ...planOtherTotals } = plan.totals;
+  const { distanceKm: baselineDistanceKm, ...baselineOtherTotals } = baseline.totals;
+  expect(planOtherTotals).toEqual(baselineOtherTotals);
+  expect(planDistanceKm).toBeCloseTo(baselineDistanceKm, 9);
+  expect(plan.routeDistanceKm).toBeCloseTo(baseline.routeDistanceKm, 9);
 });
 
 it.each([
@@ -1246,6 +1269,24 @@ it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, '60', null])("rejects inva
   const counts = { router: 0, statiq: 0 };
   await expect(planTrip(countingPlannerDeps(counts), O, D(450), { maxChargerKw: maxChargerKw as never })).rejects.toMatchObject({ name: "RouterError", code: "InvalidWaypoints" });
   expect(counts).toEqual({ router: 0, statiq: 0 });
+});
+
+it('classifies a certified leg beyond full battery as route-leg not_determined', async () => {
+  const endpoint = endpointRouter();
+  let first = true;
+  const router = { route: async (from: Coords, to: Coords, signal?: AbortSignal,
+    via: readonly Coords[] = []) => {
+    if (first) { first = false; return makeRoute(200); }
+    if (to.lat === D(200).lat && to.lon === D(200).lon) {
+      return { distanceKm: 500, durationMin: 500, geometry: [from, to] };
+    }
+    return endpoint.route(from, to, signal, via);
+  } } as unknown as OsrmRouter;
+  const stations: StationSpec[] = [{ id: 1, name: 'Statiq 100', chainageKm: 100 }];
+  const err = await planTrip({ router, statiq: fakeStatiq(stations) }, O, D(200),
+    { startSocPct: 35 }).catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(PlanningError);
+  expect(err).toMatchObject({ code: 'not_determined', cause: 'route-leg' });
 });
 
 describe('original reserve and charge-to parity', () => {

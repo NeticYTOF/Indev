@@ -13,6 +13,7 @@ export * from './vehicle-catalog.js';
 export * from './corridor.js';
 export * from './plan-types.js';
 export * from './planner.js';
+export * from './route-legs.js';
 export * from './ai-plan.js';
 export * from './selective-plan.js';
 export * from './trips.js';

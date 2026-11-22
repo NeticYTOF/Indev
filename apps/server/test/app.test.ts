@@ -18,6 +18,7 @@ import {
   type StatiqDetailsResponse,
   type StatiqMarkersResponse,
 } from '@indeev/core';
+import { endpointRouter } from '../../../packages/core/test/support/road-fixture.js';
 
 // Isolated temp stores per test; no live upstream calls anywhere.
 const tempDirs: string[] = [];
@@ -26,16 +27,7 @@ async function makeDeps(overrides: Partial<AppDeps> = {}): Promise<AppDeps> {
   tempDirs.push(dir);
   const deps: AppDeps = {
     createStatiq: () => new StatiqClient({ token: 'test' }),
-    router: {
-      route: async (): Promise<RouteResult> => ({
-        distanceKm: 300,
-        durationMin: 300,
-        geometry: [
-          { lat: 28.6, lon: 77.2 },
-          { lat: 26.9, lon: 75.8 },
-        ],
-      }),
-    } as unknown as OsrmRouter,
+    router: endpointRouter() as unknown as OsrmRouter,
     geocoder: {
       search: async (q: string) => [
         { name: q, label: `${q}, India`, lat: 28.6, lon: 77.2, city: null, state: null, country: 'India' },
@@ -1129,14 +1121,13 @@ describe('ordered stopover API boundary', () => {
   type Place = { label: string; lat: number; lon: number };
   type RouteCall = { origin: Place; destination: Place; via: readonly Place[] };
   type AiMessage = { role: 'system' | 'user' | 'assistant'; content: string };
-  const viaOne: Place[] = [{ label: 'Ahmedabad', lat: 23.02, lon: 72.57 }];
-  const viaFive: Place[] = [
-    { label: 'Nagpur', lat: 21.15, lon: 79.09 },
-    { label: 'Indore', lat: 22.72, lon: 75.86 },
-    { label: 'Ahmedabad', lat: 23.02, lon: 72.57 },
-    { label: 'Surat', lat: 21.17, lon: 72.83 },
-    { label: 'Vapi', lat: 20.37, lon: 72.91 },
-  ];
+  const SHORT_ORIGIN: Place = { label: 'Delhi', lat: 28.6139, lon: 77.209 };
+  const SHORT_DEST: Place = { label: 'Jaipur', lat: 28.6239, lon: 77.219 };
+  const viaAt = (t: number, label: string): Place => ({ label,
+    lat: SHORT_ORIGIN.lat + (SHORT_DEST.lat - SHORT_ORIGIN.lat) * t,
+    lon: SHORT_ORIGIN.lon + (SHORT_DEST.lon - SHORT_ORIGIN.lon) * t });
+  const viaOne: Place[] = [viaAt(0.5, 'Mid')];
+  const viaFive: Place[] = [0.1, 0.3, 0.5, 0.7, 0.9].map((t, i) => viaAt(t, `V${i + 1}`));
   const badVia: unknown[] = [
     null,
     { label: 'X', lat: 23, lon: 72 },
@@ -1145,17 +1136,14 @@ describe('ordered stopover API boundary', () => {
     [{ label: 'Not finite', lat: Number.NaN, lon: 72 }],
     [{ label: 'Out of range', lat: 91, lon: 72 }],
   ];
-  const noViaBody = JSON.stringify({ origin: ORIGIN, destination: DEST });
+  const noViaBody = JSON.stringify({ origin: SHORT_ORIGIN, destination: SHORT_DEST });
   const withViaBody = (via: unknown, startSocPct?: number): string =>
-    JSON.stringify({ origin: ORIGIN, destination: DEST, via, startSocPct });
+    JSON.stringify({ origin: SHORT_ORIGIN, destination: SHORT_DEST, via, startSocPct });
   const aiConfig = { baseUrl: 'https://ai.test/v1', apiKey: 'sk-test', model: 'test-model' };
-  const shortRoute = (): RouteResult => ({
+  const shortRoute = (via: readonly Place[] = []): RouteResult => ({
     distanceKm: 2,
     durationMin: 2,
-    geometry: [
-      { lat: 28.6, lon: 77.2 },
-      { lat: 28.61, lon: 77.21 },
-    ],
+    geometry: [SHORT_ORIGIN, ...via, SHORT_DEST],
   });
 
   async function request(path: string, body: string, mock = false) {
@@ -1181,7 +1169,7 @@ describe('ordered stopover API boundary', () => {
         ): Promise<RouteResult> => {
           calls.router += 1;
           routes.push({ origin, destination, via });
-          return shortRoute();
+          return shortRoute(via);
         },
       } as unknown as OsrmRouter,
     });
@@ -1222,11 +1210,12 @@ describe('ordered stopover API boundary', () => {
         const readings: number[] = [];
         for (const result of [low, high]) {
           expect(result.response.status).toBe(200);
-          expect(result.calls).toEqual({ factory: 1, router: 1, ai: aiCalls });
-          expect(result.routes).toHaveLength(1);
+          expect(result.calls.factory).toBe(1);
+          expect(result.calls.ai).toBe(aiCalls);
+          expect(result.calls.router).toBe(1);
           const call = result.routes[0] as RouteCall;
-          expect(call.origin).toEqual(ORIGIN);
-          expect(call.destination).toEqual(DEST);
+          expect(call.origin).toEqual(SHORT_ORIGIN);
+          expect(call.destination).toEqual(SHORT_DEST);
           expect(call.via).toEqual(via);
           const body = await result.response.json() as {
             plan: { via?: Place[]; totals: { finalSocPct: number } };

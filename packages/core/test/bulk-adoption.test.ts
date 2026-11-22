@@ -8,6 +8,7 @@ import { planTrip } from '../src/planner.js';
 import type { OsrmRouter, RouteResult } from '../src/router.js';
 import { StatiqRunFatalError, type StatiqClient, type BulkItemResult, type StationDetailsWithMeta } from '../src/statiq.js';
 import type { StatiqStationDetail, StatiqMarkersResponse } from '../src/types.js';
+import { endpointRouter } from './support/road-fixture.js';
 
 const KM_PER_DEG = 111.32;
 const LATER = new Date('2026-11-21T10:00:01.000Z');
@@ -65,12 +66,7 @@ describe('planTrip bulk adoption', () => {
         }));
       },
     } as unknown as StatiqClient;
-    const router = { route: async (): Promise<RouteResult> => {
-      const geometry = Array.from({ length: 21 }, (_, i) => ({
-        lat: (200 / KM_PER_DEG) * (i / 20), lon: 0,
-      }));
-      return { distanceKm: 200, durationMin: 200, geometry };
-    } } as unknown as OsrmRouter;
+    const router = endpointRouter();
     // At 50% start the car can reach the 150 km station (~13% left, above the
     // 10% reserve) but cannot finish 200 km (~1% left): one charge is required.
     // Physics is the existing flat-consumption model, unmodified.
@@ -130,12 +126,7 @@ describe('planTrip bulk adoption', () => {
         throw new StatiqRunFatalError('auth', 403, '/stations/details-bulk', 'late batch failure');
       },
     } as unknown as StatiqClient;
-    const router = { route: async (): Promise<RouteResult> => {
-      const geometry = Array.from({ length: 21 }, (_, i) => ({
-        lat: (200 / KM_PER_DEG) * (i / 20), lon: 0,
-      }));
-      return { distanceKm: 200, durationMin: 200, geometry };
-    } } as unknown as OsrmRouter;
+    const router = endpointRouter();
     const error = await planTrip({ router, statiq },
       { label: 'Origin', lat: 0, lon: 0 }, { label: 'Destination', lat: 200 / KM_PER_DEG, lon: 0 },
       { startSocPct: 50 }).catch((e: unknown) => e);
@@ -182,10 +173,7 @@ describe('planTrip bulk adoption', () => {
           source: 'bulk', station: detail(id, 150) }, fetchedAt: LATER },
       })),
     } as unknown as StatiqClient;
-    const router = { route: async (): Promise<RouteResult> => {
-      const geometry = Array.from({ length: 21 }, (_, i) => ({ lat: (200 / KM_PER_DEG) * (i / 20), lon: 0 }));
-      return { distanceKm: 200, durationMin: 200, geometry };
-    } } as unknown as OsrmRouter;
+    const router = endpointRouter();
     const error = await planTrip({ router, statiq },
       { label: 'Origin', lat: 0, lon: 0 }, { label: 'Destination', lat: 200 / KM_PER_DEG, lon: 0 },
       { startSocPct: 50 }).catch((e: unknown) => e);
@@ -230,10 +218,7 @@ describe('planTrip bulk adoption', () => {
           source: 'bulk', station: detail(id, 150) }, fetchedAt: LATER },
       })),
     } as unknown as StatiqClient;
-    const router = { route: async (): Promise<RouteResult> => {
-      const geometry = Array.from({ length: 27 }, (_, i) => ({ lat: (260 / KM_PER_DEG) * (i / 26), lon: 0 }));
-      return { distanceKm: 260, durationMin: 260, geometry };
-    } } as unknown as OsrmRouter;
+    const router = endpointRouter();
     const error = await planTrip({ router, statiq },
       { label: 'Origin', lat: 0, lon: 0 }, { label: 'Destination', lat: 260 / KM_PER_DEG, lon: 0 },
       { startSocPct: 50 }).catch((e: unknown) => e);

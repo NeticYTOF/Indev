@@ -6,6 +6,7 @@ import { chatCompletion, AiProviderError } from '../src/ai-provider.js';
 import type {
   CountersStore, OsrmRouter, PhotonGeocoder, StatiqClient, StatiqMarkersResponse, TripsStore,
 } from '@indeev/core';
+import { endpointRouter } from '../../../packages/core/test/support/road-fixture.js';
 
 const ORIGIN = { label: 'Delhi', lat: 28.6139, lon: 77.209 };
 const DEST = { label: 'Jaipur', lat: 26.9124, lon: 75.7873 };
@@ -45,10 +46,7 @@ async function waitTerminal(
 function depsWith(statiq: StatiqClient, overrides: Partial<AppDeps> = {}): AppDeps {
   return {
     createStatiq: () => statiq,
-    router: { route: async () => ({
-      distanceKm: 300, durationMin: 300,
-      geometry: [{ lat: 28.6, lon: 77.2 }, { lat: 26.9, lon: 75.8 }],
-    }) } as unknown as OsrmRouter,
+    router: endpointRouter() as unknown as OsrmRouter,
     geocoder: {} as PhotonGeocoder,
     trips: {} as TripsStore,
     counters: {} as CountersStore,
@@ -272,8 +270,7 @@ describe('process-local job endpoints', () => {
     const events: Array<{ outcome: string; hostReasons: unknown[] }> = [];
     const statiq = { markers: async () => emptyMarkers } as unknown as StatiqClient;
     const app = createApp(depsWith(statiq, {
-      router: { route: async () => ({ distanceKm: 180, durationMin: 180,
-        geometry: [{ lat: 28.6, lon: 77.2 }, { lat: 27.3, lon: 76.0 }] }) } as never,
+      router: endpointRouter() as never,
       aiToolCall: toolFixture('{"chosenStationIds":[],"notes":"ok"}', []),
       onPlanRunEvent: (event) => { events.push(event); },
     }));
@@ -330,8 +327,7 @@ describe('process-local job endpoints', () => {
     const events: Array<{ outcome: string; finalAnswerEvents?: Array<{ reason: string }> }> = [];
     let n = 0;
     const app = createApp(depsWith({ markers: async () => emptyMarkers } as unknown as StatiqClient, {
-      router: { route: async () => ({ distanceKm: 20, durationMin: 20,
-        geometry: [{ lat: 28.6, lon: 77.2 }, { lat: 28.78, lon: 77.2 }] }) } as never,
+      router: endpointRouter() as never,
       aiToolCall: async () => {
         n += 1;
         return n === 1
@@ -396,8 +392,7 @@ describe('process-local job endpoints', () => {
   });
   it('keeps the job outcome intact when the private observer throws', async () => {
     const app = createApp(depsWith({ markers: async () => emptyMarkers } as unknown as StatiqClient, {
-      router: { route: async () => ({ distanceKm: 20, durationMin: 20,
-        geometry: [{ lat: 28.6, lon: 77.2 }, { lat: 28.78, lon: 77.2 }] }) } as never,
+      router: endpointRouter() as never,
       aiToolCall: toolFixture('{"chosenStationIds":[],"notes":"ok"}', []),
       onPlanRunEvent: () => { throw new Error('observer down'); },
     }));
@@ -420,15 +415,18 @@ describe('job progress evidence', () => {
       },
     } as unknown as StatiqClient;
     const app = createApp(depsWith(statiq, {
-      router: { route: async () => ({ distanceKm: 20, durationMin: 20,
-        geometry: [{ lat: 0, lon: 0 }, { lat: 0.18, lon: 0 }] }) } as never,
+      router: { route: async (from, to) => ({ distanceKm: 20, durationMin: 20,
+        geometry: [from, to] }) } as never,
       aiToolCall: async () => {
         await gate.promise;
         return { content: JSON.stringify({ chosenStationIds: [] }), toolCalls: [] };
       },
     }));
     try {
-      const job = await startJob(app);
+      const started = await app.request('/api/jobs/plan', { method: 'POST', headers,
+        body: JSON.stringify({ origin: { label: 'A', lat: 0, lon: 0 },
+          destination: { label: 'B', lat: 0.18, lon: 0 } }) });
+      const job = await started.json() as { jobId: string; capability: string };
       let progress: Record<string, unknown> | null = null;
       for (let i = 0; i < 200; i += 1) {
         await tick();

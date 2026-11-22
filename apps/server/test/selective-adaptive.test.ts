@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { resolveVehicle } from '@indeev/core';
 import { runSelective } from '../src/selective-run.js';
+import { endpointRouter } from '../../../packages/core/test/support/road-fixture.js';
 
 const ids = Array.from({ length: 9 }, (_, i) => 1000 + i);
 const latOf = (id: number) => id < 1006 ? 0.2 + (id - 1000) * 0.1 : 0.9 + (id - 1006) * 0.1;
@@ -59,8 +60,7 @@ describe('adaptive bounded shortlist', () => {
     }) as typeof fetch;
     const result = await runSelective({
       ai: { baseUrl: 'https://ai.test/v1', apiKey: 'k', model: 'm', fetchImpl: aiFetch },
-      router: { route: async () => ({ distanceKm: 285, durationMin: 285,
-        geometry: [{ lat: 0, lon: 0 }, { lat: 2.56, lon: 0 }] }) } as never,
+      router: endpointRouter() as never,
       statiq,
       origin: { label: 'A', lat: 0, lon: 0 }, destination: { label: 'B', lat: 2.56, lon: 0 },
       via: [], resolved: resolveVehicle(),
@@ -107,8 +107,7 @@ describe('adaptive bounded shortlist', () => {
     }) as typeof fetch;
     const err = await runSelective({
       ai: { baseUrl: 'https://ai.test/v1', apiKey: 'k', model: 'm', fetchImpl: aiFetch },
-      router: { route: async () => ({ distanceKm: 285, durationMin: 285,
-        geometry: [{ lat: 0, lon: 0 }, { lat: 2.56, lon: 0 }] }) } as never,
+      router: endpointRouter() as never,
       statiq,
       origin: { label: 'A', lat: 0, lon: 0 }, destination: { label: 'B', lat: 2.56, lon: 0 },
       via: [], resolved: resolveVehicle(),

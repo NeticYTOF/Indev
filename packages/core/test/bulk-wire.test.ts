@@ -13,6 +13,7 @@ import {
 } from '../src/statiq.js';
 import { UpstreamBudget, UpstreamRunStoppedError } from '../src/upstream-budget.js';
 import type { ProviderCallContext } from '../src/provider-failure.js';
+import { endpointRouter } from './support/road-fixture.js';
 
 const KM_PER_DEG = 111.32;
 const NOW = '2026-11-21T10:00:00.000Z';
@@ -186,11 +187,7 @@ function harness(opts: HarnessOpts = {}): Harness {
     runDeadlineAt: Date.now() + 60_000, onUpstreamCall: (e) => audit.push(e),
   });
   client.attachRunBudget(new UpstreamBudget(200));
-  const routeKm = opts.routeKm ?? 200;
-  const router = { route: async () => ({
-    distanceKm: routeKm, durationMin: routeKm,
-    geometry: Array.from({ length: 21 }, (_, i) => ({ lat: (routeKm / KM_PER_DEG) * (i / 20), lon: 0 })),
-  }) } as unknown as OsrmRouter;
+  const router = endpointRouter();
   return { client, router, audit,
     get markerCalls() { return markerCalls; },
     get detailCalls() { return detailCalls; },

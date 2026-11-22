@@ -1,16 +1,17 @@
 # IndEV potholes
 
-Last updated: 22 November 2026, 03:21 IST
+Last updated: 22 November 2026, 11:32 IST
 
 This is the project issue ledger, not a claim that the app is finished. "Verified offline" means tests or source inspection passed. It does not mean a live route completed or a charger was physically checked.
 
 ## Current state
 
-- Latest verified published baseline: [`79157a6`](https://github.com/NeticYTOF/Indev/commit/79157a6948e4d848a735b9060078cebbef281c58).
-- Fresh public audit for that baseline: 1,219 repository tests, with application/browser type checks and the web build passing.
+- Latest verified published baseline: [`a880aa1`](https://github.com/NeticYTOF/Indev/commit/a880aa1aade418c96169ab9b56de3a4f9e9af7e2).
+- Fresh public audit for that baseline: 1,225 repository tests plus 23 independent audit cases, with application/browser type checks and the web build passing.
 - A genuine completed live route and its uncut, normal-speed screen recording are still missing.
 - The latest live Delhi to Jaipur run examined 35 of 378 candidate stations. None of those 35 was certified under the active working-CCS2 and 60 kW rules. The other 343 were unchecked. This is an incomplete search, not proof that the route has no usable charger.
-- Reserve/charge-to parity was published in [`79157a6`](https://github.com/NeticYTOF/Indev/commit/79157a6948e4d848a735b9060078cebbef281c58). It passed 1,219 repository tests plus 22 independent audit cases before publication, then 1,219 repository tests in the fresh public audit. Vehicle charging-time estimates remain unvalidated physics.
+- Reserve/charge-to parity was published in [`79157a6`](https://github.com/NeticYTOF/Indev/commit/79157a6948e4d848a735b9060078cebbef281c58). The available-status positive-fault planning policy was published in [`a880aa1`](https://github.com/NeticYTOF/Indev/commit/a880aa1aade418c96169ab9b56de3a4f9e9af7e2). Vehicle charging-time estimates remain unvalidated physics.
+- Actual-road certification for the selected final sequence is implemented in this change and independently verified offline before publication: 1,233 repository tests plus 22 independent cases passed, with application/browser type checks and the web build passing. This is pre-publication check evidence, not post-publication audit evidence.
 
 ## Open blockers
 
@@ -81,7 +82,7 @@ The published implementation passed 1,219 repository tests plus 22 independent a
 
 ### P-05: Clamped battery helpers cannot prove a zero-reserve leg is possible
 
-**Status: caught before publication; uncapped feasibility corrections under audit.**
+**Status: resolved in published [`79157a6`](https://github.com/NeticYTOF/Indev/commit/79157a6948e4d848a735b9060078cebbef281c58).**
 
 `socAfterDriving` floors its result at zero. Comparing that display value against a zero reserve would accept even an energy-deficient leg. Example under the current Harrier working estimates: starting at 50%, a 285 km leg needs roughly 70% of usable energy. A displayed zero is not a feasible arrival.
 
@@ -91,7 +92,7 @@ Likewise, a helper that caps required departure charge at 100 cannot prove that 
 
 ### P-06: Explicit low targets must neither overcharge silently nor discard carried energy
 
-**Status: corrections under audit.**
+**Status: resolved in published [`79157a6`](https://github.com/NeticYTOF/Indev/commit/79157a6948e4d848a735b9060078cebbef281c58).**
 
 Two different mistakes need protection:
 
@@ -102,13 +103,13 @@ An independent greedy case exposed a false rejection: starting at 100%, stopping
 
 ### P-07: Option propagation can diverge from actual planning rules
 
-**Status: caught before publication; corrections under audit.**
+**Status: resolved in published [`79157a6`](https://github.com/NeticYTOF/Indev/commit/79157a6948e4d848a735b9060078cebbef281c58).**
 
 Interim implementation review found that the selective runner still sent default 10%/95% effective limits despite a request for reserve 20% and target 60%. The final validator and model/advisory views must use the same resolved settings.
 
 Another interim default represented absent reserve as explicit zero. Resolving those options again could then change the intended default reserve from 10% to 0%. Absence must remain distinct from an explicit zero.
 
-**Exit condition for P-04 through P-07:** the exact final source passes repository tests, independent boundary/integration checks, type checks and build checks before publication. A passing old suite alone is not enough.
+**Gate completed for P-04 through P-07:** 1,219 repository tests plus 22 independent cases before publication, then 1,219 repository tests in the fresh public audit; type checks and web build passed. A passing old suite alone was not enough.
 
 ### P-08: Charging estimates are not validated vehicle physics
 
@@ -117,6 +118,16 @@ Another interim default represented absent reserve as explicit zero. Resolving t
 The vehicle model contains generic working estimates for usable capacity, consumption, charging power and taper. The taper is defined through 100%; that permits a finite estimate within that model, not a claim that real charging to 100% follows the same curve.
 
 Do not extrapolate beyond 100%, invent a verified vehicle curve, or call estimated times physically validated. Any explicit high-target result must preserve that distinction.
+
+### P-09: Selected legs must be certified on actual roads
+
+**Status: Implemented in this change; independently verified offline before publication (22 November 2026).**
+
+The original planner routed every candidate-to-stop leg, every chosen stop leg and the final leg with OSRM. The fresh planner estimated stop-to-stop distance from route chainage plus straight-line off-route distance and routed only origin to destination. A river, one-way system or barrier can make the actual road leg longer than that estimate while the straight-line number still passes 300 km, reserve and energy checks.
+
+The correction routes only the final selected sequence, aggregates via segments into charging-to-charging energy legs, uses actual routed distance and duration for range, reserve, charge-to, final SoC, ETAs and totals, preserves via order, and fails closed on ambiguous or incomplete road certificates. It adds no candidate fanout, automatic retries beyond the scoped zero-retry leg option, new AI turns or rate/budget increases.
+
+The pre-publication offline gate recorded 1,233 repository tests plus 22 independent cases, with application/browser type checks and web build passing. It does not establish a live route. The latest live Delhi to Jaipur run still examined only 35 of 378 candidate stations; 343 remain unchecked, and physical charger status uncertainty is unchanged.
 
 ## Verified published corrections
 

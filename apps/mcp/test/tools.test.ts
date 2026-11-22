@@ -22,6 +22,7 @@ import {
   planTripHandler,
   type McpToolDeps,
 } from '../src/tools.js';
+import { endpointRouter } from '../../../packages/core/test/support/road-fixture.js';
 
 const tempDirs: string[] = [];
 afterEach(async () => {
@@ -33,16 +34,7 @@ async function makeDeps(overrides: Partial<McpToolDeps> = {}): Promise<McpToolDe
   tempDirs.push(dir);
   return {
     createStatiq: () => new StatiqClient({ token: 't', minCallGapMs: 1, maxCallsPerMinute: 1_000 }),
-    router: {
-      route: async (): Promise<RouteResult> => ({
-        distanceKm: 300,
-        durationMin: 300,
-        geometry: [
-          { lat: 28.6, lon: 77.2 },
-          { lat: 26.9, lon: 75.8 },
-        ],
-      }),
-    } as unknown as OsrmRouter,
+    router: endpointRouter() as unknown as OsrmRouter,
     geocoder: {
       search: async (q: string) => [
         { name: q, label: `${q}, India`, lat: 28.6, lon: 77.2, city: 'Delhi', state: 'Delhi', country: 'India' },

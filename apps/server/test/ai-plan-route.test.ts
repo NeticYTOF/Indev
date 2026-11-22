@@ -16,6 +16,7 @@ import {
   type StatiqStationDetail,
   type StatiqCharger,
 } from '@indeev/core';
+import { endpointRouter } from '../../../packages/core/test/support/road-fixture.js';
 
 const tempDirs: string[] = [];
 afterEach(async () => {
@@ -117,13 +118,7 @@ async function makeDeps(overrides: Partial<AppDeps> = {}): Promise<AppDeps> {
   }));
   return {
     createStatiq: () => fakeStatiq(stations),
-    router: {
-      route: async (): Promise<RouteResult> => ({
-        distanceKm: TOTAL_KM,
-        durationMin: TOTAL_KM,
-        geometry,
-      }),
-    } as unknown as OsrmRouter,
+    router: endpointRouter() as unknown as OsrmRouter,
     geocoder: {
       search: async (q: string) => [{ name: q, label: q, lat: 0, lon: 0, city: null, state: null, country: 'India' }],
     } as unknown as PhotonGeocoder,
@@ -308,18 +303,19 @@ describe('POST /api/ai/plan', () => {
     expect(transcript).toContain('chosenStationIds');
   });
   it('applies a reachable zero-stop AI choice after physical validation', async () => {
+    const shortDestination = { label: 'Destination', lat: 180 / KM_PER_DEG, lon: 0 };
     const shortRoute: RouteResult = {
       distanceKm: 180,
       durationMin: 180,
       geometry: Array.from({ length: 19 }, (_, i) => ({ lat: (i * 180 / KM_PER_DEG) / 18, lon: 0 })),
     };
     const app = createApp(await makeDeps({
-      router: { route: async () => shortRoute } as unknown as OsrmRouter,
+      router: { route: async (from, to) => ({ ...shortRoute, geometry: [from, to] }) } as unknown as OsrmRouter,
       createStatiq: () => fakeStatiq([]),
       ai: AI_CFG,
       aiToolCall: toolFixture(JSON.stringify({ chosenStationIds: [], notes: 'Direct route is reachable.' }), []),
     }));
-    const res = await app.request('/api/ai/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ origin: ORIGIN, destination: DEST, startSocPct: 100 }) });
+    const res = await app.request('/api/ai/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ origin: ORIGIN, destination: shortDestination, startSocPct: 100 }) });
     expect(res.status).toBe(200);
     const body = await res.json() as { plan: { stops: unknown[]; totals: { distanceKm: number; chargeTimeMin: number; chargeKwh: number }; warnings: string[] }; ai: { applied: boolean; notes?: string } };
     expect(body.ai.applied).toBe(true);

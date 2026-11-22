@@ -28,6 +28,7 @@ import type {
   StatiqMarkersResponse,
   StatiqStationDetail,
 } from '../src/types.js';
+import { endpointRouter } from './support/road-fixture.js';
 
 const KM_PER_DEG = 111.32;
 /** Fast limiter: keep the shared pacing machinery but at test speed. */
@@ -43,8 +44,8 @@ function makeRoute(totalKm: number): RouteResult {
   return { distanceKm: totalKm, durationMin: totalKm, geometry };
 }
 
-function fakeRouter(totalKm: number): OsrmRouter {
-  return { route: async () => makeRoute(totalKm) } as unknown as OsrmRouter;
+function fakeRouter(_totalKm: number): OsrmRouter {
+  return endpointRouter();
 }
 
 interface StationSpec {
