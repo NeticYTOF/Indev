@@ -248,12 +248,16 @@ describe('final-answer host contract', () => {
     const deps = makeDeps(20, 0, undefined as never);
     const err = await runSelective({ ...deps, aiToolCall: undefined,
       ai: { ...deps.ai, fetchImpl: aiFetch } }).catch((e: unknown) => e) as Error & {
-        cause?: { reason?: string }; diagnostics: { finalAnswerEvents: unknown[] };
+        cause?: { reason?: string };
+        diagnostics: { finalAnswerEvents: unknown[]; modelOutputLimitCutoffs: number;
+          modelOutputLimitRecoveries: number };
       };
-    expect(calls).toBe(1);
+    expect(calls).toBe(2);
     expect(err.name).toBe('SelectiveRunError');
     expect(err.cause?.reason).toBe('output_limit');
     expect(err.diagnostics.finalAnswerEvents).toHaveLength(0);
+    expect(err.diagnostics.modelOutputLimitCutoffs).toBe(2);
+    expect(err.diagnostics.modelOutputLimitRecoveries).toBe(1);
   });
   it('keeps every candidate visible while adding advisory reachability only', async () => {
     let firstMessages: Array<{ role: string; content: string | null }> = [];

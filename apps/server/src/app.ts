@@ -108,6 +108,8 @@ export interface AppDeps {
       maxUniqueIds: number; admittedUniqueIds: number; unusedUniqueIds: number };
     noFitDeclared: boolean;
     history?: CheckedIdHistoryRunDiagnostics;
+    modelOutputLimitCutoffs?: number;
+    modelOutputLimitRecoveries?: number;
   }) => void;
   selectiveProfile?: SelectiveCoverageProfile;
   /** Optional IDs-only checked-station history. Absent means unchanged behavior. */
@@ -245,7 +247,8 @@ function emitPlanRunEvent(
     toolAdmission: ToolAdmissionAggregate;
     coverage: { normalTurns: number; finalTurns: number;
       maxUniqueIds: number; admittedUniqueIds: number; unusedUniqueIds: number };
-    noFitDeclared: boolean },
+    noFitDeclared: boolean;
+    modelOutputLimitCutoffs: number; modelOutputLimitRecoveries: number },
   history?: CheckedIdHistoryRunDiagnostics,
 ): void {
   try {
@@ -262,6 +265,8 @@ function emitPlanRunEvent(
       toolAdmission: diagnostics.toolAdmission,
       coverage: diagnostics.coverage,
       noFitDeclared: diagnostics.noFitDeclared,
+      modelOutputLimitCutoffs: diagnostics.modelOutputLimitCutoffs,
+      modelOutputLimitRecoveries: diagnostics.modelOutputLimitRecoveries,
       detailChecksSettled: diagnostics.detailChecksSettled,
       ...(diagnostics.finalAnswerEvents && diagnostics.finalAnswerEvents.length > 0
         ? { finalAnswerEvents: diagnostics.finalAnswerEvents.slice(0, 5) } : {}),
