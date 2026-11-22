@@ -1,17 +1,18 @@
 # IndEV potholes
 
-Last updated: 22 November 2026, 11:32 IST
+Last updated: 22 November 2026, 11:58 IST
 
 This is the project issue ledger, not a claim that the app is finished. "Verified offline" means tests or source inspection passed. It does not mean a live route completed or a charger was physically checked.
 
 ## Current state
 
-- Latest verified published baseline: [`a880aa1`](https://github.com/NeticYTOF/Indev/commit/a880aa1aade418c96169ab9b56de3a4f9e9af7e2).
-- Fresh public audit for that baseline: 1,225 repository tests plus 23 independent audit cases, with application/browser type checks and the web build passing.
+- Latest verified published baseline: [`d9f9b91`](https://github.com/NeticYTOF/Indev/commit/d9f9b917635f02c86fdb4f9331535bb325e8a0b7).
+- Fresh public audit for that baseline: 1,233 repository tests plus 22 independent audit cases, with application/browser type checks and the web build passing.
 - A genuine completed live route and its uncut, normal-speed screen recording are still missing.
 - The latest live Delhi to Jaipur run examined 35 of 378 candidate stations. None of those 35 was certified under the active working-CCS2 and 60 kW rules. The other 343 were unchecked. This is an incomplete search, not proof that the route has no usable charger.
 - Reserve/charge-to parity was published in [`79157a6`](https://github.com/NeticYTOF/Indev/commit/79157a6948e4d848a735b9060078cebbef281c58). The available-status positive-fault planning policy was published in [`a880aa1`](https://github.com/NeticYTOF/Indev/commit/a880aa1aade418c96169ab9b56de3a4f9e9af7e2). Vehicle charging-time estimates remain unvalidated physics.
-- Actual-road certification for the selected final sequence is implemented in this change and independently verified offline before publication: 1,233 repository tests plus 22 independent cases passed, with application/browser type checks and the web build passing. This is pre-publication check evidence, not post-publication audit evidence.
+- Actual-road certification for the selected final sequence was published in [`d9f9b91`](https://github.com/NeticYTOF/Indev/commit/d9f9b917635f02c86fdb4f9331535bb325e8a0b7): 1,233 repository tests plus 22 independent cases passed in the fresh public audit, with application/browser type checks and the web build passing.
+- The parse-only `/api/ai/parse` backend is implemented in this change and independently verified offline before publication: 1,272 repository tests plus 9 independent parse-boundary cases passed, with application/browser type checks and the web build passing. There is no UI wiring and no end-to-end natural-language planning; no live provider acceptance or new route success is claimed.
 
 ## Open blockers
 
@@ -121,13 +122,13 @@ Do not extrapolate beyond 100%, invent a verified vehicle curve, or call estimat
 
 ### P-09: Selected legs must be certified on actual roads
 
-**Status: Implemented in this change; independently verified offline before publication (22 November 2026).**
+**Status: Published in [`d9f9b91`](https://github.com/NeticYTOF/Indev/commit/d9f9b917635f02c86fdb4f9331535bb325e8a0b7); fresh public audit: 1,233 repository tests plus 22 independent cases, with application/browser type checks and the web build passing (22 November 2026).**
 
 The original planner routed every candidate-to-stop leg, every chosen stop leg and the final leg with OSRM. The fresh planner estimated stop-to-stop distance from route chainage plus straight-line off-route distance and routed only origin to destination. A river, one-way system or barrier can make the actual road leg longer than that estimate while the straight-line number still passes 300 km, reserve and energy checks.
 
 The correction routes only the final selected sequence, aggregates via segments into charging-to-charging energy legs, uses actual routed distance and duration for range, reserve, charge-to, final SoC, ETAs and totals, preserves via order, and fails closed on ambiguous or incomplete road certificates. It adds no candidate fanout, automatic retries beyond the scoped zero-retry leg option, new AI turns or rate/budget increases.
 
-The pre-publication offline gate recorded 1,233 repository tests plus 22 independent cases, with application/browser type checks and web build passing. It does not establish a live route. The latest live Delhi to Jaipur run still examined only 35 of 378 candidate stations; 343 remain unchecked, and physical charger status uncertainty is unchanged.
+The public archive for `d9f9b91` independently matched all 22 staged blobs; 1,233 repository tests plus 22 independent cases, application/browser type checks and the web build passed. This does not establish a live route. The latest live Delhi to Jaipur run still examined only 35 of 378 candidate stations; 343 remain unchecked, and physical charger status uncertainty is unchanged.
 
 ## Verified published corrections
 

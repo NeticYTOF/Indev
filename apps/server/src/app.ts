@@ -13,6 +13,7 @@ import { hasFreshProvenance, StatiqProvenanceError } from '@indeev/core';
  *   and never appears in any response.
  */
 import { Hono, type Context, type Next } from 'hono';
+import { once } from 'node:events';
 import {
   CountersStore,
   StoreLockCleanupError,
@@ -48,6 +49,9 @@ import { runSelective, SelectiveRunError, type FinalAnswerDiagnostic } from './s
 import { SingleRunSlot } from './run-slot.js';
 import { SELECTIVE_TOOL_BUDGETS,
   type SelectiveCoverageProfile, type ToolAdmissionAggregate } from './selective-tools.js';
+import { AiProviderError, chatCompletion } from './ai-provider.js';
+import { parseTripIntent, parseTripIntentRequest,
+  TripIntentError, type TripIntentCall } from './trip-intent.js';
 import type { AiToolCall } from './ai-provider.js';
 import type { HostStationEvidence } from './host-connector-evidence.js';
 import { DEFAULT_ALLOWED_WEB_ORIGINS } from './env.js';
@@ -400,7 +404,7 @@ export function createApp(deps: AppDeps): Hono {
     }
     await next();
   };
-  for (const path of ['/api/plan', '/api/ai/plan', '/api/trips', '/api/jobs/plan']) {
+  for (const path of ['/api/ai/parse', '/api/plan', '/api/ai/plan', '/api/trips', '/api/jobs/plan']) {
     app.use(path, browserGate(true));
   }
   for (const path of ['/api/trips/:id', '/api/geocode', '/api/stations/:id', '/api/jobs/plan/:id']) {
@@ -505,6 +509,78 @@ export function createApp(deps: AppDeps): Hono {
       return true;
     });
     return c.json({ hits: hits.slice(0, 6) });
+  });
+
+  app.post('/api/ai/parse', async (c) => {
+    const signal = c.req.raw.signal;
+    const body = await readAbortableJson(c);
+    if (body.ok === false) {
+      return c.json(
+        { error: body.aborted ? 'Request cancelled.' : 'Invalid JSON body',
+          code: body.aborted ? 'cancelled' : 'bad_request' },
+        (body.aborted ? 499 : 400) as never,
+      );
+    }
+    let request: { text: string };
+    try {
+      request = parseTripIntentRequest(body.value);
+    } catch (err) {
+      if (err instanceof TripIntentError) {
+        return c.json({ error: err.message, code: err.code }, err.status);
+      }
+      throw err;
+    }
+    if (deps.mock) {
+      return c.json(
+        { error: 'Text parsing is unavailable in synthetic demo mode; no provider call was made.',
+          code: 'mock_parse_unavailable' },
+        503 as never,
+      );
+    }
+    if (!deps.ai) {
+      return c.json(
+        { error: 'AI text parsing is disabled on this server (no AI provider configured).',
+          code: 'ai_disabled' },
+        503 as never,
+      );
+    }
+    const release = runSlot.acquire();
+    if (!release) {
+      return c.json({ error: 'Another planning run is active on this server.', code: 'run_busy' }, 503 as never);
+    }
+    try {
+      if (signal.aborted) {
+        return c.json({ error: 'Request cancelled.', code: 'cancelled' }, 499 as never);
+      }
+      const call: TripIntentCall = deps.aiCall
+        ? (messages, callSignal) => deps.aiCall!(messages, callSignal)
+        : (messages, callSignal) => chatCompletion(deps.ai!, messages, callSignal)
+          .then((reply) => reply.content);
+      const intent = await parseTripIntent(request.text, call, signal);
+      if (signal.aborted) {
+        return c.json({ error: 'Request cancelled.', code: 'cancelled' }, 499 as never);
+      }
+      return c.json(intent);
+    } catch (err) {
+      if (signal.aborted) {
+        return c.json({ error: 'Request cancelled.', code: 'cancelled' }, 499 as never);
+      }
+      if (err instanceof TripIntentError) {
+        return c.json({ error: err.message, code: err.code }, err.status);
+      }
+      const reason = err instanceof AiProviderError ? err.reason : 'provider';
+      if (reason === 'cancelled') {
+        return c.json({ error: 'Request cancelled.', code: 'cancelled' }, 499 as never);
+      }
+      if (reason === 'headers_timeout' || reason === 'body_timeout') {
+        return c.json({ error: 'AI provider timed out; no automatic retry was made.', code: 'ai_timeout' }, 504 as never);
+      }
+      // Unknown adapter rejections are untrusted: never rethrow them to the
+      // global handler, which would log raw provider text.
+      return c.json({ error: 'AI provider is unavailable; no automatic retry was made.', code: 'ai_provider' }, 502 as never);
+    } finally {
+      release();
+    }
   });
 
   app.post('/api/plan', async (c) => {
@@ -919,6 +995,71 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   return app;
+}
+
+const MAX_PARSE_BODY_BYTES = 16 * 1024;
+
+async function readAbortableJson(c: Context):
+  Promise<{ ok: true; value: unknown } | { ok: false; aborted: boolean }> {
+  const signal = c.req.raw.signal;
+  if (signal.aborted) return { ok: false, aborted: true };
+  const reader = c.req.raw.body?.getReader();
+  if (!reader) {
+    try {
+      return { ok: true, value: JSON.parse(await c.req.text()) };
+    } catch {
+      return { ok: false, aborted: false };
+    }
+  }
+  const cleanup = new AbortController();
+  const aborted = signal.aborted
+    ? Promise.resolve({ aborted: true as const })
+    : once(signal, 'abort', { signal: cleanup.signal })
+      .then(() => ({ aborted: true as const }), () => ({ listenerRemoved: true as const }));
+  let cancellationWon: boolean = signal.aborted;
+  const cancelWithoutWaiting = (): void => {
+    try {
+      void reader.cancel().catch(() => {});
+    } catch {
+      // Underlying cancel is untrusted; request cancellation must not wait.
+    }
+  };
+  try {
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for (;;) {
+      const result = await Promise.race([reader.read(), aborted]);
+      if ('aborted' in result) {
+        cancellationWon = true;
+        cancelWithoutWaiting();
+        return { ok: false, aborted: true };
+      }
+      if ('listenerRemoved' in result) continue;
+      if (result.done) break;
+      size += result.value.byteLength;
+      if (size > MAX_PARSE_BODY_BYTES) {
+        cancelWithoutWaiting();
+        return { ok: false, aborted: false };
+      }
+      chunks.push(result.value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { ok: true, value: JSON.parse(new TextDecoder().decode(bytes)) };
+  } catch {
+    return { ok: false, aborted: cancellationWon || signal.aborted };
+  } finally {
+    cleanup.abort();
+    try {
+      reader.releaseLock();
+    } catch {
+      // A cancelled or errored stream may already have released its lock.
+    }
+  }
 }
 
 function coordRef(v: unknown): { label: string; lat: number; lon: number } | null {
