@@ -49,7 +49,8 @@ import {
   type CheckedIdHistoryWrite,
 } from '@indeev/core';
 import { PlanJobRegistry, type PlanJobControls } from './plan-job.js';
-import { runSelective, SelectiveRunError, type FinalAnswerDiagnostic } from './selective-run.js';
+import { runSelective, SelectiveRunError, type FinalAnswerDiagnostic,
+  type SelectiveHistoryDiagnostics } from './selective-run.js';
 import { SingleRunSlot } from './run-slot.js';
 import { SELECTIVE_TOOL_BUDGETS,
   type SelectiveCoverageProfile, type ToolAdmissionAggregate } from './selective-tools.js';
@@ -108,6 +109,7 @@ export interface AppDeps {
       maxUniqueIds: number; admittedUniqueIds: number; unusedUniqueIds: number };
     noFitDeclared: boolean;
     history?: CheckedIdHistoryRunDiagnostics;
+    runHistory?: SelectiveHistoryDiagnostics;
     modelOutputLimitCutoffs?: number;
     modelOutputLimitRecoveries?: number;
   }) => void;
@@ -250,6 +252,7 @@ function emitPlanRunEvent(
     noFitDeclared: boolean;
     modelOutputLimitCutoffs: number; modelOutputLimitRecoveries: number },
   history?: CheckedIdHistoryRunDiagnostics,
+  runHistory?: SelectiveHistoryDiagnostics,
 ): void {
   try {
     deps.onPlanRunEvent?.({
@@ -273,6 +276,7 @@ function emitPlanRunEvent(
       ...(diagnostics.stationDiagnostics && diagnostics.stationDiagnostics.length > 0
         ? { stationDiagnostics: diagnostics.stationDiagnostics.slice(0, 20) } : {}),
       ...(history ? { history } : {}),
+      ...(runHistory ? { runHistory } : {}),
     });
   } catch { /* diagnostics never alter the run */ }
 }
@@ -400,7 +404,7 @@ async function runLiveAiPlan(
       Math.max(run.diagnostics.observedAttempts, safeUpstreamCalls(statiq)),
       run.diagnostics.failures);
     await persistHistory();
-    emitPlanRunEvent(deps, 'ok', run.diagnostics, historyDiag());
+    emitPlanRunEvent(deps, 'ok', run.diagnostics, historyDiag(), run.diagnostics.history);
     return { plan: run.plan, ai: { applied: true, ...(run.notes ? { notes: run.notes } : {}) } };
   } catch (err) {
     await persistHistory();
@@ -430,7 +434,7 @@ async function runLiveAiPlan(
     completeRun(deps, auditOutcomeFor(failure),
       diag?.observedAttempts ?? safeUpstreamCalls(statiq),
       diag?.failures ?? emptyProviderFailureReport());
-    if (diag) emitPlanRunEvent(deps, auditOutcomeFor(failure), diag, historyDiag());
+    if (diag) emitPlanRunEvent(deps, auditOutcomeFor(failure), diag, historyDiag(), diag.history);
     throw failure;
   } finally {
     await persistHistory();

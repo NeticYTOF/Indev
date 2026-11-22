@@ -55,6 +55,30 @@ export interface SelectiveHistoryDiagnostics {
   memoizedBypasses: number;
   freshDetailsRecorded: number;
 }
+export interface ToolAdmissionOutcome {
+  kind: 'no_new_detail_checks' | 'new_details_admitted';
+  requestedCount: number;
+  admittedCount: number;
+  deferredCount: number;
+  memoizedCount: number;
+  freshAttemptedCount: number;
+  freshCertifiedCount: number;
+  freshNonCertifiedCount: number;
+  remainingUniqueChecks: number;
+  remainingToolRounds: number;
+  remainingCurrentNewCount: number;
+  remainingToolCalls: number;
+  legalNextModes?: readonly string[];
+}
+export interface GuidanceAdmissionAnnotation {
+  label: 'HISTORY-ADMISSION annotations only; not budget permission or certification';
+  uncheckedScope: 'not_checked_this_run; may_include_prior_run_ids';
+  modes: {
+    current_new_ordinary: number[];
+    prior_explicit_refresh: number[];
+    prior_ordinary_bypass: number[];
+  };
+}
 
 const STATION_EVIDENCE_SAMPLE_LIMIT = 20;
 const GUIDANCE_FIELDS = [
@@ -72,6 +96,65 @@ function guidanceChanges(initial: ReachabilityGuidance,
     }
   }
   return changes as Partial<ReachabilityGuidance>;
+}
+function guidanceAdmissionMap(guidance: ReachabilityGuidance,
+  priorSet: ReadonlySet<number>, currentNewUnchecked: readonly number[]): GuidanceAdmissionAnnotation {
+  const ids = new Set<number>([
+    ...guidance.initialUnchecked.map((item) => item.stationId),
+    ...guidance.frontierUnchecked.map((item) => item.stationId),
+  ]);
+  const modes: GuidanceAdmissionAnnotation['modes'] = {
+    current_new_ordinary: [],
+    prior_explicit_refresh: [],
+    prior_ordinary_bypass: [],
+  };
+  for (const id of ids) {
+    if (!priorSet.has(id)) modes.current_new_ordinary.push(id);
+    else if (currentNewUnchecked.length === 0) modes.prior_ordinary_bypass.push(id);
+    else modes.prior_explicit_refresh.push(id);
+  }
+  return {
+    label: 'HISTORY-ADMISSION annotations only; not budget permission or certification',
+    uncheckedScope: 'not_checked_this_run; may_include_prior_run_ids',
+    modes,
+  };
+}
+function zeroNewNextSteps(input: {
+  historyActive: boolean; certifiedCount: number; refreshablePriorCount: number;
+  unattemptedCurrentNewCount: number; unexaminedCount: number;
+  remainingRounds: number; remainingToolCalls: number; remainingUniqueChecks: number;
+}): { nextAction: string; legalNextModes: string[] } {
+  const canRequest = input.remainingRounds > 0 && input.remainingToolCalls > 0;
+  const canAdmitNew = canRequest && input.remainingUniqueChecks > 0 && input.unexaminedCount > 0;
+  const certifiedMode = input.certifiedCount > 0
+    ? ['choose_from_already_freshly_certified_ids'] : [];
+  if (!canAdmitNew) {
+    return { nextAction: input.certifiedCount > 0
+      ? 'choose_from_certified_or_report_not_determined'
+      : 'finish_from_existing_evidence_or_report_not_determined',
+      legalNextModes: certifiedMode.length > 0
+        ? certifiedMode : ['finish_from_existing_evidence_or_report_not_determined'] };
+  }
+  if (!input.historyActive) {
+    return { nextAction: 'inspect_unexamined_candidates_ordinarily',
+      legalNextModes: [...certifiedMode, 'request_unexamined_candidates_ordinarily'] };
+  }
+  if (input.unattemptedCurrentNewCount > 0) {
+    return {
+      nextAction: 'choose_unattempted_current_new_or_explicit_necessary_bridge',
+      legalNextModes: [...certifiedMode, 'request_actual_unattempted_current_new_ids',
+        ...(input.refreshablePriorCount > 0
+          ? ['request_prior_ids_with_historicalRefreshReason_necessary_bridge'] : [])],
+    };
+  }
+  return input.refreshablePriorCount > 0
+    ? { nextAction: 'request_prior_ids_by_ordinary_exhaustion_bypass',
+      legalNextModes: [...certifiedMode, 'request_prior_ids_by_ordinary_exhaustion_bypass'] }
+    : { nextAction: input.certifiedCount > 0
+      ? 'choose_from_certified_or_report_not_determined'
+      : 'finish_from_existing_evidence_or_report_not_determined',
+      legalNextModes: certifiedMode.length > 0
+        ? certifiedMode : ['finish_from_existing_evidence_or_report_not_determined'] };
 }
 function bumpCount(map: Record<string, number>, key: string): void {
   map[key] = (map[key] ?? 0) + 1;
@@ -94,12 +177,13 @@ const toolWithHistory: ChatToolDefinition = {
   type: 'function',
   function: {
     name: TOOL_NAME,
-    description: 'Fetch live details only for listed on-route station IDs.',
+    description: 'Fetch live details only for listed on-route station IDs. historicalRefreshReason:"necessary_bridge" is an explicit deliberate refresh of a prior-run ID; it is not verified physical necessity and never fetches unasked IDs.',
     parameters: {
       type: 'object',
       properties: {
         ids: { type: 'array', items: { type: 'integer', minimum: 1 }, maxItems: 5, minItems: 1 },
-        historicalRefreshReason: { type: 'string', enum: ['necessary_bridge'] },
+        historicalRefreshReason: { type: 'string', enum: ['necessary_bridge'],
+          description: 'Explicitly refresh selected prior-run IDs while ordinary prior IDs remain deferred. Not proof of a bridge or charger eligibility.' },
       },
       required: ['ids'],
       additionalProperties: false,
@@ -150,8 +234,8 @@ function parseFinalAnswer(raw: string | null | undefined):
 const FINAL_SCHEMA_REMINDER =
   'Final answer must be one JSON object with chosenStationIds (an array of integer station IDs, ' +
   'possibly empty), optional notes (string), and optional status ("ok" or "not_determined"). ' +
-  'status "not_determined" requires an empty ID array and is allowed only when the allowed checks are exhausted. ' +
-  'No markdown, prose, extra fields, or route-infeasibility claims.';
+  'status "not_determined" requires an empty ID array and is allowed only when no further admissible checks remain under the existing tool, round and unique-ID limits. ' +
+  'Do not claim route impossibility. No markdown, prose, extra fields, or invented facts.';
 export type FinalAnswerDiagnostic = {
   reason: 'invalid_final_json' | 'invalid_final_shape' | 'premature_no_fit';
   contentType: string;
@@ -197,6 +281,7 @@ export interface SelectiveRunResult {
     coverage: { normalTurns: number; finalTurns: number;
       maxUniqueIds: number; admittedUniqueIds: number; unusedUniqueIds: number };
     noFitDeclared: boolean;
+    history: SelectiveHistoryDiagnostics;
     modelOutputLimitCutoffs: number;
     modelOutputLimitRecoveries: number;
   };
@@ -303,6 +388,7 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
   let lastReason: string | null = null;
   let toolFactsReady = false;
   let reservedFinalConsumed = false;
+  let finalContextAdded = false;
   let outputLimitRecoveryUsed = false;
   let outputLimitRecoveryPending = false;
   diagState.samplesOk = discovery.samplesOk;
@@ -361,6 +447,7 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
         semantics: 'currentNewCandidateIds are unchecked current IDs eligible to REQUEST fresh details, not certified or usable chargers; prior IDs are checks only. ' +
           'necessary_bridge is explicit deliberate refresh, not verified necessity.' } } : {}),
       request: deps.customRequest ?? null, candidates, warnings,
+      guidanceAdmission: guidanceAdmissionMap(initialGuidance, priorSet, currentNewIds),
       reachability: initialGuidance,
     }) },
   ];
@@ -371,6 +458,24 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
     const closed = forcedFinal;
     if (forcedFinal) reservedFinalConsumed = true;
     if (closed) diagState.finalTurns += 1; else diagState.normalTurns += 1;
+    if (closed && !finalContextAdded) {
+      finalContextAdded = true;
+      messages.push({ role: 'user', content: JSON.stringify({
+        finalTurnContext: {
+          normalAttemptsRemaining: 0,
+          toolsAllowed: false,
+          remainingUniqueChecks: Math.max(0, toolBudget.maxTotalIds - ledger.admitted.size),
+          remainingToolCalls: Math.max(0, ledger.limits.maxToolCalls - ledger.calls),
+          certifiedStationIds: [...hydrated.keys()],
+          certifiedCount: hydrated.size,
+          noFit: {
+            allowedWhen: 'no certified feasible plan and no admissible next check under the existing unique-ID, tool-round and tool-call limits',
+            requiresEmptyChosenStationIds: true,
+          },
+          caveat: 'No claim that every candidate or unique check was exhausted.',
+        },
+      }) });
+    }
     const currentAttemptIsRecovery = outputLimitRecoveryPending;
     outputLimitRecoveryPending = false;
     const activeTool = historyActive ? toolWithHistory : tool;
@@ -533,6 +638,7 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
       const parsedTool = parseToolArgs(call.function.arguments);
       let deferIds: Set<number> | undefined;
       let historyReasons: Record<string, string> = {};
+      let requestedCount = 0;
       if (parsedTool.ok && historyActive) {
         const policyArgs = readHistoryPolicyArgs(parsedTool.raw);
         if (policyArgs.ok) {
@@ -550,6 +656,7 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
           if (policy.ok) {
             deferIds = new Set(policy.deferredIds);
             historyReasons = policy.reasonByRequestedId;
+            requestedCount = policyArgs.ids.length;
             diagState.history.requests += 1;
             diagState.history.deferredIds += policy.deferredIds.length;
             diagState.history.bridgeIds += Object.values(policy.reasonByRequestedId)
@@ -559,6 +666,8 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
         }
       }
       const rawArgs = parsedTool.ok ? parsedTool.raw : null;
+      if (requestedCount === 0 && rawArgs !== null && typeof rawArgs === 'object' &&
+          'ids' in rawArgs && Array.isArray(rawArgs.ids)) requestedCount = rawArgs.ids.length;
       const admitted = ledger.admit(rawArgs, signal, deferIds, historyActive);
       diagState.toolAdmission = {
         ...ledger.admission,
@@ -620,6 +729,7 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
       const examined = ledger.actualFetches;
       const remainingUnique = Math.max(0, ledger.limits.maxTotalIds - ledger.admitted.size);
       const remainingRounds = Math.max(0, ledger.limits.maxRounds - ledger.rounds);
+      const remainingToolCalls = Math.max(0, ledger.limits.maxToolCalls - ledger.calls);
       const unexamined = Math.max(0, pool.size - ledger.admitted.size);
       const certifiedPoints = [...hydrated.values()].map((h) => ({
         stationId: h.candidate.stationId,
@@ -636,6 +746,29 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
         }, deps.resolved.config, discovery.route.geometry);
       const currentNewCandidateIds = [...pool.keys()].filter((id) =>
         !priorSet.has(id) && !ledger.admitted.has(id));
+      const refreshablePriorCount = [...priorSet].filter((id) => !ledger.admitted.has(id)).length;
+      const freshCertifiedCount = admitted.newIds.filter((id) => hydrated.has(id)).length;
+      const zeroNew = admitted.newIds.length === 0 ? zeroNewNextSteps({
+        historyActive, certifiedCount: hydrated.size, refreshablePriorCount,
+        unattemptedCurrentNewCount: currentNewCandidateIds.length,
+        unexaminedCount: unexamined, remainingRounds, remainingToolCalls,
+        remainingUniqueChecks: remainingUnique,
+      }) : undefined;
+      const admissionOutcome: ToolAdmissionOutcome = {
+        kind: admitted.newIds.length === 0 ? 'no_new_detail_checks' : 'new_details_admitted',
+        requestedCount,
+        admittedCount: admitted.ids.length,
+        deferredCount: admitted.deferredIds.length,
+        memoizedCount: admitted.memoIds.length,
+        freshAttemptedCount: admitted.newIds.length,
+        freshCertifiedCount,
+        freshNonCertifiedCount: admitted.newIds.length - freshCertifiedCount,
+        remainingUniqueChecks: remainingUnique,
+        remainingToolRounds: remainingRounds,
+        remainingToolCalls,
+        remainingCurrentNewCount: currentNewCandidateIds.length,
+        ...(zeroNew ? { legalNextModes: zeroNew.legalNextModes } : {}),
+      };
       const progress = {
         planningProgress: {
           examinedDistinctIds: examined,
@@ -643,10 +776,13 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
           remainingToolRounds: remainingRounds,
           certifiedStationIds: [...hydrated.keys()],
           unexaminedCandidateCount: unexamined,
-          nextAction: hydrated.size === 0 && remainingUnique > 0 && remainingRounds > 0 && unexamined > 0
-            ? 'inspect_unchecked_candidates'
-            : 'choose_from_certified_or_report_not_determined',
+          nextAction: zeroNew
+            ? zeroNew.nextAction
+            : hydrated.size === 0 && remainingUnique > 0 && remainingRounds > 0 && unexamined > 0
+              ? 'inspect_unchecked_candidates'
+              : 'choose_from_certified_or_report_not_determined',
         },
+        admissionOutcome,
       ...(historyActive ? {
         historyDelta: {
           newlyDeferred: admitted.deferredIds.map((id) => ({
@@ -660,6 +796,7 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
       } : {}),
       facts: admitted.ids.map((id) => factCache.get(id) ?? { stationId: id, unknown: 'not checked' }),
       warnings,
+      guidanceAdmission: guidanceAdmissionMap(guidance, priorSet, currentNewCandidateIds),
       reachabilityDelta: {
         sinceInitial: true,
         changes: guidanceChanges(initialGuidance, guidance),
