@@ -21,6 +21,7 @@ import { buildReachabilityGuidance, type ReachabilityGuidance } from './reachabi
 import { observedPowerFromEvidence } from './observed-power.js';
 import { admitWithCheckedIdHistory,
   type HistoryAdmissionInput } from './history-admission.js';
+import { buildCurrentNewAdvisory, currentNewAdvisoryChanges } from './current-new-advisory.js';
 
 export interface SelectiveRunDeps {
   ai: { baseUrl: string; apiKey: string; model: string; fetchImpl?: typeof fetch; timeoutMs?: number };
@@ -401,13 +402,24 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
   const priorSet = new Set(priorIds);
   const currentNewIds = [...pool.keys()].filter((id) => !priorSet.has(id));
   const historyActive = deps.history?.available === true;
+  const allGuidancePoints = discovery.candidates.map((c) => ({ stationId: c.stationId,
+    chainageKm: c.chainageKm, offRouteKm: c.offRouteKm }));
+  const guidanceOpts = {
+    startSocPct: opts.startSocPct, minArrivalSocPct: opts.minArrivalSocPct,
+    absoluteMaxSocPct: opts.absoluteMaxSocPct, maxLegKm: opts.maxLegKm,
+  };
   const initialGuidance = buildReachabilityGuidance(discovery.route.distanceKm,
-    discovery.candidates.map((c) => ({ stationId: c.stationId,
-      chainageKm: c.chainageKm, offRouteKm: c.offRouteKm })),
-    [], new Set<number>(), {
-      startSocPct: opts.startSocPct, minArrivalSocPct: opts.minArrivalSocPct,
-      absoluteMaxSocPct: opts.absoluteMaxSocPct, maxLegKm: opts.maxLegKm,
-    }, deps.resolved.config, discovery.route.geometry);
+    allGuidancePoints, [], new Set<number>(), guidanceOpts,
+    deps.resolved.config, discovery.route.geometry);
+  const initialCurrentNewAdvisory = historyActive ? buildCurrentNewAdvisory({
+    routeKm: discovery.route.distanceKm,
+    candidates: allGuidancePoints,
+    certified: [],
+    excludedIds: priorSet,
+    opts: guidanceOpts,
+    vehicle: deps.resolved.config,
+    geometry: discovery.route.geometry,
+  }) : undefined;
   const historyClause = historyActive
     ? 'The initial message is authoritative for the complete current candidate allowlist and advisory reachability; tool results carry only deltas. ' +
       'currentNewCandidateIds are unchecked current IDs eligible to REQUEST fresh details, not certified or usable chargers. ' +
@@ -449,6 +461,7 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
       request: deps.customRequest ?? null, candidates, warnings,
       guidanceAdmission: guidanceAdmissionMap(initialGuidance, priorSet, currentNewIds),
       reachability: initialGuidance,
+      ...(initialCurrentNewAdvisory ? { currentNewAdvisory: initialCurrentNewAdvisory } : {}),
     }) },
   ];
   while (true) {
@@ -738,14 +751,21 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
       }));
       const checkedIds = new Set<number>([...ledger.admitted, ...factCache.keys()]);
       const guidance = buildReachabilityGuidance(discovery.route.distanceKm,
-        discovery.candidates.map((c) => ({ stationId: c.stationId,
-          chainageKm: c.chainageKm, offRouteKm: c.offRouteKm })),
-        certifiedPoints, checkedIds, {
-          startSocPct: opts.startSocPct, minArrivalSocPct: opts.minArrivalSocPct,
-          absoluteMaxSocPct: opts.absoluteMaxSocPct, maxLegKm: opts.maxLegKm,
-        }, deps.resolved.config, discovery.route.geometry);
+        allGuidancePoints, certifiedPoints, checkedIds, guidanceOpts,
+        deps.resolved.config, discovery.route.geometry);
       const currentNewCandidateIds = [...pool.keys()].filter((id) =>
         !priorSet.has(id) && !ledger.admitted.has(id));
+      const currentNewAdvisory = historyActive && initialCurrentNewAdvisory
+        ? buildCurrentNewAdvisory({
+          routeKm: discovery.route.distanceKm,
+          candidates: allGuidancePoints,
+          certified: certifiedPoints,
+          excludedIds: new Set<number>([...priorSet, ...ledger.admitted]),
+          opts: guidanceOpts,
+          vehicle: deps.resolved.config,
+          geometry: discovery.route.geometry,
+        })
+        : undefined;
       const refreshablePriorCount = [...priorSet].filter((id) => !ledger.admitted.has(id)).length;
       const freshCertifiedCount = admitted.newIds.filter((id) => hydrated.has(id)).length;
       const zeroNew = admitted.newIds.length === 0 ? zeroNewNextSteps({
@@ -801,6 +821,10 @@ export async function runSelective(deps: SelectiveRunDeps): Promise<SelectiveRun
         sinceInitial: true,
         changes: guidanceChanges(initialGuidance, guidance),
       },
+      ...(currentNewAdvisory && initialCurrentNewAdvisory ? { currentNewAdvisoryDelta: {
+        sinceInitial: true,
+        changes: currentNewAdvisoryChanges(initialCurrentNewAdvisory, currentNewAdvisory),
+      } } : {}),
       };
       messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(progress) });
     }
