@@ -19,6 +19,7 @@ export * from './selective-plan.js';
 export * from './trips.js';
 export * from './store-lock.js';
 export * from './counters.js';
+export * from './checked-id-history.js';
 export * from './utils.js';
 export * from './provider-failure.js';
 export * from './provenance.js';
