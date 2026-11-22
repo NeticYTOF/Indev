@@ -6,17 +6,17 @@ This is the project issue ledger, not a claim that the app is finished. "Verifie
 
 ## Current state
 
-- Latest verified published baseline: [`e87e476`](https://github.com/NeticYTOF/Indev/commit/e87e476ccf6a8069b94ad30af09f3694b2a0264d).
-- That baseline passes 1,197 repository tests in 75 files, application/browser type checks and the web build.
+- Latest verified published baseline: [`79157a6`](https://github.com/NeticYTOF/Indev/commit/79157a6948e4d848a735b9060078cebbef281c58).
+- Fresh public audit for that baseline: 1,219 repository tests, with application/browser type checks and the web build passing.
 - A genuine completed live route and its uncut, normal-speed screen recording are still missing.
 - The latest live Delhi to Jaipur run examined 35 of 378 candidate stations. None of those 35 was certified under the active working-CCS2 and 60 kW rules. The other 343 were unchecked. This is an incomplete search, not proof that the route has no usable charger.
-- Reserve/charge-to parity is being corrected and independently tested. It is not yet published or accepted as complete.
+- Reserve/charge-to parity was published in [`79157a6`](https://github.com/NeticYTOF/Indev/commit/79157a6948e4d848a735b9060078cebbef281c58). It passed 1,219 repository tests plus 22 independent audit cases before publication, then 1,219 repository tests in the fresh public audit. Vehicle charging-time estimates remain unvalidated physics.
 
 ## Open blockers
 
 ### P-01: Connector status and fault text can contradict each other
 
-**Status: open, data contract unresolved.**
+**Status: planning policy set; underlying data contract still unresolved.**
 
 Observed example: station 5209's normalized details reported available connectors while carrying a positive fault note. Its official station page separately displayed the 60 kW CCS2 connector as charging and the 360 kW connectors as available.
 
@@ -30,6 +30,8 @@ Still unknown:
 - Which field should take precedence when status and error text disagree.
 
 A recent HTTP response is not proof of recent hardware telemetry. Do not label the fault harmless or certify the connector from its display color. Conflicting evidence remains uncertain.
+
+Owner policy (22 November 2026, 04:28 IST): when an `available` connector carries a positive fault message, the planner records `positive_fault_with_available_status` and treats the plug as faulted for planning only. This is an explicit planning choice for the 5209/7519 conflict class, not proof of a physical fault, a station blacklist, or permission to discard healthy sibling connectors. Raw status, note, provenance and contradiction evidence are preserved; occupied working connectors remain usable under the existing rule.
 
 Sources:
 
@@ -63,7 +65,7 @@ Increasing the allowance from 20 to 40 did not produce a certified route. Do not
 
 ### P-04: Original explicit settings were absent from the fresh HTTP API
 
-**Status: implementation and audit in progress, not published.**
+**Status: published in [`79157a6`](https://github.com/NeticYTOF/Indev/commit/79157a6948e4d848a735b9060078cebbef281c58); live route success still outstanding.**
 
 Verified original semantics:
 
@@ -74,6 +76,8 @@ Verified original semantics:
 The fresh build must keep its existing behavior when fields are absent: arrival reserve 10%, usual stop level 80%, absolute charging limit 95% and minimal necessary charging. Restoring an explicit 100% option must not change those defaults.
 
 Required wiring includes all three planning HTTP paths, core greedy selection, model-choice validation, final stop assembly, energy/time/cost accounting, advisory reachability and effective limits sent to the model. Browser request types do not establish that controls exist in the UI.
+
+The published implementation passed 1,219 repository tests plus 22 independent audit cases before the commit and 1,219 repository tests in the fresh public audit. The 100% charge option is allowed only as a user-selected explicit target; the taper-to-100 estimate remains a working model, not validated vehicle physics.
 
 ### P-05: Clamped battery helpers cannot prove a zero-reserve leg is possible
 

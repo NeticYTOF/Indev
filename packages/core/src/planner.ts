@@ -1285,12 +1285,12 @@ export function toStationView(
       pricePerKwh: ch.pricePerKwh ?? null,
       lastUsedOn: ch.lastUsedOn ?? null,
       plugs: (ch.connectors ?? []).map((p) => {
-        const { health, contradiction } = classifyPlug(p);
+        const { health, planningHealth, contradiction, policyExclusion } = classifyPlug(p);
         return {
           connectorId: p.connectorId,
           type: p.type,
           health,
-          contradiction,
+          planningHealth, contradiction, policyExclusion,
         };
       }),
     })),

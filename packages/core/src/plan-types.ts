@@ -17,6 +17,10 @@ export interface PlugView {
   type: string;
   health: PlugHealth;
   contradiction: boolean;
+  /** Planning-only state; policy exclusions may be faulted while observed health is uncertain. */
+  planningHealth: PlugHealth;
+  /** Host planning policy marker; not a hardware-health claim. */
+  policyExclusion?: 'positive_fault_with_available_status';
 }
 
 export interface ChargerView {

@@ -124,6 +124,34 @@ describe('classifyPlug (observed Statiq vocabulary)', () => {
   });
 });
 
+describe('available-status positive fault planning policy', () => {
+  it('marks an available-status positive-fault connector as policy-excluded without changing observed health', () => {
+    const result = classifyPlug(conn('available', true, 'Faulted'));
+    expect(result).toMatchObject({
+      health: 'uncertain', planningHealth: 'faulted', contradiction: true,
+      policyExclusion: 'positive_fault_with_available_status',
+    });
+  });
+
+  it('does not exclude a healthy sibling charger', () => {
+    const detail = station([{
+      type: 'DC', kw: 60, price: 20,
+      connectors: [conn('available', true, 'Faulted'), conn('available', true, null)],
+    }]);
+    const summary = summarizeCcs2(detail);
+    expect(summary.policyExcluded).toBe(1);
+    expect(summary.usable).toBe(1);
+    expect(summary.isUsable).toBe(true);
+    expect(summary.maxKw).toBe(60);
+    expect(selectedCappedCharger(detail, 60)?.kw).toBe(60);
+  });
+
+  it('does not widen the policy to merely positive-status occupied or preparing plugs', () => {
+    expect(classifyPlug(conn('charging', false, 'Faulted')).policyExclusion).toBeUndefined();
+    expect(classifyPlug(conn('preparing', true, 'Faulted')).policyExclusion).toBeUndefined();
+  });
+});
+
 const station = (chargers: Array<{ type: string; kw: number; price: number | null; connectors: StatiqConnector[] }>): StatiqStationDetail =>
   ({
     stationId: 1,
@@ -301,12 +329,12 @@ it.each(['faulted', 'offline', 'unavailable'])('preserves definite %s evidence d
 
 it.each([null, undefined])('keeps legacy absent availability %j semantics', available => {
   const input = conn('available', true, null); Object.assign(input, { available });
-  expect(classifyPlug(input)).toEqual({ health: 'working-free', contradiction: false });
+  expect(classifyPlug(input)).toEqual({ health: 'working-free', planningHealth: 'working-free', contradiction: false });
 });
 
 it('keeps positive-status fault-note contradiction uncertain without calling it definitely faulted', () => {
   const input = conn('charging', false, 'Faulted'); Object.assign(input, { available: 'false' });
-  expect(classifyPlug(input)).toEqual({ health: 'uncertain', contradiction: true });
+  expect(classifyPlug(input)).toEqual({ health: 'uncertain', planningHealth: 'uncertain', contradiction: true });
 });
 
 it.each([false, true])('keeps valid same-charger connector sibling and counts no false free plug, invalid-first=%s', invalidFirst => {

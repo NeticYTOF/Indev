@@ -1153,8 +1153,8 @@ function mockStationView(stationId: number, name: string, chainageKm: number) {
         pricePerKwh: 22,
         lastUsedOn: '18/11/2026',
         plugs: [
-          { connectorId: stationId * 100 + 1, type: 'CCS-2', health: 'working-free', contradiction: false },
-          { connectorId: stationId * 100 + 2, type: 'CCS-2', health: 'working-occupied', contradiction: false },
+          { connectorId: stationId * 100 + 1, type: 'CCS-2', health: 'working-free', planningHealth: 'working-free', contradiction: false },
+          { connectorId: stationId * 100 + 2, type: 'CCS-2', health: 'working-occupied', planningHealth: 'working-occupied', contradiction: false },
         ],
       },
     ],
@@ -1164,6 +1164,6 @@ function mockStationView(stationId: number, name: string, chainageKm: number) {
 function mockStation(id: number) {
   return {
     ...mockStationView(id, 'Statiq Mock Point', 120),
-    ccs2: { total: 2, usable: 2, free: 1, occupied: 1, uncertain: 0, faulted: 0, offline: 0, maxKw: 60, pricePerKwh: 22, hasContradiction: false, isUsable: true },
+    ccs2: { total: 2, usable: 2, free: 1, occupied: 1, uncertain: 0, faulted: 0, offline: 0, policyExcluded: 0, maxKw: 60, pricePerKwh: 22, hasContradiction: false, isUsable: true },
   };
 }
