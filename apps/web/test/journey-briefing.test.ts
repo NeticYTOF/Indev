@@ -56,7 +56,7 @@ describe('journey briefing', () => {
     expect(data.battery[0]).toMatchObject({
       kind: 'start', arriveSocPct: null, departSocPct: null,
     });
-    expect(data.battery[0]?.note).toContain('not stored');
+    expect(data.battery[0]?.note).toBe('Starting charge not recorded.');
     expect(data.itinerary[0]).toMatchObject({
       stationId: 42, chargeKwh: 42.7, chargeTimeMin: 42, estPriceInr: 854,
     });

@@ -7,6 +7,7 @@ import type { SavedTrip, TripPlan } from '@indeev/core';
 import { formatDuration, formatInr, formatKwh, formatTariff } from './format.js';
 import { safeStationId } from './station-evidence.js';
 import { routeDirectionsLinks, stationDirectionsUrl } from './safe-url.js';
+import { renderWarningGroupsMarkup } from './warning-presentation.js';
 
 export interface JourneyBriefingPlaceSource {
   readonly label: string;
@@ -25,7 +26,7 @@ export interface JourneyBriefingStopSource {
   pricePerKwh: number | null;
   estPriceInr: number | null;
   chargeTimeMin: number;
-  /** Not stored on a saved trip; the briefing renders it as unknown. */
+  /** Plan-derived when saved; older records leave these times unknown. */
   arrivalEtaMin?: number;
   departureEtaMin?: number;
 }
@@ -45,6 +46,7 @@ export interface JourneyBriefingSource {
   destination: JourneyBriefingPlaceSource;
   status: TripPlan['status'];
   source: TripPlan['source'];
+  startSocPct?: unknown;
   totals: JourneyBriefingTotals;
   /** null/undefined preserves an unreadable stop list; [] is a real no-stop route. */
   stops: readonly JourneyBriefingStopSource[] | null | undefined;
@@ -52,8 +54,8 @@ export interface JourneyBriefingSource {
 }
 
 /**
- * Saved trips keep the planned charging facts but not per-stop ETAs. Adapt
- * only that schema boundary; unknown times stay unknown in the briefing.
+ * Saved trips keep planned charging facts and, when recorded, planned ETAs.
+ * Older records leave those times unknown; no times are reconstructed here.
  */
 export function journeySourceFromSavedTrip(trip: SavedTrip): JourneyBriefingSource {
   const raw = record(trip) ?? {};
@@ -66,6 +68,7 @@ export function journeySourceFromSavedTrip(trip: SavedTrip): JourneyBriefingSour
     destination: { label: labelText(destination.label), lat: destination.lat, lon: destination.lon },
     status: raw.status as TripPlan['status'],
     source: raw.source as TripPlan['source'],
+    startSocPct: raw.startSocPct,
     totals: {
       distanceKm: totals?.distanceKm,
       totalTimeMin: totals?.totalTimeMin,
@@ -90,9 +93,11 @@ export function journeySourceFromSavedTrip(trip: SavedTrip): JourneyBriefingSour
         arriveSocPct: s.arriveSocPct as number,
         leaveSocPct: s.leaveSocPct as number,
         chargeKwh: s.chargeKwh as number,
-        pricePerKwh: s.pricePerKwh as number | null,
         estPriceInr: s.estPriceInr as number | null,
+        pricePerKwh: s.pricePerKwh as number | null,
         chargeTimeMin: s.chargeTimeMin as number,
+        arrivalEtaMin: typeof s.arrivalEtaMin === 'number' ? s.arrivalEtaMin : undefined,
+        departureEtaMin: typeof s.departureEtaMin === 'number' ? s.departureEtaMin : undefined,
       } as JourneyBriefingStopSource;
     }) ?? null,
   };
@@ -146,9 +151,11 @@ export interface JourneyBriefingData {
   chargeKwh: number | null;
   knownCostInr: number | null;
   finalSocPct: number | null;
+  startSocPct: number | null;
   status: TripPlan['status'];
   source: TripPlan['source'];
   warnings: readonly string[];
+  localWarnings: readonly string[];
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -206,10 +213,11 @@ export function buildJourneyBriefingData(plan: JourneyBriefingSource): JourneyBr
   // Normalize every declared entry once. A null/malformed stop remains a
   // placeholder row instead of crashing all other stops and the whole render.
   const stops = stopsAvailable ? rawStops.map((stop) => record(stop) ?? {}) : [];
-  // Evidence holes are local to this presentation; never mutate the plan's own warnings.
-  const warnings: string[] = Array.isArray(plan.warnings) ? [...plan.warnings] : [];
+  // Parent warnings stay distinct: embedded briefings must not repeat them.
+  const planWarnings: string[] = Array.isArray(plan.warnings) ? [...plan.warnings] : [];
+  const localWarnings: string[] = [];
   if (!stopsAvailable) {
-    warnings.push('Journey briefing cannot read the charging stop list from this plan.');
+    localWarnings.push('Journey briefing cannot read the charging stop list from this plan.');
   }
 
   const routeDistanceKm = nonnegative(plan.totals?.distanceKm);
@@ -218,6 +226,7 @@ export function buildJourneyBriefingData(plan: JourneyBriefingSource): JourneyBr
   const chargeKwh = nonnegative(plan.totals?.chargeKwh);
   const knownCostInr = nonnegative(plan.totals?.estPriceInr);
   const finalSocPct = socValue(plan.totals?.finalSocPct);
+  const startSocPct = socValue(plan.startSocPct);
 
   const legs: JourneyLeg[] = [];
   let fromLabel = labelText(plan.origin?.label);
@@ -248,8 +257,10 @@ export function buildJourneyBriefingData(plan: JourneyBriefingSource): JourneyBr
     kind: 'start',
     label: labelText(plan.origin?.label),
     arriveSocPct: null,
-    departSocPct: null,
-    note: 'Starting charge is not stored in the plan.',
+    departSocPct: startSocPct,
+    note: startSocPct == null
+      ? 'Starting charge not recorded.'
+      : 'Starting charge from the validated plan request.',
   }];
   stops.forEach((stop) => {
     battery.push({
@@ -283,7 +294,7 @@ export function buildJourneyBriefingData(plan: JourneyBriefingSource): JourneyBr
       leaveSocPct, chargeKwh, chargeTimeMin, arrivalEtaMin, departureEtaMin,
     ];
     if (required.some((value) => value == null)) {
-      warnings.push(
+      localWarnings.push(
         `Journey briefing: some charging facts for stop ${index + 1} are unknown or invalid; missing values stay Unknown.`,
       );
     }
@@ -317,9 +328,11 @@ export function buildJourneyBriefingData(plan: JourneyBriefingSource): JourneyBr
     chargeKwh,
     knownCostInr,
     finalSocPct,
+    startSocPct,
     status: plan.status,
     source: plan.source,
-    warnings,
+    warnings: [...planWarnings, ...localWarnings],
+    localWarnings,
   };
 }
 
@@ -348,23 +361,25 @@ function soc(value: number | null): string {
 }
 
 function batteryMeter(point: JourneyBatteryPoint): string {
-  const bars = [
-    { label: 'Arrive', value: point.arriveSocPct },
-    { label: 'Depart', value: point.departSocPct },
-  ];
+  const bars = point.kind === 'start'
+    ? [{ label: 'Depart', value: point.departSocPct }]
+    : point.kind === 'destination'
+      ? [{ label: 'Arrive', value: point.arriveSocPct }]
+      : [{ label: 'Arrive', value: point.arriveSocPct },
+        { label: 'Depart', value: point.departSocPct }];
   return bars.map(({ label, value }) => {
     const meter = value == null
       ? `<span class="briefing-meter empty" aria-label="${html(label)} charge at ${html(point.label)} not stored"></span>`
       : `<span class="briefing-meter" role="meter" aria-label="${html(label)} charge at ${html(point.label)}" ` +
         `aria-valuemin="0" aria-valuemax="100" ` +
-        `aria-valuenow="${Math.round(value)}" aria-valuetext="${label} ${Math.round(value)} percent">` +
+        `aria-valuenow="${Math.round(value)}" aria-valuetext="${html(label)} ${Math.round(value)} percent">` +
         `<span class="briefing-meter-fill" style="width:${Math.max(0, Math.min(100, value))}%"></span></span>`;
     return `<div class="briefing-battery-value"><span class="briefing-battery-label">${label}</span>` +
       `${meter}<strong>${soc(value)}</strong></div>`;
   }).join('');
 }
 
-function statusBanners(data: JourneyBriefingData): string {
+function statusBanners(data: JourneyBriefingData, includePlanWarnings: boolean): string {
   const banners: string[] = [];
   if (data.source === 'synthetic') {
     banners.push('<div class="banner banner-synthetic">Synthetic data — mock plan, not live charger evidence.</div>');
@@ -372,14 +387,16 @@ function statusBanners(data: JourneyBriefingData): string {
   if (data.status === 'degraded') {
     banners.push('<div class="banner banner-warn">Degraded coverage — station or route evidence is incomplete.</div>');
   }
-  for (const warning of data.warnings) {
-    banners.push(`<div class="banner banner-warn">${html(warning)}</div>`);
-  }
+  const warningMarkup = renderWarningGroupsMarkup(
+    includePlanWarnings ? data.warnings : data.localWarnings);
+  if (warningMarkup) banners.push(warningMarkup);
   return banners.length > 0 ? `<div class="banners briefing-banners">${banners.join('')}</div>` : '';
 }
 
 /** DOM-ready markup; the same function is used by the standalone HTML export. */
-export function renderJourneyBriefingMarkup(plan: JourneyBriefingSource): string {
+export function renderJourneyBriefingMarkup(
+  plan: JourneyBriefingSource, options: { includePlanWarnings?: boolean } = {},
+): string {
   const data = buildJourneyBriefingData(plan);
   const legItems = data.legs.map((leg) => {
     const basis = leg.distanceBasis === 'totals-chainage'
@@ -421,7 +438,7 @@ export function renderJourneyBriefingMarkup(plan: JourneyBriefingSource): string
   ].map(([label, value]) => `<div><dt>${label}</dt><dd>${value}</dd></div>`).join('');
 
   return `<section class="journey-briefing" aria-labelledby="journey-briefing-title" data-journey-briefing>` +
-    statusBanners(data) +
+    statusBanners(data, options.includePlanWarnings !== false) +
     `<h3 id="journey-briefing-title">Journey briefing</h3>` +
     `<p class="hint">Times are relative to departure. No wall-clock departure or physical charger availability is assumed.</p>` +
     `<dl class="briefing-summary">${summary}</dl>` +

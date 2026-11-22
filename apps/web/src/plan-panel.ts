@@ -18,6 +18,7 @@ import { toast } from './toast.js';
 import { storageWarningText, storageWarningElement } from './storage-warning.js';
 import { formatReviewCount, formatDuration, formatEta, formatInr, lastUsedLabel, formatDateTime, formatTariff } from './format.js';
 import { safeHttpUrl, stationDirectionsUrl, routeDirectionsLinks } from './safe-url.js';
+import { renderWarningGroupsMarkup } from './warning-presentation.js';
 
 export function renderPlanPanel(
   panel: HTMLElement,
@@ -61,10 +62,8 @@ export function renderPlanPanel(
   if (!stopsKnown) {
     banners.appendChild(el('<div class="banner banner-warn">Charging stop list is Unknown — the itinerary is incomplete; no zero-stop conclusion is implied.</div>'));
   }
-  for (const w of warnings) {
-    const text = typeof w === 'string' && w.trim().length > 0 ? escapeHtml(w) : 'Warning detail unavailable';
-    banners.appendChild(el(`<div class="banner banner-warn">${text}</div>`));
-  }
+  const warningMarkup = renderWarningGroupsMarkup(warnings);
+  if (warningMarkup) banners.appendChild(el(warningMarkup));
   if (banners.childElementCount > 0) results.appendChild(banners);
 
   // ---- header ----
@@ -124,7 +123,8 @@ export function renderPlanPanel(
   wirePlanActions(actions as HTMLElement, raw as unknown as TripPlan);
 
   // ---- journey briefing: whole-trip legs, battery profile, itinerary ----
-  results.appendChild(el(renderJourneyBriefingMarkup(raw as unknown as TripPlan)));
+  results.appendChild(el(renderJourneyBriefingMarkup(raw as unknown as TripPlan,
+    { includePlanWarnings: false })));
 
   // ---- stops timeline ----
   const stopsWrap = el('<div class="stops"></div>');

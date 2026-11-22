@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 interface BriefingFixturePlan {
   source: string;
   status: string;
+  startSocPct?: number;
   origin: { label: string };
   destination: { label: string };
   stops: Array<{
@@ -84,8 +85,10 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await expect(briefing.locator('.journey-leg')).toHaveCount(plan.stops.length + 1);
     await expect(briefing.locator('.journey-leg').first()).toContainText(plan.origin.label);
     await expect(briefing.locator('.journey-leg').last()).toContainText(plan.destination.label);
+    const recordedStart = typeof plan.startSocPct === 'number' &&
+      Number.isFinite(plan.startSocPct) && plan.startSocPct >= 0 && plan.startSocPct <= 100;
     await expect(briefing.locator('[role="meter"]'))
-      .toHaveCount(plan.stops.length * 2 + 1);
+      .toHaveCount(plan.stops.length * 2 + 1 + (recordedStart ? 1 : 0));
     await expect(briefing.locator('.briefing-itinerary tbody tr')).toHaveCount(plan.stops.length);
     const firstRow = briefing.locator('.briefing-itinerary tbody tr').first();
     const firstCost = plan.stops[0]!.estPriceInr == null
