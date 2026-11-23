@@ -1,7 +1,9 @@
 /**
  * Map layer: full-screen MapLibre map with the route polyline,
  * origin/destination pins and numbered charging-stop markers.
- * Night Drive: dark basemap as the hero; flat colors only.
+ * Milestone: the basemap is pushed to true black with quiet grey roads;
+ * the route is a solid highway-yellow line that draws itself from A to B,
+ * and stops/endpoints are kilometre-stone markers.
  */
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -24,8 +26,8 @@ const STYLE_URLS = [
 
 // Last-resort route colors when CSS custom props are unavailable (e.g. in
 // a non-browser test environment).
-const FALLBACK_ROUTE = '#D87932';
-const FALLBACK_CASING = '#F4F2EE';
+const FALLBACK_ROUTE = '#FFC72C';
+const FALLBACK_CASING = '#000000';
 
 export interface MapStop {
   lat: number;
@@ -93,6 +95,8 @@ export function createMap(container: HTMLElement): maplibregl.Map {
     loadTimer = null;
   });
   armFallback();
+  // Every style (including fallbacks) is re-tinted to the AMOLED palette.
+  map.on('style.load', () => darkenBasemap(map));
 
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-left');
   map.addControl(new maplibregl.GeolocateControl({ trackUserLocation: false }), 'bottom-left');
@@ -131,6 +135,8 @@ function addRouteLayers(
   if (!map.getSource(id)) {
     map.addSource(id, {
       type: 'geojson',
+      // line-progress (used for the draw-in) needs line metrics.
+      lineMetrics: true,
       data: {
         type: 'Feature',
         properties: {},
@@ -139,6 +145,7 @@ function addRouteLayers(
     });
   }
   if (!map.getLayer(`${id}-casing`)) {
+    // A black casing separates the route from roads beneath it.
     map.addLayer({
       id: `${id}-casing`,
       type: 'line',
@@ -146,7 +153,7 @@ function addRouteLayers(
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: {
         'line-color': cssToken('--route-casing', FALLBACK_CASING),
-        'line-width': 9,
+        'line-width': ['interpolate', ['linear'], ['zoom'], 4, 8, 10, 12],
       },
     });
   }
@@ -158,15 +165,124 @@ function addRouteLayers(
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: {
         'line-color': cssToken('--route', FALLBACK_ROUTE),
-        'line-width': 4.5,
+        'line-width': ['interpolate', ['linear'], ['zoom'], 4, 3.5, 10, 6],
+        'line-gradient': routeReveal(1) as never,
       },
     });
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Route draw-in: the line extends from A to B once per plan            */
+/* ------------------------------------------------------------------ */
+
+const DRAW_MS = 1400;
+const routeAnimations = new WeakMap<maplibregl.Map, { id: string; raf: number }>();
+
+/**
+ * Solid route colour up to `drawn` (0..1) along the line, nothing beyond.
+ * Two adjacent stops make a hard edge, so the visible line is one colour.
+ */
+function routeReveal(drawn: number): unknown[] {
+  const color = cssToken('--route', FALLBACK_ROUTE);
+  if (drawn >= 1) return ['interpolate', ['linear'], ['line-progress'], 0, color, 1, color];
+  const edge = Math.max(0.002, Math.min(0.998, drawn));
+  const clear = 'rgba(0,0,0,0)';
+  return ['interpolate', ['linear'], ['line-progress'], 0, color, edge, color, edge + 0.001, clear, 1, clear];
+}
+
+function reducedMotion(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function stopRouteAnimation(map: maplibregl.Map): void {
+  const running = routeAnimations.get(map);
+  if (running && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(running.raf);
+  routeAnimations.delete(map);
+}
+
+function animateRoute(map: maplibregl.Map, id: string): void {
+  stopRouteAnimation(map);
+  const canPaint = typeof (map as unknown as { setPaintProperty?: unknown }).setPaintProperty === 'function';
+  if (!canPaint || typeof requestAnimationFrame !== 'function' || reducedMotion()) return;
+  const layer = `${id}-line`;
+  const started = performance.now();
+  const state = { id, raf: 0 };
+  const step = (now: number): void => {
+    if (routeAnimations.get(map) !== state || !map.getLayer(layer)) return;
+    const t = Math.min(1, (now - started) / DRAW_MS);
+    try {
+      map.setPaintProperty(layer, 'line-gradient', routeReveal(easeInOut(t)) as never);
+    } catch {
+      stopRouteAnimation(map);
+      return;
+    }
+    if (t < 1) state.raf = requestAnimationFrame(step);
+    else {
+      routeAnimations.delete(map);
+      startRouteLife(map, id);
+    }
+  };
+  routeAnimations.set(map, state);
+  state.raf = requestAnimationFrame(step);
+}
+
+function easeInOut(x: number): number {
+  return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+}
+
+/* ------------------------------------------------------------------ */
+/* Basemap: push any dark style to true black                           */
+/* ------------------------------------------------------------------ */
+
+function darkenBasemap(map: maplibregl.Map): void {
+  let layers: Array<{ id: string; type: string }> = [];
+  try {
+    layers = (map.getStyle()?.layers ?? []) as Array<{ id: string; type: string }>;
+  } catch {
+    return;
+  }
+  const set = (id: string, prop: string, value: unknown): void => {
+    try {
+      map.setPaintProperty(id, prop as never, value as never);
+    } catch {
+      // A style may not support a property on this layer; skip it.
+    }
+  };
+  for (const layer of layers) {
+    const id = layer.id.toLowerCase();
+    if (id.startsWith('trip-')) continue;
+    if (layer.type === 'background') {
+      set(layer.id, 'background-color', '#000000');
+    } else if (layer.type === 'fill') {
+      if (/water|ocean|sea|lake|river/.test(id)) set(layer.id, 'fill-color', '#0a0d10');
+      else if (/building/.test(id)) set(layer.id, 'fill-color', '#0e0e0e');
+      else set(layer.id, 'fill-color', '#000000');
+      set(layer.id, 'fill-outline-color', 'rgba(0,0,0,0)');
+    } else if (layer.type === 'fill-extrusion') {
+      set(layer.id, 'fill-extrusion-color', '#0e0e0e');
+    } else if (layer.type === 'line') {
+      if (/water|river|stream|canal/.test(id)) set(layer.id, 'line-color', '#141a20');
+      else if (/boundary|admin|border/.test(id)) set(layer.id, 'line-color', '#333333');
+      else if (/casing|outline/.test(id)) set(layer.id, 'line-color', '#000000');
+      else if (/motorway|trunk/.test(id)) set(layer.id, 'line-color', '#3a3a3a');
+      else if (/primary|secondary/.test(id)) set(layer.id, 'line-color', '#262626');
+      else if (/road|street|highway|tertiary|minor|service|path|track|bridge|tunnel|rail|transportation/.test(id)) set(layer.id, 'line-color', '#181818');
+    } else if (layer.type === 'symbol') {
+      set(layer.id, 'text-color', /place|city|town|capital|state|country/.test(id) ? '#a6a6a1' : '#6e6e69');
+      set(layer.id, 'text-halo-color', '#000000');
+      set(layer.id, 'text-halo-width', 1.2);
+      set(layer.id, 'icon-opacity', 0.3);
+    }
+  }
+}
+
 function restoreActiveRoute(map: maplibregl.Map): void {
   const active = activeRoutes.get(map);
-  if (active) addRouteLayers(map, active.id, active.geometry);
+  if (!active) return;
+  addRouteLayers(map, active.id, active.geometry);
+  animateRoute(map, active.id);
 }
 
 function installStyleRecovery(map: maplibregl.Map): void {
@@ -197,20 +313,23 @@ export function drawTrip(map: maplibregl.Map, trip: TripDraw): void {
   pendingTrips.delete(map);
   clearTrip(map);
   const id = `trip-${++tripLayerCounter}`;
-  // Dark-map route: a light casing under the accent line for crisp clarity.
+  // The route: a black casing under a solid yellow line that draws in.
   addRouteLayers(map, id, trip.geometry);
   activeRoutes.set(map, { id, geometry: trip.geometry.slice() });
   installStyleRecovery(map);
+  animateRoute(map, id);
 
   const markers: maplibregl.Marker[] = [];
   tripSources.set(map, markers);
   (map as unknown as Record<string, unknown>)['__indeev_trip_id'] = id;
 
-  markers.push(makePin(map, trip.origin, 'A', 'origin'));
+  // Markers land in route order, roughly as the current draws past them.
+  const stopSpacing = trip.stops.length > 0 ? (DRAW_MS - 400) / (trip.stops.length + 1) : 0;
+  markers.push(makePin(map, trip.origin, 'A', 'origin', 150));
   trip.stops.forEach((s, i) => {
-    markers.push(makeStop(map, s, i + 1));
+    markers.push(makeStop(map, s, i + 1, undefined, 300 + (i + 1) * stopSpacing));
   });
-  markers.push(makePin(map, trip.destination, 'B', 'destination'));
+  markers.push(makePin(map, trip.destination, 'B', 'destination', DRAW_MS - 150));
 
   // Frame the route with room for the floating panels. On mobile the bottom
   // sheet will cover the lower half, so the route sits in the upper area.
@@ -226,12 +345,14 @@ export function drawTrip(map: maplibregl.Map, trip: TripDraw): void {
       left: wide ? 478 : 36,
       right: wide ? 64 : 36,
     },
-    duration: 800,
+    duration: 1400,
     maxZoom: 13,
   });
 }
 
 export function clearTrip(map: maplibregl.Map): void {
+  stopRouteAnimation(map);
+  stopRouteLife(map);
   pendingTrips.delete(map);
   activeRoutes.delete(map);
   const markers = tripSources.get(map);
@@ -240,6 +361,7 @@ export function clearTrip(map: maplibregl.Map): void {
     tripSources.delete(map);
   }
   const id = (map as unknown as Record<string, unknown>)['__indeev_trip_id'] as string | undefined;
+  if (id && map.getLayer(`${id}-flow`)) map.removeLayer(`${id}-flow`);
   if (id && map.getLayer(`${id}-line`)) map.removeLayer(`${id}-line`);
   if (id && map.getLayer(`${id}-casing`)) map.removeLayer(`${id}-casing`);
   if (id && map.getSource(id)) map.removeSource(id);
@@ -251,12 +373,15 @@ function makePin(
   at: { lat: number; lon: number; label: string },
   letter: 'A' | 'B',
   kind: 'origin' | 'destination',
+  delayMs = 0,
 ): maplibregl.Marker {
   const el = document.createElement('div');
   el.className = `pin pin-${kind}`;
   el.setAttribute('role', 'img');
   el.setAttribute('aria-label', `${letter}: ${at.label}`);
-  el.innerHTML = `<span>${letter}</span>`;
+  el.style.setProperty?.('--delay', `${Math.round(delayMs)}ms`);
+  // A beacon: orb + light stem + ground ring at the exact coordinate.
+  el.innerHTML = `<span class="pin-orb">${letter}</span><span class="pin-stem"></span><span class="pin-ground"></span>`;
   const marker = new maplibregl.Marker({ element: el, anchor: 'bottom' })
     .setLngLat([at.lon, at.lat])
     .addTo(map);
@@ -268,13 +393,16 @@ export function makeStop(
   stop: MapStop,
   number: number,
   onClick?: () => void,
+  delayMs = 0,
 ): maplibregl.Marker {
   // exposed separately so saved-trip views can add interactive markers
   const el = document.createElement('div');
   el.className = 'stop-marker';
   el.setAttribute('role', 'img');
   el.setAttribute('aria-label', `Charging stop ${number}: ${stop.label} (${stop.brand})`);
-  el.innerHTML = `<span class="stop-num">${number}</span>`;
+  el.style.setProperty?.('--delay', `${Math.round(delayMs)}ms`);
+  // A charge node: orbit ring + ping + numbered core (all decorative).
+  el.innerHTML = `<span class="stop-marker-orbit"></span><span class="stop-marker-ping"></span><span class="stop-marker-core"><span class="stop-num">${number}</span></span>`;
   if (onClick) {
     el.addEventListener('click', onClick);
     el.style.cursor = 'pointer';
@@ -282,4 +410,111 @@ export function makeStop(
   return new maplibregl.Marker({ element: el, anchor: 'center' })
     .setLngLat([stop.lon, stop.lat])
     .addTo(map);
+}
+
+/* ------------------------------------------------------------------ */
+/* Route life: once drawn, traffic flows along the line and a tiny EV  */
+/* drives A -> B on a loop. Decorative only (aria-hidden marker).       */
+/* ------------------------------------------------------------------ */
+
+interface RouteLife { raf: number; car: maplibregl.Marker | null; }
+const routeLives = new WeakMap<maplibregl.Map, RouteLife>();
+
+function stopRouteLife(map: maplibregl.Map): void {
+  const life = routeLives.get(map);
+  if (!life) return;
+  if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(life.raf);
+  life.car?.remove();
+  routeLives.delete(map);
+}
+
+const DASH_SEQUENCE: number[][] = [
+  [0, 4, 3], [0.5, 4, 2.5], [1, 4, 2], [1.5, 4, 1.5], [2, 4, 1], [2.5, 4, 0.5],
+  [3, 4, 0], [0, 0.5, 3, 3.5], [0, 1, 3, 3], [0, 1.5, 3, 2.5], [0, 2, 3, 2],
+  [0, 2.5, 3, 1.5], [0, 3, 3, 1], [0, 3.5, 3, 0.5],
+];
+
+function startRouteLife(map: maplibregl.Map, id: string): void {
+  stopRouteLife(map);
+  const m = map as unknown as {
+    setPaintProperty?: unknown; addLayer?: unknown; getLayer?: (id: string) => unknown;
+  };
+  if (reducedMotion() || typeof m.setPaintProperty !== 'function' || typeof requestAnimationFrame !== 'function') return;
+  const active = activeRoutes.get(map);
+  if (!active || active.id !== id || active.geometry.length < 2) return;
+  try {
+    if (!map.getLayer(`${id}-flow`)) {
+      map.addLayer({
+        id: `${id}-flow`,
+        type: 'line',
+        source: id,
+        layout: { 'line-cap': 'butt', 'line-join': 'round' },
+        paint: {
+          'line-color': '#000000',
+          'line-opacity': 0.55,
+          'line-width': ['interpolate', ['linear'], ['zoom'], 4, 1.6, 10, 2.6],
+          'line-dasharray': [0, 4, 3],
+        },
+      });
+    }
+  } catch {
+    return;
+  }
+  // Pre-compute cumulative distances for constant-speed travel.
+  const geom = active.geometry;
+  const cum: number[] = [0];
+  for (let i = 1; i < geom.length; i += 1) {
+    const a = geom[i - 1] as [number, number];
+    const b = geom[i] as [number, number];
+    cum.push((cum[i - 1] as number) + Math.hypot(b[0] - a[0], b[1] - a[1]));
+  }
+  const total = cum[cum.length - 1] as number;
+  let car: maplibregl.Marker | null = null;
+  if (total > 0 && typeof document !== 'undefined') {
+    const el = document.createElement('div');
+    el.className = 'route-car';
+    el.setAttribute('aria-hidden', 'true');
+    el.innerHTML = '<div class="route-car-inner"><svg viewBox="0 0 40 22" aria-hidden="true"><path class="car-body" d="M4 14c0-3 1-5 4-6l5-5c1-1 2-1 3-1h9c2 0 3 1 4 2l4 4c3 0 5 2 5 5v2c0 1-1 2-2 2H6c-1 0-2-1-2-2z"/><path class="car-glass" d="M14 4h6v5h-10zM22 4h3c1 0 2 1 3 2l2 3h-8z"/><circle class="car-wheel" cx="11" cy="17" r="3.4"/><circle class="car-wheel" cx="30" cy="17" r="3.4"/><path class="car-bolt" d="M21 10l-3 4h2l-1 3 3-4h-2z"/></svg></div>';
+    try {
+      car = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat(geom[0] as [number, number]).addTo(map);
+    } catch {
+      car = null;
+    }
+  }
+  const inner = car?.getElement?.().querySelector<HTMLElement>('.route-car-inner') ?? null;
+  const life: RouteLife = { raf: 0, car };
+  routeLives.set(map, life);
+  const LOOP_MS = Math.min(16000, Math.max(7000, geom.length * 6));
+  const started = performance.now();
+  let lastDash = -1;
+  let seg = 1;
+  const frame = (now: number): void => {
+    if (routeLives.get(map) !== life || !map.getLayer(`${id}-flow`)) return;
+    const dashStep = Math.floor(now / 70) % DASH_SEQUENCE.length;
+    if (dashStep !== lastDash) {
+      lastDash = dashStep;
+      try { map.setPaintProperty(`${id}-flow`, 'line-dasharray', DASH_SEQUENCE[dashStep] as never); } catch { /* style swap */ }
+    }
+    if (car && total > 0) {
+      const p = ((now - started) % LOOP_MS) / LOOP_MS;
+      const d = easeInOut(p) * total;
+      if (d < (cum[seg - 1] as number)) seg = 1;
+      while (seg < cum.length - 1 && (cum[seg] as number) < d) seg += 1;
+      const a = geom[seg - 1] as [number, number];
+      const b = geom[seg] as [number, number];
+      const span = (cum[seg] as number) - (cum[seg - 1] as number) || 1;
+      const f = (d - (cum[seg - 1] as number)) / span;
+      car.setLngLat([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]);
+      if (inner) {
+        const pa = map.project(a);
+        const pb = map.project(b);
+        const deg = Math.atan2(pb.y - pa.y, pb.x - pa.x) * 180 / Math.PI;
+        // Keep the car upright: mirror instead of driving upside-down.
+        const flip = deg > 90 || deg < -90;
+        inner.style.transform = flip ? `rotate(${deg + 180}deg) scaleX(-1)` : `rotate(${deg}deg)`;
+      }
+    }
+    life.raf = requestAnimationFrame(frame);
+  };
+  life.raf = requestAnimationFrame(frame);
 }

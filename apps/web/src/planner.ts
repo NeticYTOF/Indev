@@ -17,6 +17,7 @@ import { SubmitGate } from './submit-gate.js';
 import { GeocodeSession } from './geocode-session.js';
 import { savedRouteDraftReady, type SavedRouteDraft } from './saved-route.js';
 import { renderVehiclePhoto } from './vehicle-photo.js';
+import type { DecisionConstraints } from './decision-explanation.js';
 
 export interface PlannerController {
   /** Copy a saved route into the composer for manual review; no network calls. */
@@ -73,9 +74,9 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
   // ---- brand header: the product identity lives in the card ----
   const head = el(`
     <div class="planner-head">
-      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 26 34" aria-hidden="true"><path d="M13 0C5.8 0 0 5.8 0 13v18a3 3 0 0 0 3 3h20a3 3 0 0 0 3-3V13C26 5.8 20.2 0 13 0Z" fill="currentColor"/><path class="cap" d="M13 0C5.8 0 0 5.8 0 13h26C26 5.8 20.2 0 13 0Z"/><rect x="7" y="20" width="12" height="2.4" rx="1.2" fill="#000"/><rect x="9" y="25" width="8" height="2.4" rx="1.2" fill="#000"/></svg></span>
       <span class="brand-name">IndEV</span>
-      <span class="brand-tag">EV route planner · India</span>
+      <span class="brand-tag">EV routes across India</span>
     </div>
   `);
   form.appendChild(head);
@@ -223,12 +224,27 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
         <span class="stepper-value" aria-live="polite">100%</span>
         <button type="button" class="stepper-btn" data-step="5" aria-label="Increase charge">＋</button>
       </div>
+      <div class="soc-gauge" aria-hidden="true">${'<span class="soc-cell"></span>'.repeat(10)}</div>
     </div>
   `);
   form.appendChild(socRow);
   const socValue = socRow.querySelector('.stepper-value') as HTMLElement;
+  const socGauge = socRow.querySelector<HTMLElement>('.soc-gauge');
   const renderSoc = (): void => {
     socValue.textContent = `${startSoc}%`;
+    // Ten battery cells: each is 10%, a trailing 5% lights half a cell.
+    socGauge?.querySelectorAll<HTMLElement>('.soc-cell').forEach((cell, i) => {
+      const level = startSoc - i * 10;
+      const wasOn = cell.classList.contains('on');
+      cell.classList.toggle('on', level >= 10);
+      cell.classList.toggle('half', level > 0 && level < 10);
+      if (!wasOn && level >= 10) {
+        cell.classList.remove('bump');
+        void cell.offsetWidth;
+        cell.classList.add('bump');
+      }
+    });
+    if (socGauge) socGauge.dataset.tone = startSoc >= 45 ? 'high' : startSoc >= 20 ? 'mid' : 'low';
     socRow.querySelectorAll<HTMLButtonElement>('.stepper-btn').forEach((b) => {
       const step = Number(b.dataset.step);
       b.disabled = step < 0 ? startSoc - SOC_STEP < MIN_SOC : startSoc + SOC_STEP > MAX_SOC;
@@ -552,7 +568,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
           throw new ApiError('The job response was malformed: it did not include a usable route.', 'malformed_plan', 200);
         }
         const { plan, ai } = status.result as { plan: TripPlan; ai: { applied: boolean; notes?: string; reason?: string } };
-        onPlanAvailable(plan, map, errorBox);
+        onPlanAvailable(plan, map, errorBox, { maxChargerKw });
         if (ai.applied) {
           toast(ai.notes ? `AI plan applied: ${ai.notes}` : 'AI plan applied.');
         } else if (ai.reason) {
@@ -832,7 +848,7 @@ function drawablePlan(value: unknown): DrawablePlan | null {
   };
 }
 
-export function onPlanAvailable(plan: TripPlan, map: maplibregl.Map, errorBox?: HTMLElement): void {
+export function onPlanAvailable(plan: TripPlan, map: maplibregl.Map, errorBox?: HTMLElement, constraints?: DecisionConstraints): void {
   const raw = planRecord(plan);
   if (!raw) {
     clearTrip(map);
@@ -849,7 +865,7 @@ export function onPlanAvailable(plan: TripPlan, map: maplibregl.Map, errorBox?: 
     ...raw,
     warnings: drawable ? warnings : [...warnings, 'Map route unavailable — the route facts are shown, but drawing was refused because geometry or stop coordinates were missing or invalid.'],
   } as TripPlan;
-  renderPlanPanel(panel, map, displayPlan);
+  renderPlanPanel(panel, map, displayPlan, constraints);
   if (!drawable && errorBox) showError(errorBox, 'Map route unavailable — route facts are still shown; geometry or a stop coordinate was invalid.');
   if (window.innerWidth <= 720) {
     panel.classList.add('open');

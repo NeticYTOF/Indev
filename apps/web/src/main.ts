@@ -1,17 +1,23 @@
 /**
  * IndEV web app entry.
  */
-import '@fontsource/inter/400.css';
-import '@fontsource/inter/500.css';
-import '@fontsource/inter/600.css';
-import '@fontsource/inter/700.css';
+import '@fontsource/geist-sans/400.css';
+import '@fontsource/geist-sans/500.css';
+import '@fontsource/geist-sans/600.css';
+import '@fontsource/geist-sans/700.css';
+import '@fontsource/doto/900.css';
+import '@fontsource-variable/bricolage-grotesque';
 import './styles.css';
+import './delight.css';
+import { installMotion } from './motion.js';
+import { installDelight } from './delight.js';
 import { api, type HealthInfo } from './api.js';
 import { createMap } from './map.js';
 import { renderPlanner } from './planner.js';
 import { renderTripsDrawer, hideTripsDrawer } from './trips.js';
 import { toast } from './toast.js';
 
+installMotion();
 const map = createMap(document.getElementById('map') as HTMLElement);
 
 // Mode badge (top cluster): the synthetic-data label is always visible in
@@ -34,6 +40,8 @@ void (async () => {
 
 const planner = document.getElementById('planner-panel') as HTMLElement;
 const plannerController = renderPlanner(planner, map);
+// Decorative mascot + motion layer; reads the rendered DOM, never owns it.
+installDelight();
 
 const mobileViewport = window.matchMedia('(max-width: 720px)');
 const isMobile = (): boolean => mobileViewport.matches;

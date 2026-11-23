@@ -22,11 +22,15 @@ export function toast(message: string, tone: 'info' | 'bad' | 'warn' = 'info', m
   const el = document.createElement('div');
   el.className = `toast${tone === 'info' ? '' : ` ${tone}`}`;
   el.textContent = message;
+  // The draining timer line (CSS) runs for this toast's real lifetime.
+  el.style.setProperty('--toast-ms', `${ms}ms`);
   root.appendChild(el);
 
   hideTimer = setTimeout(() => {
-    el.style.transition = 'opacity 240ms var(--ease)';
+    el.style.transition = 'opacity 240ms var(--ease), transform 240ms var(--ease), filter 240ms var(--ease)';
     el.style.opacity = '0';
+    el.style.transform = 'translateY(8px) scale(0.96)';
+    el.style.filter = 'blur(6px)';
     setTimeout(() => {
       el.remove();
       if (root && root.childElementCount === 0) hideTimer = null;

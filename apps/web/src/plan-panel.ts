@@ -18,12 +18,14 @@ import { toast } from './toast.js';
 import { storageWarningText, storageWarningElement } from './storage-warning.js';
 import { formatReviewCount, formatDuration, formatEta, formatInr, lastUsedLabel, formatDateTime, formatTariff } from './format.js';
 import { safeHttpUrl, stationDirectionsUrl, routeDirectionsLinks } from './safe-url.js';
+import { renderDecisionExplanation, type DecisionConstraints } from './decision-explanation.js';
 import { renderWarningGroupsMarkup } from './warning-presentation.js';
 
 export function renderPlanPanel(
   panel: HTMLElement,
   map: maplibregl.Map,
   plan: TripPlan,
+  constraints?: DecisionConstraints,
 ): void {
   // The compose card stays on top; results render into a section below it.
   let results = panel.querySelector<HTMLElement>('.plan-results');
@@ -135,6 +137,9 @@ export function renderPlanPanel(
     stopsWrap.appendChild(renderStopCard(stop, i));
   });
   results.appendChild(stopsWrap);
+  if (Array.isArray(raw.candidates)) {
+    results.appendChild(el(renderDecisionExplanation(plan, constraints)));
+  }
   // Bind after the cards exist: the shared controller checks ID ownership,
   // guards duplicate clicks, discards detached views and stale responses.
   results.querySelectorAll<HTMLElement>('[data-refresh]:not([disabled])').forEach((btn) => {
