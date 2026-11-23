@@ -49,6 +49,8 @@ export interface McpToolDeps {
 export interface PlanTripArgs {
   origin: string;
   destination: string;
+  /** Ordered place queries for 0-5 user stopovers, resolved in route order. */
+  via?: string[];
   /** "489" real-world km for the selected vehicle (REQUIRED unless default Harrier). */
   vehicleRealWorldRangeKm?: number;
   vehicleCatalogId?: string;
@@ -86,6 +88,15 @@ async function resolvePlace(
   return { label: hit.label, lat: hit.lat, lon: hit.lon };
 }
 
+function readViaQueries(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 5 || Object.keys(value).length !== value.length ||
+      value.some(query => typeof query !== 'string' || !query.trim())) {
+    throw new PlanningError('via must be an array of at most 5 non-blank place queries', 'no_route');
+  }
+  return (value as string[]).map(query => query.trim());
+}
+
 export async function planTripHandler(
   deps: McpToolDeps,
   args: PlanTripArgs,
@@ -97,17 +108,27 @@ export async function planTripHandler(
     );
   }
 
-  const origin = await resolvePlace(deps.geocoder, args.origin);
-  const destination = await resolvePlace(deps.geocoder, args.destination);
+  const originQuery = args.origin;
+  const destinationQuery = args.destination;
+  const viaQueries = readViaQueries((args as { via?: unknown }).via);
+  const saveName = args.save;
+  const vehicleCatalogId = args.vehicleCatalogId;
+  const customVehicle = args.customVehicle ? { ...args.customVehicle } : undefined;
+  const origin = await resolvePlace(deps.geocoder, originQuery);
+  const destination = await resolvePlace(deps.geocoder, destinationQuery);
+  const viaPlaces: Array<{ label: string; lat: number; lon: number }> = [];
+  for (const query of viaQueries) {
+    viaPlaces.push(await resolvePlace(deps.geocoder, query));
+  }
 
   // Vehicle: real-world range is a user input, never derived from claims.
   const selection: VehicleSelection = {};
   let hasSelection = false;
-  if (args.customVehicle) {
-    selection.custom = args.customVehicle;
+  if (customVehicle) {
+    selection.custom = customVehicle;
     hasSelection = true;
-  } else if (args.vehicleCatalogId) {
-    selection.entryId = args.vehicleCatalogId;
+  } else if (vehicleCatalogId) {
+    selection.entryId = vehicleCatalogId;
     if (args.vehicleRealWorldRangeKm != null) {
       selection.realWorldRangeKm = args.vehicleRealWorldRangeKm;
     }
@@ -137,6 +158,7 @@ export async function planTripHandler(
     destination,
     {
       startSocPct: args.startSocPct != null ? Math.min(100, Math.max(5, args.startSocPct)) : undefined,
+      ...(viaPlaces.length > 0 ? { via: viaPlaces } : {}),
       runBudget: MCP_RUN_BUDGET,
     },
   );
@@ -145,9 +167,9 @@ export async function planTripHandler(
   await recordPlanCounter(deps.counters, plan);
 
   let savedTripId: string | undefined;
-  if (args.save?.trim()) {
+  if (saveName?.trim()) {
     try {
-      const saved = await deps.trips.save(plan, args.save.trim());
+      const saved = await deps.trips.save(plan, saveName.trim());
       savedTripId = saved.id;
     } catch (error) {
       if (!(error instanceof StoreLockCleanupError) || !error.committed) throw error;
@@ -167,6 +189,9 @@ export function summarizePlan(plan: TripPlan): string {
       `Rs. ${plan.totals.estPriceInr != null ? Math.round(plan.totals.estPriceInr).toLocaleString('en-IN') : 'n/a'}, ` +
       `arrival charge ${Math.round(plan.totals.finalSocPct)}%.`,
   );
+  if (plan.via && plan.via.length > 0) {
+    lines.push(`  User stopovers, in route order: ${plan.via.map(place => place.label).join(' -> ')}`);
+  }
   plan.stops.forEach((s, i) => {
     lines.push(
       `  Stop ${i + 1}: ${s.station.name} (${s.station.brand}) at ${Math.round(s.chainageKm)} km, ` +

@@ -583,6 +583,21 @@ export class StatiqAbortError extends Error {
   }
 }
 
+/**
+ * Sanitized bulk transport failure. Carries only allowlisted primitives -
+ * never the raw error, message, URL, headers, body or station identifiers.
+ */
+export class StatiqBulkTransportError extends Error {
+  constructor(
+    readonly failureCode: ProviderFailureCode,
+    readonly endpointClass: ProviderCallContext['endpointClass'],
+    readonly phase: ProviderCallContext['phase'],
+  ) {
+    super('Bulk transport failed (sanitized)');
+    this.name = 'StatiqBulkTransportError';
+  }
+}
+
 /** True for any abort-shaped error (ours, fetch's, or DOMException). */
 export function isAbortLike(err: unknown): boolean {
   return (

@@ -342,3 +342,154 @@ it('MCP refresh maps real-client nonfresh evidence to no-verdict, not absent sta
   }) as typeof fetch }) });
   await expect(getStationHandler(deps, 42)).rejects.toMatchObject({ code: 'not_determined' }); expect(calls).toBe(1);
 });
+describe('MCP ordered stopovers', () => {
+  type Place = { label: string; lat: number; lon: number };
+  type RouteCall = { origin: Place; destination: Place; via: readonly Place[] };
+  function hit(query: string): Record<string, unknown> {
+    return { name: query, label: `${query}, India`, lat: 28.6, lon: 77.2, city: null, state: null, country: 'India' };
+  }
+  function routeResult(): RouteResult {
+    return {
+      distanceKm: 300,
+      durationMin: 300,
+      geometry: [{ lat: 28.6, lon: 77.2 }, { lat: 26.9, lon: 75.8 }],
+    };
+  }
+
+  const malformed = [
+    { name: 'null', via: null },
+    { name: 'object', via: { label: 'A', lat: 23, lon: 72 } },
+    { name: 'string', via: 'Jaipur' },
+    { name: 'six stops', via: Array.from({ length: 6 }, (_, i) => `Stop ${i}`) },
+    { name: 'blank query', via: ['Delhi', '   '] },
+    { name: 'wrong member type', via: [42] },
+    { name: 'sparse array', via: new Array(2) },
+  ];
+  it.each(malformed)('rejects runtime malformed via before external calls: $name', async ({ via }) => {
+    let geocodeCalls = 0;
+    let routeCalls = 0;
+    let providerCalls = 0;
+    const deps = await makeDeps({
+      createStatiq: () => { providerCalls += 1; return liveStatiqFake(); },
+      geocoder: { search: async (q: string) => { geocodeCalls += 1; return [hit(q)] as never; } } as unknown as PhotonGeocoder,
+      router: { route: async (): Promise<RouteResult> => { routeCalls += 1; return routeResult(); } } as unknown as OsrmRouter,
+    });
+    const args = { origin: 'Delhi', destination: 'Jaipur', via } as unknown as Parameters<typeof planTripHandler>[1];
+    await expect(planTripHandler(deps, args)).rejects.toMatchObject({ code: 'no_route' });
+    expect({ geocodeCalls, routeCalls, providerCalls }).toEqual({ geocodeCalls: 0, routeCalls: 0, providerCalls: 0 });
+  });
+
+  const stopoverSets = [
+    { name: 'one', queries: ['Ahmedabad'] },
+    { name: 'five', queries: ['Nagpur', 'Indore', 'Ahmedabad', 'Surat', 'Vapi'] },
+  ];
+  it.each(stopoverSets)('resolves $name ordered stopovers into one full route', async ({ queries }) => {
+    const searchQueries: string[] = [];
+    const routeCalls: RouteCall[] = [];
+    let providerCalls = 0;
+    const deps = await makeDeps({
+      createStatiq: () => { providerCalls += 1; return liveStatiqFake(); },
+      geocoder: { search: async (q: string) => { searchQueries.push(q); return [hit(q)] as never; } } as unknown as PhotonGeocoder,
+      router: {
+        route: async (
+          origin: Place,
+          destination: Place,
+          _signal: AbortSignal | undefined,
+          via: readonly Place[] = [],
+        ): Promise<RouteResult> => {
+          routeCalls.push({ origin, destination, via });
+          return routeResult();
+        },
+      } as unknown as OsrmRouter,
+    });
+    const result = await planTripHandler(deps, { origin: 'Delhi', destination: 'Jaipur', via: queries });
+    expect(searchQueries).toEqual(['Delhi', 'Jaipur', ...queries]);
+    expect(providerCalls).toBe(1);
+    expect(routeCalls).toHaveLength(1);
+    expect(routeCalls[0]?.origin).toEqual({ label: 'Delhi, India', lat: 28.6, lon: 77.2 });
+    expect(routeCalls[0]?.destination).toEqual({ label: 'Jaipur, India', lat: 28.6, lon: 77.2 });
+    const expected = queries.map(query => ({ label: `${query}, India`, lat: 28.6, lon: 77.2 }));
+    expect(routeCalls[0]?.via).toEqual(expected);
+    expect(result.plan.via).toEqual(expected);
+    expect(result.plan.geometry).toEqual(routeResult().geometry);
+    expect(result.summary).toContain(`User stopovers, in route order: ${expected.map(place => place.label).join(' -> ')}`);
+  });
+
+  it('copies string inputs before the first geocode await', async () => {
+    let firstStarted!: () => void;
+    let releaseFirst!: () => void;
+    const started = new Promise<void>(resolve => { firstStarted = resolve; });
+    const gate = new Promise<void>(resolve => { releaseFirst = resolve; });
+    let first = true;
+    const searchQueries: string[] = [];
+    const routeCalls: RouteCall[] = [];
+    const deps = await makeDeps({
+      createStatiq: () => liveStatiqFake(),
+      geocoder: {
+        search: async (q: string) => {
+          searchQueries.push(q);
+          if (first) { first = false; firstStarted(); await gate; }
+          return [hit(q)] as never;
+        },
+      } as unknown as PhotonGeocoder,
+      router: {
+        route: async (
+          origin: Place,
+          destination: Place,
+          _signal: AbortSignal | undefined,
+          via: readonly Place[] = [],
+        ): Promise<RouteResult> => {
+          routeCalls.push({ origin, destination, via });
+          return routeResult();
+        },
+      } as unknown as OsrmRouter,
+    });
+    const args = { origin: 'Delhi', destination: 'Jaipur', via: ['A', 'B'], save: 'Saved before await' };
+    const pending = planTripHandler(deps, args);
+    try {
+      await started;
+      args.origin = 'Mutated origin';
+      args.destination = 'Mutated destination';
+      args.via[0] = 'Mutated A';
+      args.via.push('Extra');
+      args.save = 'Mutated save';
+    } finally {
+      releaseFirst();
+    }
+    const result = await pending;
+    expect(searchQueries).toEqual(['Delhi', 'Jaipur', 'A', 'B']);
+    expect(routeCalls).toHaveLength(1);
+    expect(routeCalls[0]?.origin.label).toBe('Delhi, India');
+    expect(routeCalls[0]?.destination.label).toBe('Jaipur, India');
+    expect(routeCalls[0]?.via.map(place => place.label)).toEqual(['A, India', 'B, India']);
+    expect(result.plan.via?.map(place => place.label)).toEqual(['A, India', 'B, India']);
+    expect((await deps.trips.list())[0]?.name).toBe('Saved before await');
+  });
+
+  it('saves exact plain stopovers in results, structured output and the shared store', async () => {
+    const queries = ['Nagpur', 'Indore', 'Ahmedabad', 'Surat', 'Vapi'];
+    const deps = await makeDeps({ createStatiq: () => liveStatiqFake() });
+    const result = await planTripHandler(deps, { origin: 'Delhi', destination: 'Jaipur', via: queries, save: 'Via save' });
+    const expected = queries.map(query => ({ label: `${query}, India`, lat: 28.6, lon: 77.2 }));
+    expect(result.plan.via).toEqual(expected);
+    const structured = planToStructured(result.plan) as { via?: unknown };
+    expect(structured.via).toEqual(expected);
+    const saved = (await deps.trips.list())[0] as unknown as Record<string, unknown>;
+    expect(saved.via).toEqual(expected);
+    for (const place of (saved.via as Array<Record<string, unknown>>)) {
+      expect(Object.keys(place).sort()).toEqual(['label', 'lat', 'lon']);
+    }
+  });
+
+  it.each([
+    { name: 'omitted', via: undefined },
+    { name: 'empty', via: [] as string[] },
+  ])('preserves A-B behavior and summary with $name via', async ({ via }) => {
+    const deps = await makeDeps({ createStatiq: () => liveStatiqFake() });
+    const args = { origin: 'Delhi', destination: 'Jaipur', ...(via === undefined ? {} : { via }) };
+    const result = await planTripHandler(deps, args);
+    expect(Object.prototype.hasOwnProperty.call(result.plan, 'via')).toBe(false);
+    expect(result.summary.startsWith('Delhi, India -> Jaipur, India:')).toBe(true);
+    expect(result.summary).not.toContain('User stopovers');
+  });
+});

@@ -84,6 +84,8 @@ server.tool(
   {
     origin: z.string().min(2).describe('Start: place name ("Jaipur") or "lat,lon"'),
     destination: z.string().min(2).describe('End: place name or "lat,lon"'),
+    via: z.array(z.string().trim().min(1)).max(5).optional()
+      .describe('Ordered user stopovers (0-5 place names or "lat,lon"), visited between origin and destination.'),
     vehicleCatalogId: z
       .string()
       .optional()
@@ -110,6 +112,7 @@ server.tool(
       const result = await planTripHandler(deps, {
         origin: args.origin,
         destination: args.destination,
+        via: args.via,
         vehicleCatalogId: args.vehicleCatalogId,
         vehicleRealWorldRangeKm: args.vehicleRealWorldRangeKm,
         customVehicle: args.customVehicle,
