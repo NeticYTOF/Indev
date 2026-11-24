@@ -262,6 +262,7 @@ describe('providerStatusMessage', () => {
     expect(providerStatusMessage(401)).toMatch(/rejected the API key \(HTTP 401\)/);
     expect(providerStatusMessage(403)).toMatch(/HTTP 403/);
     expect(providerStatusMessage(429)).toMatch(/rate-limited/);
+    expect(providerStatusMessage(402)).toMatch(/no credits or billing.*HTTP 402/);
     expect(providerStatusMessage(500)).toBe('AI provider returned 500');
   });
 });

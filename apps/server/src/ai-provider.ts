@@ -64,6 +64,9 @@ export function providerStatusMessage(status: number): string {
   if (status === 401 || status === 403) {
     return `AI provider rejected the API key (HTTP ${status}). Check the key in AI settings.`;
   }
+  if (status === 402) {
+    return 'AI provider refused the request: the account for this key has no credits or billing set up (HTTP 402). Add credits with the provider or switch provider in AI settings.';
+  }
   if (status === 429) return 'AI provider rate-limited this request (HTTP 429). Try again later.';
   return `AI provider returned ${status}`;
 }

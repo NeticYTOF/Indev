@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createApp, type AppDeps } from '../src/app.js';
+import { AiProviderError, providerStatusMessage } from '../src/ai-provider.js';
 import { toolFixture } from './ai-tool-fixture.js';
 import {
   CountersStore,
@@ -271,6 +272,33 @@ describe('POST /api/ai/plan', () => {
     expect(body.code).toBe('not_determined');
     expect(body.plan).toBeUndefined();
     expect(body.coverage).toBeDefined();
+  });
+
+  it('names an AI provider refusal (402 no credits) as an ai-provider cause, not a charger failure', async () => {
+    const aiToolCall = async () => { throw new AiProviderError(providerStatusMessage(402)); };
+    const app = createApp(await makeDeps({ ai: AI_CFG, aiToolCall }));
+    const res = await app.request('/api/ai/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: ORIGIN, destination: DEST }),
+    });
+    expect(res.status).toBe(422);
+    const body = await res.json() as { code: string; cause?: string; error: string };
+    expect(body.code).toBe('not_determined');
+    expect(body.cause).toBe('ai-provider');
+    expect(body.error).toMatch(/no credits or billing.*HTTP 402/);
+  });
+
+  it('keeps a generic provider error cause-less', async () => {
+    const aiToolCall = async () => { throw new Error('boom'); };
+    const app = createApp(await makeDeps({ ai: AI_CFG, aiToolCall }));
+    const res = await app.request('/api/ai/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: ORIGIN, destination: DEST }),
+    });
+    const body = await res.json() as { cause?: string };
+    expect(body.cause).toBeUndefined();
   });
 
   it('never sends occupancy or plug-status fields to the model', async () => {

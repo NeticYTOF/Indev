@@ -470,11 +470,16 @@ async function runLiveAiPlan(
   } catch (err) {
     await persistHistory();
     if (controls.signal?.aborted) throw new Error('aborted');
+    // An AI provider refusal (402 no credits, 401 bad key, 429...) is named
+    // as such so the UI never blames the charger data for it.
+    const aiFailed = err instanceof AiProviderError
+      || (err instanceof SelectiveRunError && err.cause instanceof AiProviderError);
     const failure = err instanceof PlanningError
       ? err
       : new PlanningError(
           err instanceof Error ? err.message : 'The selective run did not determine a certified plan.',
           'not_determined',
+          aiFailed ? 'ai-provider' : undefined,
         );
     const diag = err instanceof SelectiveRunError ? err.diagnostics : null;
     if (diag) {

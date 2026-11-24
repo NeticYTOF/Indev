@@ -1,166 +1,34 @@
-# IndEV (rebuild)
+ ▄▄▄ ▄▄   ▄▄ ▄▄▄▄   ▄▄▄▄▄ ▄▄   ▄▄
+  █  ██▄  ██ ██ ▀█  ██▄▄  ▀█▄ ▄█▀
+  █  ██ ▀▄██ ██  █  ██      ▀█▀
+ ▀▀▀ ▀▀   ▀▀ ▀▀▀▀   ▀▀▀▀▀    ▀
 
-EV route planner for India (like ABRP) for a **Tata Harrier EV 75 kWh** (plus an
-India-market vehicle catalog), planning over **live** Statiq charger data.
+indev is an ev route planner for india. you type where your starting and where your going, pick your car and how much battery you have, and it plans the whole trip with real charging stops pulled live from statiq chargers along the way. its like abrp but made for indian roads and indian cars, with a pure black amoled look and a little mascot called chhotu who reacts to everything you do.
 
-## Two launch modes
+how to use it. just open https://indeev.vercel.app in any browser, on your phone or your laptop. thats it, nothing to install. type a from and a to, drag the battery gauge to your current charge and hit plan. youll get the route on the map, every charging stop in order, how long each leg is and roughly what battery youll have when you arrive.
 
-| Mode | Command | What it does |
-|---|---|---|
-| **Normal (live)** | `npm run dev` | Server `:8787` runs **LIVE** against the real Statiq API using `STATIQ_API_TOKEN` from `.env`; web app on `:5173`. The token is used server-side only — it is never sent to the browser, never logged, and `.env` is never committed. |
-| **Test (mock)** | `npm run dev:stack` | Isolated mock stack on the **same ports the visual pass uses** (`:8787` mock server, `:5173` web) — credential-free and fail-closed: the launcher verifies the startup log line, `health.mock=true`, and a synthetic plan probe before reporting READY, and exits non-zero otherwise. |
-| **Test (mock, isolated ports)** | `npm run ui:verify` | Same fail-closed gates on dedicated ports (`:8788` server, `:5174` web) so a stale process can never answer instead. |
+how to run it on your own pc. you need node 20 or newer installed, get it from nodejs.org if you dont have it. then clone https://github.com/NeticYTOF/Indev.git, go into the folder and run npm install. copy .env.example to .env and put your statiq token in STATIQ_API_TOKEN, then run npm run dev and open http://localhost:5173. the token stays on the server side only, its never sent to the browser and never logged. if you dont have a token run npm run dev:stack instead, that starts a mock version with fake chargers so you can play around, and everything is clearly labeled synthetic data so you never mistake it for real.
 
-- Mock stacks are credential-free: `STATIQ_API_TOKEN` and `AI_*` vars are
-  stripped from both children and the repo `.env` is not even loaded
-  (`INDEV_SKIP_DOTENV=1`). Mock mode serves synthetic plans/stations, stores
-  in separate `.mock` files, and visibly labels everything "Synthetic data".
-- The AI planner (any OpenAI-compatible provider) is **off by default** and
-  only enabled when `AI_BASE_URL`, `AI_API_KEY` and `AI_MODEL` are all set.
-- The topbar badge and plan button always reflect the server's real mode from
-  `/api/health` — "Live charger data" in live mode, "Synthetic data — mock
-  mode" in mock mode.
+the cars. it comes with 8 indian market evs, the tata harrier ev 75, tata curvv ev 55, tata punch ev lr 35, tata tiago ev 24, mahindra be6 79, mg zs ev 50, mg comet ev 17 and hyundai ioniq 5 72. the company range claims are kept seperate from your own real world range, so you can tell it how far your car actually goes and it plans with that instead of the brochure number.
 
-## Setup
+tap any charging stop, on the map or in the plan list, and a sheet slides up with that chargers details, its plugs, its power, the battery you arrive with and leave with, and where the info came from. between stops theres little distance pills so you can see how far each hop is at a glance.
 
-```sh
-cp .env.example .env   # then fill STATIQ_API_TOKEN (server-side only)
-npm install
-npm run dev            # LIVE mode: server :8787 + web :5173
-```
+there are 2 search modes. smart is the default, it checks the most promising chargers first so you get a plan fast. thorough checks way more chargers along the route, its slower but it leaves less on the table.
 
-## Layout
+ai planning is there too but you bring your own key. open the ai settings, pick a provider (hack club ai, openai, openrouter, groq or google gemini), paste your key and optionally write your own custom instructions like avoid slow chargers or i want a long lunch stop. your key is encrypted and stored on your device only. it gets sent along with your ai plan requests and thats it, the server uses it for that one run and never saves it or logs it. the ai only picks between real chargers the planner already found, it cant make up stations.
 
-- `packages/core` — planning domain: Statiq client (rate-limited, abort-aware,
-  sanitized audit), OSRM router, Photon geocoder, corridor scan, planner,
-  vehicle catalog (manufacturer claims strictly separate from user
-  real-world range), saved-trips store, AI-choice validation.
-- `apps/server` — HTTP API: live planning, mock mode, saved trips shared with
-  MCP, station revalidation with fetchedAt, AI planning endpoint (off by
-  default).
-- `apps/web` — map UI (MapLibre + a dark OpenFreeMap basemap, flat solid-color
-  "Night Drive" design with no gradients, mobile bottom sheet).
-- `apps/mcp` — MCP stdio server (`plan_trip`, `list_saved_trips`,
-  `get_station`) sharing the saved trips with the website. Launch with
-  `node node_modules/tsx/dist/cli.mjs apps/mcp/src/index.ts` (avoid npm's
-  Windows cmd shims, which can drop env vars).
-- `scripts/` — dev utilities and the fail-closed test launchers; the live
-  acceptance runner fails closed (mode and provenance gates, non-zero exit
-  on any failure, retained per-run artifacts).
-- `docs/planning-requests.md` — upstream request accounting: what one
-  planning run costs, what the attempt budget counts (retries included),
-  and the fail-closed stop semantics (first 429/401/403, exhaustion →
-  honest not_determined).
-- `docs/journey-briefing.md` — the plan panel's whole-trip legs, battery
-  profile, printable itinerary, and standalone HTML export; documents which
-  values are plan facts and which remain explicitly unknown.
-- `docs/saved-route-editing.md` — manual replanning of saved trips: what exact
-  coordinates and vehicle facts are copied, which settings remain review-only,
-  and why editing never starts a provider or persistence request.
-- `docs/station-evidence-workspace.md` — the shared fresh/saved charging-stop
-  panel: planned-versus-fetched provenance, explicit manual refreshes, and
-  truthful handling of unavailable or malformed charger evidence.
-- `docs/saved-trip-comparison.md` — the read-only two-trip workspace: exact
-  stored vehicle facts, honest Unknowns, signed same-unit differences, explicit
-  provenance labels, and its standalone download/print behavior.
+saved trips. on the website your trips are saved in your own browser, so they stay on that device. when you run it on your own pc the trips are saved on the server and shared with the mcp server, so an ai assistant can see them too.
 
-## Local request-origin policy
+the keyboard shortcuts are simple. press / to jump to the from box, up and down arrows move through suggestions, enter picks or plans, esc closes things and ? shows the shortcut card. theres also a couple of hidden easter eggs, try typing chai.
 
-Stateful and provider-consuming API routes accept browser requests only from
-the exact local Vite origins in `INDEV_ALLOWED_ORIGINS`: a comma-separated list
-of `http://localhost:PORT` or `http://127.0.0.1:PORT` values. Absent config,
-the two documented dev ports are allowed: `5173` (normal/dev-stack) and `5174`
-(ui-verify). The launchers pin this to their own web port. Wildcards, other
-hosts and arbitrary localhost ports are refused.
+the mcp server. if you use an ai assistant that speaks mcp you can hook indev up to it and it gets 3 tools, plan_trip, list_saved_trips and get_station. start it with node node_modules/tsx/dist/cli.mjs apps/mcp/src/index.ts, dont use the npm shortcut on windows because it can drop your env vars.
 
-Browser Fetch Metadata must say `same-origin`; `same-site`, `cross-site`, and
-`none` browser-style requests are refused even when no `Origin` header is
-present. State-changing POSTs also require `application/json`. Local nonbrowser
-clients that send neither `Origin` nor Fetch Metadata (for example the HTTP
-acceptance runner and MCP/Node tooling) keep working; POSTs still use JSON.
+the limits on the website. its running on the free vercel plan so every plan has to finish within 300 seconds, really long thorough or ai searches can hit that wall. theres no background jobs, a plan runs in one go. saved trips dont sync between devices. and the charger counter can reset whenever vercel spins up a fresh server.
 
-The API process is configured to bind IPv4 loopback (`127.0.0.1`); launcher
-probes and Vite's API proxy target use the same numeric address, while browser
-web origins remain `localhost`. This is a bind-address fact, not proof of
-external reachability or firewall exposure; Linux listener evidence is required
-for the actual bound address.
+how it was all achieved. the whole thing is typescript. the planning lives in packages/core, it talks to the statiq charger api through a cloudflare worker, gets the road route from osrm and turns place names into coordinates with photon. it scans a corridor along the route for chargers, works out the battery for every leg and picks stops that actually get you there, and if it cant prove a plan works it says so honestly instead of guessing. apps/server is the api built on hono, apps/web is the website drawn with maplibre on a dark openfreemap map with zero gradients and a lot of motion, and apps/mcp is the mcp server. the hosted version bundles the server into one file with esbuild and runs it as a vercel function, with the website served next to it. charger data is always fetched live, only a count of chargers seen is ever stored, never the station data itself, and the logs never contain tokens, coordinates or your route.
 
-This is a **local development/workflow policy only**. No public hostname, TLS
-termination, forwarded-header trust chain, or hosted deployment authority has
-been established. Serving these endpoints from a public origin requires a
-separate reviewed origin/proxy policy; this repository does not claim one.
+the docs folder has the deep dives, how many requests a plan costs, the trip briefing and export, editing saved routes, the charger evidence panel and comparing two saved trips.
 
-## Data & privacy
+testing. npm test runs the tests, npm run typecheck checks the types and npm run test:browser runs the browser checks on a mock stack (run npm run test:browser:setup once first).
 
-- Charger data is always fetched live along the route; only a running count
-  of chargers seen is persisted — never station data.
-- Saved trips store minimal station references plus route geometry.
-- Upstream audit logs are strictly sanitized: endpoint, status, timestamp and
-  a per-run count — no auth headers, coordinates, bodies or route history.
-
-## Tests
-
-```sh
-npm test         # full suite (isolated temp stores, mocked transports)
-npm run typecheck
-```
-## Browser regression checks (Linux)
-
-Requires Node 20 or newer. From a clean checkout:
-
-```sh
-npm ci
-npm run test:browser:setup
-npm run typecheck
-npm run test:browser
-```
-
-On Linux hosts that already provide Chrome, the browser download can be skipped:
-
-```sh
-PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome npm run test:browser
-```
-
-The browser command starts and stops its own isolated, credential-free mock
-stack on ports 8788 and 5174. Keep those ports free. It refuses to reuse an
-unknown web server. Saved trips use disposable test data, not the normal data
-folder. The config does not start a live provider run. The failure test uses
-intercepted synthetic responses, including optional AI controls for layout;
-it is not evidence of live route completion. Third-party map requests are
-blocked for this focused UI regression, so its screenshots have no basemap.
-
-The checks cover mobile 390x844 and desktop 1280x800, title/guidance visibility
-inside the planner scrollport, and restored retry-button focus. Browser specs
-and config are included in `npm run typecheck`. Failure screenshots/traces and
-successful reveal screenshots are written under ignored `test-results/`.
-
-## Shared JSON storage writes
-
-HTTP and MCP writers use the same per-file exclusive sidecar directory lock
-for the whole read-modify-replace operation. Readers still read atomic JSON
-snapshots without taking that lock. Existing JSON schemas and separate live
-and mock filenames are unchanged. No new dependency or migration is required.
-
-Stop every old HTTP/MCP writer before deploying this change. Older code does
-not honor these locks. This protocol is for cooperative processes on a local
-filesystem using stable paths. Parent-directory aliases resolve to one lock;
-existing data-file symlinks, hardlinks and nonregular targets are refused.
-Linux-local behavior is tested. Windows, network/cloud-synced filesystems and
-power-loss durability are not validated by this change.
-
-Acquisition waits at most five seconds of contention, then refuses the write.
-There is no age-based or PID-based takeover. A killed writer can leave a lock
-that blocks further writes while the last complete snapshot remains readable.
-Recovery is deliberately manual and offline: all writers must be stopped and
-the saved snapshot and lock evidence preserved for review first. This change
-does not provide an automatic recovery command. Never delete a lock while a
-writer might still be alive. An interrupted replacement may also leave an
-unused temporary file; it is not replayed automatically.
-
-A write may commit before lock cleanup fails. HTTP save/delete responses keep
-the completed result and include a warning plus explicit storage outcome;
-MCP saves keep the saved trip ID and include the warning in the plan/summary.
-A no-op removal is not described as a commit. Counter cleanup failures warn
-that persistence is unconfirmed without withholding a valid plan. None of
-these operations is automatically retried. Do not repeat a counter increment
-to compensate for an uncertain outcome.
+this project was create 100% by ai although i have put in my own efforts in this and this is not slop nor is it one shot.

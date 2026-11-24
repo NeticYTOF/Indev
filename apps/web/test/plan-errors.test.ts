@@ -13,6 +13,7 @@ const KNOWN_CAUSES = [
   'deadline',
   'scan-coverage',
   'candidate-holes',
+  'ai-provider',
 ] as const;
 
 // Inherited Object.prototype keys that a buggy or hostile server could

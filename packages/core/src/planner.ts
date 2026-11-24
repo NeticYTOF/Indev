@@ -108,7 +108,8 @@ export type NotDeterminedCause =
   | 'scan-coverage' // too many failed samples: coverage incomplete
   | 'candidate-holes' // per-station lookups failed: impossibility claims unsafe
   | 'route-leg' // final selected sequence failed actual road certification
-  | 'network'; // a provider (routing or chargers) was unreachable mid-run
+  | 'network' // a provider (routing or chargers) was unreachable mid-run
+  | 'ai-provider'; // the AI provider refused or failed the request (AI runs only)
 
 export class PlanningError extends Error {
   /**

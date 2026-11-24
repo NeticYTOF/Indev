@@ -83,6 +83,12 @@ const CAUSE_GUIDANCE: Record<string, PlanFailureGuidance> = Object.assign(
         'The routing service or charger API dropped the connection mid-run, so the plan stopped without a verdict. This is usually transient - retry in a moment.',
       toast: 'Plan not determined — a provider was unreachable. Retry in a moment.',
     },
+    'ai-provider': {
+      title: 'AI provider refused the request',
+      detail:
+        "Your AI provider turned this request down, so no AI plan was made - the reason it gave is just below. This is about the AI key or account, not the route or the chargers. Fix it in AI settings (add credits, check the key or switch provider), or use Plan route, which needs no AI key.",
+      toast: 'AI provider refused the request — see details. Plan route works without AI.',
+    },
     'candidate-holes': {
       title: 'Candidate chargers unreadable',
       detail:
