@@ -1,7 +1,7 @@
 /** Host-only structured connector evidence. Never sent to AI or HTTP. */
 import { classifyPlugValues, type PlugClassification, type PlugHealth } from '@indeev/core';
 
-export const CONNECTOR_EVIDENCE_VERSION = 'connector-evidence-v2/fault-phrases-v1';
+export const CONNECTOR_EVIDENCE_VERSION = 'connector-evidence-v3/fault-note-usable-v1';
 const CHARGER_LIMIT = 8;
 const CONNECTOR_LIMIT = 8;
 const ROW_LIMIT = 16;
@@ -16,7 +16,6 @@ const ALLOWED_REASONS: Record<string, true> = {
   invalid_cap: true, not_fresh: true, identity_mismatch: true, missing_evidence: true,
   schema_invalid: true, no_dc_charger: true, no_ccs2_connector: true,
   no_usable_ccs2: true, unknown_power: true, not_within_cap: true,
-  policy_fault_note: true,
   evidence_failure: true,
   unknown_diagnostic: true,
 };
@@ -32,7 +31,7 @@ interface Row {
   health: PlugHealth; contradiction: boolean;
   planningHealth: PlugHealth;
   positiveFaultWord: boolean; negatedFaultWord: boolean; disconnectFlag: boolean;
-  policyExclusion?: PlugClassification['policyExclusion'];
+  faultNote?: PlugClassification['faultNote'];
 }
 export interface HostStationEvidence {
   version: string; stationId: number | null; reasons: string[]; matchedRule: string;
@@ -44,8 +43,8 @@ export interface HostStationEvidence {
   capKw: number | null; maxObservedCcs2DcKw: number | null;
   capState: 'some-within-cap' | 'all-over-cap' | 'mixed-over-and-unknown' | 'all-unknown-power' | 'no-ccs2-dc' | 'invalid-cap';
   withinCapChargerCount: number; overCapChargerCount: number; unknownCapChargerCount: number;
-  /** Counts bounded included rows only; omitted rows may also carry policy exclusions. */
-  includedPolicyExclusionCount: number;
+  /** Counts bounded included rows only; omitted rows may also carry fault notes. */
+  includedFaultNoteCount: number;
   connectors: Row[];
 }
 
@@ -152,7 +151,7 @@ function buildEvidence(
         availabilityKind: available == null ? 'absent'
           : typeof available === 'boolean' ? available ? 'true' : 'false' : 'invalid',
         health: cls.health, planningHealth: cls.planningHealth, contradiction: cls.contradiction,
-        policyExclusion: cls.policyExclusion,
+        ...(cls.faultNote ? { faultNote: cls.faultNote } : {}),
         positiveFaultWord: noteFault.positive || statusFault.positive,
         negatedFaultWord: noteFault.negated || statusFault.negated,
         disconnectFlag: /disconnect|offline/.test(noteSlug) || /unavailable|offline/.test(statusSlug),
@@ -173,7 +172,7 @@ function buildEvidence(
     omittedChargerCount: chargers.length - invalidChargerCount - includedChargers.length,
     omittedConnectorCount: Math.max(0, rawConnectorCount - invalidConnectorCount - connectors.length),
     invalidChargerCount, invalidConnectorCount,
-    includedPolicyExclusionCount: connectors.filter((row) => row.policyExclusion !== undefined).length,
+    includedFaultNoteCount: connectors.filter((row) => row.faultNote !== undefined).length,
     ...capEvidence(valid, maxChargerKw), connectors,
   };
 }

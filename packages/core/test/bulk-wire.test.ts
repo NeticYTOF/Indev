@@ -166,7 +166,13 @@ function harness(opts: HarnessOpts = {}): Harness {
       const body = JSON.parse(init.body);
       await waitGate(opts.detailsGate, 'details gate');
       if (!opts.uncooperativeLateSuccess && signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-      const stations = body.stations as Array<{ key: string; stationId: number }>;
+      // Round-mode worker emulation (live contract, 23 Nov 2026): one
+      // round of <= 40 stations, capped by the request budget, resumed by
+      // an opaque cursor encoding the next offset.
+      const all = body.stations as Array<{ key: string; stationId: number }>;
+      const offset = body.cursor ? Number(atob(body.cursor)) : 0;
+      const size = Math.min(40, body.budget.maxUpstreamAttempts, all.length - offset);
+      const stations = all.slice(offset, offset + size);
       const items = stations.map((s) => ({
         key: s.key, stationId: s.stationId, outcome: 'ok', reason: null,
         upstream: { attempts: 1, statuses: [200], fetchedAt: LATER },
@@ -174,8 +180,16 @@ function harness(opts: HarnessOpts = {}): Harness {
           contentType: 'application/json', cacheControl: null },
         data: { source: 'Statiq station detail (live)', station: { ...station, stationId: s.stationId } },
       }));
-      return new Response(JSON.stringify(bulkEnvelope('details-bulk', items)),
-        { status: 200, headers: BULK_HEADERS });
+      const end = offset + size;
+      return new Response(JSON.stringify({
+        ...bulkEnvelope('details-bulk', items),
+        requestedItems: all.length,
+        round: { offset, size },
+        continuation: end < all.length
+          ? { cursor: btoa(String(end)), offset: end, remainingCount: all.length - end, totalItems: all.length }
+          : null,
+        unprocessedCount: 0,
+      }), { status: 200, headers: BULK_HEADERS });
     }
     legacyCalls++;
     return new Response(JSON.stringify({ ok: true, stations: [], count: 0 }));
@@ -370,28 +384,30 @@ describe('real bulk wire lifecycle', () => {
     const release = gate(), started = gate();
     const h = harness({ detailsGate: release,
       dispatchNotice: (target) => { if (target.endsWith('/stations/details-bulk')) started.resolve(); } });
-    const budget = new UpstreamBudget(2);
+    const budget = new UpstreamBudget(25);
     h.client.attachRunBudget(budget);
-    // detailsBulk chunks at 2. First chunk reserves 2; second chunk of the
-    // SAME call is refused before dispatch (budget-exhausted), after the
-    // first chunk has been joined and settled.
-    const pending = h.client.detailsBulk([1, 2, 3], undefined,
+    // detailsBulk sends one 26-station series. The first round reserves the
+    // whole remaining budget (25); the worker answers 25 plus a cursor and
+    // the next round of the SAME call is refused before dispatch
+    // (budget-exhausted), after the first round has been joined and settled.
+    const ids = Array.from({ length: 26 }, (_, i) => i + 1);
+    const pending = h.client.detailsBulk(ids, undefined,
       { endpointClass: 'stations/details', phase: 'details' }).catch((e: unknown) => e);
     try {
       await wait(started.promise, 'first details batch dispatch');
       expect(h.detailCalls).toBe(1);
       expect(h.audit).toHaveLength(0); // first batch still gated/unsettled
-      expect(budget.attemptsMade).toBe(2); // pessimistic hold, not settled
+      expect(budget.attemptsMade).toBe(25); // pessimistic hold, not settled
       release.resolve();
       const outcome = await waitResult(pending, 'cap-drained detailsBulk');
       expect(outcome).toBeInstanceOf(UpstreamRunStoppedError);
       expect((outcome as UpstreamRunStoppedError).cause).toBe('budget-exhausted');
-      // First chunk (ids 1,2) succeeded: 2 verified upstream attempts and
-      // 2 completed attempts, then the SECOND chunk (id 3) was refused.
-      expect(h.audit).toHaveLength(2);
-      expect(budget.completedAttempts).toBe(2);
+      // First chunk (ids 1..25) succeeded: 25 verified upstream attempts,
+      // then the SECOND chunk (id 26) was refused.
+      expect(h.audit).toHaveLength(25);
+      expect(budget.completedAttempts).toBe(25);
       expect(h.detailCalls).toBe(1); // no second dispatch
-      expect(budget.attemptsMade).toBe(2);
+      expect(budget.attemptsMade).toBe(25);
       const frozen = { audit: h.audit.length, detailCalls: h.detailCalls, attempts: budget.attemptsMade };
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
       expect({ audit: h.audit.length, detailCalls: h.detailCalls, attempts: budget.attemptsMade }).toEqual(frozen);
@@ -439,19 +455,47 @@ describe('real bulk wire lifecycle', () => {
     expect(legacyDispatch).toBe(0);
   });
 
-  it('[client transport] one active batch refuses a concurrent second batch', async () => {
-    const release = gate(), started = gate();
-    const h = harness({ markerGates: [release],
-      dispatchNotice: (target) => { if (target.endsWith('/stations/markers-bulk')) started.resolve(); } });
-    const first = h.client.markersBulk([{ lat: 0, lon: 0 }], undefined, ctx);
+  it('[client transport] full bulk lanes refuse one more concurrent batch', async () => {
+    const release = gate();
+    let dispatched = 0;
+    const allStarted = gate();
+    const h = harness({ markerGates: [release, release, release, release],
+      dispatchNotice: (target) => {
+        if (target.endsWith('/stations/markers-bulk') && ++dispatched === 3) allStarted.resolve();
+      } });
+    // Three single-sample calls occupy all three lanes; a fourth is refused.
+    const held = [0, 1, 2].map((k) => h.client.markersBulk([{ lat: k, lon: 0 }], undefined, ctx));
     try {
-      await wait(started.promise, 'first marker dispatch');
-      await expect(h.client.markersBulk([{ lat: 1, lon: 1 }], undefined, ctx)).rejects.toBeInstanceOf(StatiqAbortError);
-      expect(h.markerCalls).toBe(1);
+      await wait(allStarted.promise, 'three marker lanes dispatched');
+      await expect(h.client.markersBulk([{ lat: 9, lon: 9 }], undefined, ctx)).rejects.toBeInstanceOf(StatiqAbortError);
+      expect(h.markerCalls).toBe(3);
     } finally {
       release.resolve();
-      await waitResult(first.catch(() => undefined), 'single-flight first batch cleanup');
+      await waitResult(Promise.all(held.map((p) => p.catch(() => undefined))), 'lane cleanup');
     }
+  });
+
+  it('[client transport] probes one batch, then fans out over three lanes in order', async () => {
+    const h = harness();
+    const points = Array.from({ length: 12 * 7 }, (_, i) => ({ lat: i / 100, lon: 0 }));
+    const order: number[] = [];
+    const results = await h.client.markersBulk(points, undefined, ctx, (_r, index) => { order.push(index); });
+    expect(results).toHaveLength(points.length);
+    expect(order).toEqual(points.map((_, i) => i)); // strictly ordered delivery
+    expect(h.markerSquares).toEqual([12, 12, 12, 12, 12, 12, 12]);
+  });
+
+  it('[client transport] keeps at most three batches in flight after the probe', async () => {
+    const probe = gate(); probe.resolve();
+    const slow = gate();
+    const h = harness({ markerGates: [probe, slow, slow, slow, slow, slow, slow] });
+    const points = Array.from({ length: 12 * 7 }, (_, i) => ({ lat: i / 100, lon: 0 }));
+    const pending = h.client.markersBulk(points, undefined, ctx);
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    expect(h.markerCalls).toBe(4); // verified probe + exactly three lanes in flight
+    slow.resolve();
+    expect(await waitResult(pending, 'lane fan-out')).toHaveLength(points.length);
+    expect(h.markerCalls).toBe(7);
   });
 
   it('[planner] whole-call throttle fails closed without legacy fallback', async () => {

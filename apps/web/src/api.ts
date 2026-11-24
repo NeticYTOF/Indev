@@ -3,14 +3,22 @@
  * All calls go through the Vite dev proxy to the local server.
  */
 import type { SavedTrip, TripPlan, VehicleCatalogEntry, GeocodeHit } from '@indeev/core';
+import { aiAuthHeaders, type AiAuth } from './ai-settings.js';
+import { deviceTrips } from './device-trips.js';
 
 export interface HealthInfo {
   ok: boolean;
   mock: boolean;
   chargersSeen: number | null;
   counterAvailable?: boolean;
-  /** AI planning is only shown in the UI when this is true. */
+  /** The server has its own AI key configured. */
   ai: boolean;
+  /** The server accepts a per-request device AI key (bring your own key). */
+  aiByok?: boolean;
+  /** Allowlisted AI providers a device key may target. */
+  aiProviders?: Array<{ id: string; label: string; defaultModel: string }>;
+  /** Hosted (serverless): no background jobs, saved trips stay on this device. */
+  hosted?: boolean;
 }
 
 export interface PlanRequest {
@@ -28,11 +36,16 @@ export interface PlanRequest {
   targetSoc?: number;
   /** Hard cap for selected charger rated power; omitted means no cap. */
   maxChargerKw?: number;
+  /** 'smart' (server default) checks only the chargers each hop can use;
+   *  'thorough' checks every corridor charger. */
+  searchMode?: 'smart' | 'thorough';
 }
 
 export interface AiPlanRequest extends PlanRequest {
   /** Plain-text custom requests from the AI box (e.g. "prefer food stops"). */
   request?: string;
+  /** Background job engine: 'ai' (default) or rules-only 'planner'. */
+  engine?: 'ai' | 'planner';
 }
 
 export interface AiPlanResponse {
@@ -74,10 +87,10 @@ async function get<T>(path: string, init?: RequestInit): Promise<T> {
   return handle<T>(res);
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
+async function post<T>(path: string, body: unknown, extraHeaders: Record<string, string> = {}): Promise<T> {
   const res = await request(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...extraHeaders },
     body: JSON.stringify(body),
   });
   return handle<T>(res);
@@ -142,10 +155,12 @@ export const api = {
     get<{ default: string; catalog: VehicleCatalogEntry[]; note: string }>('/api/vehicles'),
   geocode: (q: string) => get<{ hits: GeocodeHit[] }>(`/api/geocode?q=${encodeURIComponent(q)}`),
   plan: async (req: PlanRequest) => requireEnvelope(await post<{ plan: TripPlan } | null>('/api/plan', req), 'planning'),
-  aiPlan: async (req: AiPlanRequest) => requireEnvelope(await post<AiPlanResponse | null>('/api/ai/plan', req), 'AI planning'),
+  aiPlan: async (req: AiPlanRequest, auth?: AiAuth) =>
+    requireEnvelope(await post<AiPlanResponse | null>('/api/ai/plan', req, aiAuthHeaders(auth)), 'AI planning'),
   // Capability is passed by the caller from in-memory state only; never
   // persisted, logged, or placed in a URL.
-  startPlanJob: (req: AiPlanRequest) => post<PlanJobStart>('/api/jobs/plan', req),
+  // A device AI key travels only as a header on the request that uses it.
+  startPlanJob: (req: AiPlanRequest, auth?: AiAuth) => post<PlanJobStart>('/api/jobs/plan', req, aiAuthHeaders(auth)),
   planJobStatus: (jobId: string, capability: string) =>
     get<PlanJobStatus>(`/api/jobs/plan/${encodeURIComponent(jobId)}`, {
       headers: { 'x-job-capability': capability },
@@ -157,8 +172,17 @@ export const api = {
     });
     return await handle<{ cancelled: boolean }>(res);
   },
-  trips: () => get<{ trips: SavedTrip[] }>('/api/trips'),
-  trip: (id: string) => get<{ trip: SavedTrip }>(`/api/trips/${encodeURIComponent(id)}`),
-  saveTrip: (plan: TripPlan, name?: string) => post<{ trip: SavedTrip; warnings?: unknown }>('/api/trips', { plan, name }),
-  deleteTrip: (id: string) => fetch(`/api/trips/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  // Hosted servers keep no trips: the same calls read/write this device.
+  trips: async () => (await deviceTrips.active())
+    ? deviceTrips.list()
+    : get<{ trips: SavedTrip[] }>('/api/trips'),
+  trip: async (id: string) => (await deviceTrips.active())
+    ? deviceTrips.get(id)
+    : get<{ trip: SavedTrip }>(`/api/trips/${encodeURIComponent(id)}`),
+  saveTrip: async (plan: TripPlan, name?: string) => (await deviceTrips.active())
+    ? deviceTrips.save(plan, name)
+    : post<{ trip: SavedTrip; warnings?: unknown }>('/api/trips', { plan, name }),
+  deleteTrip: async (id: string) => (await deviceTrips.active())
+    ? deviceTrips.remove(id)
+    : fetch(`/api/trips/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 };

@@ -67,16 +67,42 @@ export function renderVehiclePhoto(container: HTMLElement, id: string | null, la
   }
 
   const figure = element('figure', 'vehicle-photo-card');
+  // Showroom stage: cutout car on a lit floor with a mirrored reflection.
+  // Decorative layers are aria-hidden; the one <img> keeps the alt text.
+  const stage = element('div', 'vehicle-stage');
+  stage.appendChild(element('span', 'vehicle-stage-spot'));
+  stage.appendChild(element('span', 'vehicle-stage-floor'));
+  for (const node of stage.children) (node as HTMLElement).setAttribute('aria-hidden', 'true');
   const image = element('img', 'vehicle-photo-image');
   image.src = source.src;
   image.alt = `${source.alt} — illustrative vehicle photo.`;
   image.loading = 'lazy';
   image.decoding = 'async';
   image.addEventListener('error', () => {
-    if (!figure.isConnected || figure.parentElement !== container || image.parentNode !== figure) return;
+    if (!figure.isConnected || figure.parentElement !== container || !figure.contains(image)) return;
     fallback(container, `Photo unavailable for ${label}. No lookalike image is substituted.`);
   });
-  figure.appendChild(image);
+  const reflection = element('img', 'vehicle-photo-reflection');
+  reflection.src = source.src;
+  reflection.alt = '';
+  reflection.setAttribute('aria-hidden', 'true');
+  reflection.decoding = 'async';
+  const car = element('div', 'vehicle-stage-car');
+  car.append(image, reflection);
+  stage.appendChild(car);
+  // Restart the drive-in each time a different preset is chosen.
+  car.style.setProperty('--drive-from', container.dataset.lastPhoto && container.dataset.lastPhoto !== source.id ? '-38%' : '-24%');
+  container.dataset.lastPhoto = source.id;
+  stage.addEventListener('pointermove', (e) => {
+    const r = stage.getBoundingClientRect();
+    stage.style.setProperty('--tilt-x', ((e.clientX - r.left) / r.width - 0.5).toFixed(3));
+    stage.style.setProperty('--tilt-y', ((e.clientY - r.top) / r.height - 0.5).toFixed(3));
+  });
+  stage.addEventListener('pointerleave', () => {
+    stage.style.setProperty('--tilt-x', '0');
+    stage.style.setProperty('--tilt-y', '0');
+  });
+  figure.appendChild(stage);
 
   const caption = element('figcaption', 'vehicle-photo-credit');
   caption.appendChild(element('span', 'vehicle-photo-disclaimer',

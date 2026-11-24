@@ -7,8 +7,8 @@
     "sourceUrl": "https://commons.wikimedia.org/wiki/File:4th_International_Auto_Show,_Bangalore_(2025)_110.jpg",
     "license": "CC BY-SA 4.0",
     "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
-    "changes": "Resized and converted to WebP.",
-    "sha256": "8f5943e28672d926b5d16b37b9c3635531396ae7c5c5a674960319ad348d2fe7"
+    "changes": "Background removed, cropped, resized and converted to WebP.",
+    "sha256": "1845ed091af389658d5137a1c0f22f8c1aa91e8f799295fa15dc55c12c33ecde"
   },
   {
     "id": "tata-punch-ev-lr-35",
@@ -18,8 +18,8 @@
     "sourceUrl": "https://commons.wikimedia.org/wiki/File:Tata_punch.ev.jpg",
     "license": "CC0",
     "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
-    "changes": "Resized and converted to WebP.",
-    "sha256": "500fa65107723e816649b49a6f68aa105481e36202d5baa29cbad7b8a98c18b0"
+    "changes": "Background removed, cropped, resized and converted to WebP.",
+    "sha256": "6542cf673c913dbbfe64d79871794c3d124dd363e6543878f89687df8eb8b9e6"
   },
   {
     "id": "tata-curvv-ev-55",
@@ -29,8 +29,8 @@
     "sourceUrl": "https://commons.wikimedia.org/wiki/File:Tata_Curvv.EV.jpg",
     "license": "CC0",
     "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
-    "changes": "Resized and converted to WebP.",
-    "sha256": "ceccff5d28950a789298045513546b2635646638ec6b2074554236d3e263332b"
+    "changes": "Background removed, cropped, resized and converted to WebP.",
+    "sha256": "fb121aa9d455ff132e631e7d8fa0074d3a539617dfbc289970a741719adf434d"
   },
   {
     "id": "tata-tiago-ev-24",
@@ -40,8 +40,8 @@
     "sourceUrl": "https://commons.wikimedia.org/wiki/File:2022_Tata_Tiago_EV_IB_XZ%2B_Tech_LR_front_view.png",
     "license": "CC BY 3.0",
     "licenseUrl": "https://creativecommons.org/licenses/by/3.0",
-    "changes": "Resized and converted to WebP.",
-    "sha256": "68655c0e14a59eb3f79fb987e856f31706377e7275ec057a85a5cad94e2ccd01"
+    "changes": "Background removed, cropped, resized and converted to WebP.",
+    "sha256": "459380c4c6c761fe1fe4fa8d7cf4788dc9f23623e2cf2fb0139b975849109d58"
   },
   {
     "id": "mg-zs-ev-50",
@@ -51,8 +51,8 @@
     "sourceUrl": "https://commons.wikimedia.org/wiki/File:MG_ZS_EV_Facelift_1X7A5867.jpg",
     "license": "CC BY-SA 4.0",
     "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
-    "changes": "Resized and converted to WebP.",
-    "sha256": "f7da09dfc4bedc1ea940116990505c6f3549bb3ac878adf53a77d9cb64df9249"
+    "changes": "Background removed, cropped, resized and converted to WebP.",
+    "sha256": "8a4258c207252ca80fbb88a8719d7b4f36991d6fd14a80e3d6aa4dfc8f005322"
   },
   {
     "id": "hyundai-ioniq5-72",
@@ -62,8 +62,8 @@
     "sourceUrl": "https://commons.wikimedia.org/wiki/File:Hyundai_Ioniq_5_IAA_2021_1X7A0189.jpg",
     "license": "CC BY-SA 4.0",
     "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
-    "changes": "Resized and converted to WebP.",
-    "sha256": "90485254ac3784baf0a7034c4cf6ff1e2b6ed6dca054b78da4c96e3d51f8e13d"
+    "changes": "Background removed, cropped, resized and converted to WebP.",
+    "sha256": "a90f23e0d35a14e38a57c0799d33a47a3beec205971a96ea8c5d5e8233f451d4"
   },
   {
     "id": "mahindra-be6-79",
@@ -73,8 +73,8 @@
     "sourceUrl": "https://commons.wikimedia.org/wiki/File:Mahindra_BE6_pic_1_(cropped).jpg",
     "license": "CC0",
     "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
-    "changes": "Resized and converted to WebP.",
-    "sha256": "0c902216de62485c13766252fdb635f0646febb2088480e2f387a20437fabab6"
+    "changes": "Background removed, cropped, resized and converted to WebP.",
+    "sha256": "52cec5d07ee5eb7a574e4d5a099e7d76d1c972d5102fe147b449fb4632eacd3c"
   },
   {
     "id": "mg-comet-ev-17",
@@ -84,7 +84,7 @@
     "sourceUrl": "https://commons.wikimedia.org/wiki/File:2023_MG_Comet_EV_Plush_(India).png",
     "license": "CC BY 3.0",
     "licenseUrl": "https://creativecommons.org/licenses/by/3.0",
-    "changes": "Resized and converted to WebP.",
-    "sha256": "92d07be8e770fe978b17705e1272bccfe01b565472d7fa9e5e6d42efdd6e0f7a"
+    "changes": "Background removed, cropped, resized and converted to WebP.",
+    "sha256": "ded8a7c5dbdcde81043d09cf9448200cb92cd59954f8c6b5d6464ea7d8d06dbd"
   }
 ]

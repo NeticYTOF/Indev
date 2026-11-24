@@ -6,6 +6,8 @@
  * and stops/endpoints are kilometre-stone markers.
  */
 import * as maplibregl from 'maplibre-gl';
+import { cumulativeKm, formatLegKm, pointAtDistance } from './leg-distance.js';
+import { closeStopSheet } from './stop-sheet.js';
 import 'maplibre-gl/dist/maplibre-gl.css';
 // MapLibre builds its web worker from a URL derived from import.meta.url;
 // bundlers can't follow that (dev serves it 504, build emits nothing -> 404
@@ -109,6 +111,25 @@ interface TripDraw {
   destination: { lat: number; lon: number; label: string };
   stops: MapStop[];
 }
+
+/** One drivable leg for the on-map distance pill (plan chainage, km). */
+export interface MapLeg {
+  km: number | null;
+  startChainageKm: number | null;
+  endChainageKm: number | null;
+}
+
+export interface DrawTripOptions {
+  /** Makes stop markers buttons that open the stop's charger details. */
+  onStopClick?: (index: number) => void;
+  /** Leg distances shown as pills along the route. */
+  legs?: readonly MapLeg[];
+  /** Plan chainage total, used to place pills on the drawn geometry. */
+  totalKm?: number | null;
+}
+
+const tripOptions = new WeakMap<maplibregl.Map, DrawTripOptions>();
+const legPills = new WeakMap<maplibregl.Map, { markers: maplibregl.Marker[]; onZoom: () => void }>();
 
 const tripSources = new WeakMap<maplibregl.Map, maplibregl.Marker[]>();
 // A plan may finish before the basemap. Keep only the latest requested
@@ -295,12 +316,13 @@ function flushPendingTrip(map: maplibregl.Map): void {
   const trip = pendingTrips.get(map);
   if (!trip || !map.isStyleLoaded()) return;
   pendingTrips.delete(map);
-  drawTrip(map, trip);
+  drawTrip(map, trip, tripOptions.get(map));
 }
 
-export function drawTrip(map: maplibregl.Map, trip: TripDraw): void {
+export function drawTrip(map: maplibregl.Map, trip: TripDraw, options: DrawTripOptions = {}): void {
   if (!map.isStyleLoaded()) {
     pendingTrips.set(map, trip);
+    tripOptions.set(map, options);
     if (!readinessListeners.has(map)) {
       readinessListeners.add(map);
       // style.load handles the initial style or its fallback; idle covers
@@ -312,6 +334,7 @@ export function drawTrip(map: maplibregl.Map, trip: TripDraw): void {
   }
   pendingTrips.delete(map);
   clearTrip(map);
+  tripOptions.set(map, options);
   const id = `trip-${++tripLayerCounter}`;
   // The route: a black casing under a solid yellow line that draws in.
   addRouteLayers(map, id, trip.geometry);
@@ -327,9 +350,11 @@ export function drawTrip(map: maplibregl.Map, trip: TripDraw): void {
   const stopSpacing = trip.stops.length > 0 ? (DRAW_MS - 400) / (trip.stops.length + 1) : 0;
   markers.push(makePin(map, trip.origin, 'A', 'origin', 150));
   trip.stops.forEach((s, i) => {
-    markers.push(makeStop(map, s, i + 1, undefined, 300 + (i + 1) * stopSpacing));
+    const onClick = options.onStopClick ? () => options.onStopClick?.(i) : undefined;
+    markers.push(makeStop(map, s, i + 1, onClick, 300 + (i + 1) * stopSpacing));
   });
   markers.push(makePin(map, trip.destination, 'B', 'destination', DRAW_MS - 150));
+  if (options.legs && options.legs.length > 0) addLegPills(map, trip.geometry, options.legs, options.totalKm ?? null);
 
   // Frame the route with room for the floating panels. On mobile the bottom
   // sheet will cover the lower half, so the route sits in the upper area.
@@ -351,10 +376,14 @@ export function drawTrip(map: maplibregl.Map, trip: TripDraw): void {
 }
 
 export function clearTrip(map: maplibregl.Map): void {
+  // Details of a stop that is no longer drawn must never stay on screen.
+  closeStopSheet({ restoreFocus: false });
   stopRouteAnimation(map);
   stopRouteLife(map);
   pendingTrips.delete(map);
   activeRoutes.delete(map);
+  tripOptions.delete(map);
+  removeLegPills(map);
   const markers = tripSources.get(map);
   if (markers) {
     markers.forEach((m) => m.remove());
@@ -403,8 +432,17 @@ export function makeStop(
   el.style.setProperty?.('--delay', `${Math.round(delayMs)}ms`);
   // A charge node: orbit ring + ping + numbered core (all decorative).
   el.innerHTML = `<span class="stop-marker-orbit"></span><span class="stop-marker-ping"></span><span class="stop-marker-core"><span class="stop-num">${number}</span></span>`;
+  el.dataset.stopIndex = String(number - 1);
   if (onClick) {
-    el.addEventListener('click', onClick);
+    // A real control: focusable, named for what it does, keyboard-operable.
+    el.setAttribute('role', 'button');
+    el.tabIndex = 0;
+    el.classList.add('is-interactive');
+    el.setAttribute('aria-label', `Charging stop ${number}: ${stop.label} (${stop.brand}) — show charger details`);
+    el.addEventListener('click', (event) => { event.stopPropagation(); onClick(); });
+    el.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onClick(); }
+    });
     el.style.cursor = 'pointer';
   }
   return new maplibregl.Marker({ element: el, anchor: 'center' })
@@ -517,4 +555,77 @@ function startRouteLife(map: maplibregl.Map, id: string): void {
     life.raf = requestAnimationFrame(frame);
   };
   life.raf = requestAnimationFrame(frame);
+}
+
+/* ------------------------------------------------------------------ */
+/* Stop focus + leg distance pills                                      */
+/* ------------------------------------------------------------------ */
+
+/** Highlight one stop marker (or none). */
+export function setActiveStop(map: maplibregl.Map, index: number | null): void {
+  for (const marker of tripSources.get(map) ?? []) {
+    const el = marker.getElement();
+    if (!el.classList.contains('stop-marker')) continue;
+    const active = index != null && el.dataset.stopIndex === String(index);
+    el.classList.toggle('is-active', active);
+    if (el.getAttribute('role') === 'button') el.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+}
+
+/** Pan so a stop sits clear of the floating panels, keeping the zoom. */
+export function revealStop(map: maplibregl.Map, lngLat: [number, number]): void {
+  const wide = window.innerWidth > 720;
+  try {
+    map.easeTo({ center: lngLat, offset: wide ? [-120, 0] : [0, -140], duration: reducedMotion() ? 0 : 700 });
+  } catch { /* map not ready: the sheet still opens */ }
+}
+
+function removeLegPills(map: maplibregl.Map): void {
+  const pills = legPills.get(map);
+  if (!pills) return;
+  pills.markers.forEach((m) => m.remove());
+  map.off('zoomend', pills.onZoom);
+  map.off('moveend', pills.onZoom);
+  legPills.delete(map);
+}
+
+function addLegPills(
+  map: maplibregl.Map,
+  geometry: Array<[number, number]>,
+  legs: readonly MapLeg[],
+  totalKm: number | null,
+): void {
+  removeLegPills(map);
+  const cumulative = cumulativeKm(geometry);
+  const markers: maplibregl.Marker[] = [];
+  legs.forEach((leg, i) => {
+    if (leg.km == null || leg.startChainageKm == null || leg.endChainageKm == null) return;
+    const at = pointAtDistance(geometry, (leg.startChainageKm + leg.endChainageKm) / 2, totalKm, cumulative);
+    if (!at) return;
+    const el = document.createElement('div');
+    el.className = 'leg-pill';
+    el.setAttribute('aria-hidden', 'true');
+    el.style.setProperty('--delay', `${Math.round(DRAW_MS + 120 + i * 110)}ms`);
+    const dot = document.createElement('span');
+    dot.className = 'leg-pill-dot';
+    const km = document.createElement('span');
+    km.className = 'leg-pill-km';
+    km.textContent = formatLegKm(leg.km);
+    el.append(dot, km);
+    markers.push(new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat(at).addTo(map));
+  });
+  // Declutter: hide pills that would collide with a neighbour at this zoom.
+  const onZoom = (): void => {
+    const shown: Array<{ x: number; y: number }> = [];
+    for (const marker of markers) {
+      const p = map.project(marker.getLngLat());
+      const crowded = map.getZoom() < 4.5 || shown.some((q) => Math.hypot(q.x - p.x, q.y - p.y) < 64);
+      marker.getElement().classList.toggle('is-crowded', crowded);
+      if (!crowded) shown.push({ x: p.x, y: p.y });
+    }
+  };
+  map.on('zoomend', onZoom);
+  map.on('moveend', onZoom);
+  legPills.set(map, { markers, onZoom });
+  onZoom();
 }

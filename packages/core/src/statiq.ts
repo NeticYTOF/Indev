@@ -93,8 +93,15 @@ const BULK_MARKERS_PATH = '/stations/markers-bulk';
 const BULK_DETAILS_PATH = '/stations/details-bulk';
 const BULK_MARKER_UPSTREAM_PATH = '/station/v1/markers';
 const BULK_DETAIL_UPSTREAM_PATH = '/station/v1/details';
-const BULK_MARKERS_CHUNK = 12; // live verified at the worker hard cap
-const BULK_DETAILS_CHUNK = 2;  // live verified bound (worker allows 25)
+const BULK_MARKERS_CHUNK = 12; // live verified worker hard cap (rejects 13+)
+/** Details-bulk series size. Live verified 23 Nov 2026: the worker accepts
+ *  1..700 stations per request and answers in cursor rounds (~40 items per
+ *  round, ~1.6s each); 701+ is rejected. One series per 700 IDs. */
+const BULK_DETAILS_SERIES = 700;
+/** Parallel bulk calls in flight. Live probe (23 Nov 2026): 3 lanes were
+ *  reliable for both endpoints (3x25 details ~3s, 3x12 markers ~2s); 5-6
+ *  lanes made some calls stall to their deadline or return 500. */
+const BULK_LANES = 3;
 const BULK_DEADLINE_CAP_MS = 150_000;
 /** Minimum worker work window: one paced upstream fetch (2s gap + up to 15s
  *  fetch timeout) plus scheduling headroom. Below this no batch is dispatched. */
@@ -112,6 +119,13 @@ interface BulkBatchTiming {
   readonly workerMs: number;
   readonly transportMs: number;
 }
+/** One verified worker round: items for request positions
+ *  [offset, offset + items.length) plus the next-round cursor (null = done). */
+interface BulkRound<T> {
+  readonly items: BulkItemResult<T>[];
+  readonly offset: number;
+  readonly cursor: string | null;
+}
 const BULK_EMPTY_MESSAGE = 'No stations found with selected filters';
 const BULK_OUTCOMES = new Set(['ok', 'confirmed-empty', 'unknown', 'not-attempted']);
 const BULK_REASONS = new Set([
@@ -123,12 +137,24 @@ const BULK_REASONS = new Set([
  *  markers. No synthesized integer is invented for a timeout/network/deadline. */
 export type BulkStatus = number | 'timeout' | 'network' | 'deadline';
 const BULK_STATUS_MARKERS = new Set(['timeout', 'network', 'deadline']);
+/** Canonical decimal HTTP status string ("500"), as the upgraded worker
+ *  emits for failed upstream items. Never "0500", " 500" or "5e2". */
+function numericStatusString(value: string): number | null {
+  if (!/^(0|[1-9][0-9]{0,2})$/.test(value)) return null;
+  const n = Number(value);
+  return n <= 599 ? n : null;
+}
 function bulkStatus(value: unknown): value is BulkStatus {
-  if (typeof value === 'string') return BULK_STATUS_MARKERS.has(value);
+  if (typeof value === 'string') return BULK_STATUS_MARKERS.has(value) || numericStatusString(value) !== null;
   return bulkInt(value) && (value as number) >= 0 && (value as number) <= 599;
 }
+/** Normalize a validated status: numeric strings become numbers. */
+function normalizeBulkStatus(value: BulkStatus): BulkStatus {
+  if (typeof value !== 'string') return value;
+  return numericStatusString(value) ?? value;
+}
 function bulkStatusKey(value: BulkStatus): string {
-  return typeof value === 'string' ? value : String(value);
+  return String(normalizeBulkStatus(value));
 }
 interface BulkItemEcho {
   readonly key: string;
@@ -170,6 +196,10 @@ interface BulkEnvelopeView {
   requestedItems: number;
   upstreamAttempts: number;
   items: readonly Record<string, unknown>[];
+  /** Index of items[0] in the request list (0 for a whole-list envelope). */
+  roundOffset: number;
+  /** Opaque cursor for the next round, or null when the series is done. */
+  cursor: string | null;
 }
 
 /** Strict whole-call + per-item validation. A partial envelope (ok:false)
@@ -212,7 +242,38 @@ function parseBulkEnvelope(value: unknown, endpoint: BulkEndpoint, path: string)
     declaredStatusSum += count as number;
   }
   if (declaredStatusSum !== attempts) return null;
-  if (!Array.isArray(items) || items.length !== requested) return null;
+  if (!Array.isArray(items)) return null;
+  // Round-mode worker: the response carries ONE round of the request list
+  // plus a continuation. Every round/continuation number must reconcile.
+  const round = ownDataValue(value, 'round');
+  const continuation = ownDataValue(value, 'continuation');
+  let roundOffset = 0;
+  let cursor: string | null = null;
+  if (round === undefined) {
+    if (items.length !== requested) return null;
+  } else {
+    if (!ownRecord(round)) return null;
+    const offset = ownDataValue(round, 'offset');
+    const size = ownDataValue(round, 'size');
+    if (!bulkInt(offset) || !bulkInt(size) || offset < 0 || size < 1 ||
+        items.length !== size || offset + size > (requested as number)) return null;
+    const unprocessed = ownDataValue(value, 'unprocessedCount');
+    if (unprocessed !== undefined && (!bulkInt(unprocessed) || unprocessed < 0)) return null;
+    const end = offset + size;
+    if (continuation === null) {
+      if (end !== requested) return null;
+    } else {
+      if (!ownRecord(continuation)) return null;
+      const next = ownDataValue(continuation, 'cursor');
+      if (typeof next !== 'string' || next.length === 0 || next.length > 2048 ||
+          ownDataValue(continuation, 'offset') !== end ||
+          ownDataValue(continuation, 'remainingCount') !== (requested as number) - end ||
+          ownDataValue(continuation, 'totalItems') !== requested ||
+          end >= (requested as number)) return null;
+      cursor = next;
+    }
+    roundOffset = offset;
+  }
 
   let attemptedCount = 0;
   let completedCount = 0;
@@ -278,7 +339,7 @@ function parseBulkEnvelope(value: unknown, endpoint: BulkEndpoint, path: string)
   // Aggregates, per-item attempt sum and the exact status histogram must agree
   // before any reservation is settled.
   if (itemAttemptSum !== attempts || attemptedCount !== attempted || completedCount !== completed) return null;
-  if (ok !== (completedCount === requested)) return null;
+  if (ok !== (completedCount === items.length)) return null;
   if (observedHistogram.size !== declaredHistogram.size) return null;
   for (const [key, count] of observedHistogram) {
     if (declaredHistogram.get(key) !== count) return null;
@@ -287,6 +348,8 @@ function parseBulkEnvelope(value: unknown, endpoint: BulkEndpoint, path: string)
     requestedItems: requested as number,
     upstreamAttempts: attempts as number,
     items: items as readonly Record<string, unknown>[],
+    roundOffset,
+    cursor,
   };
 }
 
@@ -702,8 +765,11 @@ export class StatiqClient {
   private callStamps: number[] = [];
   /** Serializes slot acquisition so concurrent callers cannot interleave. */
   private slotQueue: Promise<void> = Promise.resolve();
-  /** One active bulk batch; legacy dispatch is refused while it is set. */
-  private bulkInFlight = false;
+  /** Active bulk batches (up to BULK_LANES); legacy dispatch is refused
+   *  while any is active. */
+  private bulkActive = 0;
+  /** Next free dispatch-sequence number for concurrent bulk batches. */
+  private bulkSeqCursor = 0;
   /** Once a bulk transport/contract state is unknown, every later bulk or
    *  legacy dispatch fails closed with the same error - no retry, no fallback. */
   private bulkFailureLatch: Error | null = null;
@@ -847,12 +913,13 @@ export class StatiqClient {
       item: Record<string, unknown>,
       onReject: (reason: BulkProvenanceReason) => void,
     ) => T | null,
-  ): Promise<BulkItemResult<T>[]> {
+  ): Promise<BulkRound<T>> {
     if (this.bulkFailureLatch) throw this.bulkFailureLatch;
-    if (this.bulkInFlight) throw new StatiqAbortError('a bulk batch is already active');
+    if (this.bulkActive >= BULK_LANES) throw new StatiqAbortError('every bulk lane is already active');
     const budget = this.runBudget;
     if (!budget) throw new Error('Bulk transport requires an attached run budget');
-    if (!signal?.aborted) this.bulkInFlight = true;
+    const counted = !signal?.aborted;
+    if (counted) this.bulkActive += 1;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const onOuterAbort = () => controller.abort();
@@ -860,7 +927,9 @@ export class StatiqClient {
     try {
       if (signal?.aborted) throw new StatiqAbortError();
       budget.reserveBatch(reserved);
-      const seqBase = this.dispatchAttempts;
+      // Concurrent lanes claim disjoint sequence ranges up front.
+      const seqBase = Math.max(this.dispatchAttempts, this.bulkSeqCursor);
+      this.bulkSeqCursor = seqBase + reserved;
       // Single authoritative lifecycle: transport window = worker work
       // window + drain margin; the worker can return its honest deadline
       // envelope before this abort can race it out.
@@ -921,7 +990,7 @@ export class StatiqClient {
       const stagedFailures: StagedFailure[] = [];
       for (let i = 0; i < envelope.items.length; i++) {
         const item = envelope.items[i] as Record<string, unknown>;
-        const echo = echoes[i] as BulkItemEcho;
+        const echo = echoes[envelope.roundOffset + i] as BulkItemEcho;
         const echoReason = this.bulkEchoMismatchReason(item, echo);
         if (echoReason) throw new StatiqProvenanceError(path, echoReason);
         const outcome = ownDataValue(item, 'outcome') as BulkItemResult<T>['outcome'];
@@ -929,7 +998,7 @@ export class StatiqClient {
         const up = ownDataValue(item, 'upstream') as Record<string, unknown>;
         const upstream: BulkItemResult<T>['upstream'] = {
           attempts: ownDataValue(up, 'attempts') as number,
-          statuses: ownDataValue(up, 'statuses') as BulkStatus[],
+          statuses: (ownDataValue(up, 'statuses') as BulkStatus[]).map(normalizeBulkStatus),
           fetchedAt: ownDataValue(up, 'fetchedAt') as string | null,
         };
         let buildReject: BulkProvenanceReason | undefined;
@@ -972,7 +1041,7 @@ export class StatiqClient {
       }
       try { context?.onDispatch?.(seqBase + envelope.upstreamAttempts); } catch { /* evidence only */ }
       budget.settleBatch(reserved, envelope.upstreamAttempts);
-      return results;
+      return { items: results, offset: envelope.roundOffset, cursor: envelope.cursor };
     } catch (err) {
       // Unknown transport/contract state latches the run closed: no retry,
       // no legacy resubmission, no follow-on batch, no concurrent dispatch.
@@ -981,7 +1050,7 @@ export class StatiqClient {
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       signal?.removeEventListener('abort', onOuterAbort);
-      this.bulkInFlight = false;
+      if (counted) this.bulkActive -= 1;
     }
   }
 
@@ -1015,25 +1084,50 @@ export class StatiqClient {
     return null;
   }
 
-  /** Fetch every corridor sample in ordered bulk batches (12 max per call).
-   *  `onItem` fires as each batch resolves so completed early batches survive
-   *  a later fatal stop; sample ordinals are global, never per-batch. */
-  async markersBulk(
-    points: readonly BulkMarkerPoint[],
-    signal?: AbortSignal,
-    context?: ProviderCallContext,
-    onItem?: (result: BulkItemResult<StatiqMarkersResponse>, index: number) => void,
-  ): Promise<BulkItemResult<StatiqMarkersResponse>[]> {
-    const results: BulkItemResult<StatiqMarkersResponse>[] = [];
-    for (let i = 0; i < points.length; i += BULK_MARKERS_CHUNK) {
-      const slice = points.slice(i, i + BULK_MARKERS_CHUNK);
-      const squares = slice.map((p, j) => ({
-        key: `s${i + j}`,
-        latitude: p.lat,
-        longitude: p.lon,
-        vertices: markerSquareVertices(p.lat, p.lon),
-      }));
-      const reserved = Math.min(slice.length,
+  /**
+   * Run ordered bulk batches over up to BULK_LANES parallel calls.
+   * Each batch reserves its own budget before dispatch; results are
+   * delivered to `onItem` strictly in input order (a fast later batch waits
+   * for earlier ones), so ordinals and incremental progress stay truthful.
+   * The first fatal item (auth/throttle) stops every later dispatch; an
+   * unknown transport latches the client closed exactly as before.
+   */
+  private async runBulkLanes<T>(
+    total: number,
+    chunk: number,
+    dispatch: (start: number, end: number, reserved: number, timing: BulkBatchTiming) => Promise<BulkItemResult<T>[]>,
+    fatalPath: string,
+    onItem?: (result: BulkItemResult<T>, index: number) => void,
+  ): Promise<BulkItemResult<T>[]> {
+    const batches: Array<{ start: number; end: number }> = [];
+    for (let i = 0; i < total; i += chunk) batches.push({ start: i, end: Math.min(total, i + chunk) });
+    const settled: Array<BulkItemResult<T>[] | undefined> = new Array(batches.length);
+    const results: BulkItemResult<T>[] = [];
+    let delivered = 0;
+    let next = 0;
+    let stop: Error | null = null;
+    let stopCause: 'throttled' | 'auth' | undefined;
+    const deliver = (): void => {
+      while (delivered < batches.length && settled[delivered] !== undefined) {
+        const items = settled[delivered] as BulkItemResult<T>[];
+        const base = (batches[delivered] as { start: number }).start;
+        for (let j = 0; j < items.length; j++) {
+          const item = items[j] as BulkItemResult<T>;
+          results.push(item);
+          try { onItem?.(item, base + j); } catch { /* progress evidence never alters policy */ }
+          if (item.outcome === 'unknown' &&
+              (item.reason === 'upstream_auth' || item.reason === 'upstream_throttled')) {
+            stopCause ??= item.reason === 'upstream_auth' ? 'auth' : 'throttled';
+          }
+        }
+        delivered += 1;
+      }
+    };
+    /** Dispatch ONE batch (the next unclaimed), then deliver in order. */
+    const runOne = async (): Promise<void> => {
+      const index = next++;
+      const { start, end } = batches[index] as { start: number; end: number };
+      const reserved = Math.min(end - start,
         (this.runBudget?.maxAttempts ?? 0) - (this.runBudget?.attemptsMade ?? 0));
       if (reserved < 1) {
         throw new UpstreamRunStoppedError('budget-exhausted',
@@ -1041,7 +1135,60 @@ export class StatiqClient {
       }
       const timing = this.bulkBatchTiming();
       if (!timing) throw new StatiqAbortError('insufficient remaining deadline for a safe bulk batch');
-      const items = await this.bulkFetch<StatiqMarkersResponse>(
+      const items = await dispatch(start, end, reserved, timing);
+      settled[index] = items;
+      // A fatal item stops further dispatch at once, even while an earlier
+      // batch is still in flight (it is surfaced after ordered delivery).
+      for (const item of items) {
+        if (item.outcome === 'unknown' &&
+            (item.reason === 'upstream_auth' || item.reason === 'upstream_throttled')) {
+          stopCause ??= item.reason === 'upstream_auth' ? 'auth' : 'throttled';
+        }
+      }
+      deliver();
+    };
+    const canContinue = (): boolean => stop === null && stopCause === undefined && next < batches.length;
+    const record = (err: unknown): void => { stop ??= err instanceof Error ? err : new Error(String(err)); };
+    // PROBE FIRST: the first batch runs alone, so a run-fatal or unknown
+    // first response (auth, throttle, bad envelope, cancellation) costs
+    // exactly one dispatch. Only a verified first batch fans out.
+    if (canContinue()) await runOne().catch(record);
+    const lane = async (): Promise<void> => {
+      while (canContinue()) {
+        // Unknown transport latched by another lane: never dispatch again.
+        if (this.bulkFailureLatch) { record(this.bulkFailureLatch); return; }
+        await runOne();
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(BULK_LANES, batches.length) },
+      () => lane().catch(record)));
+    deliver();
+    if (stopCause) {
+      this.runBudget?.stop(stopCause);
+      throw new StatiqRunFatalError(stopCause, 0, fatalPath, 'per-item upstream fatal');
+    }
+    if (stop) throw stop;
+    return results;
+  }
+
+  /** Fetch every corridor sample in ordered bulk batches (12 per call,
+   *  BULK_LANES calls in parallel). `onItem` fires in input order as batches
+   *  resolve; sample ordinals are global, never per-batch. */
+  async markersBulk(
+    points: readonly BulkMarkerPoint[],
+    signal?: AbortSignal,
+    context?: ProviderCallContext,
+    onItem?: (result: BulkItemResult<StatiqMarkersResponse>, index: number) => void,
+  ): Promise<BulkItemResult<StatiqMarkersResponse>[]> {
+    return this.runBulkLanes<StatiqMarkersResponse>(points.length, BULK_MARKERS_CHUNK, (i, end, reserved, timing) => {
+      const slice = points.slice(i, end);
+      const squares = slice.map((p, j) => ({
+        key: `s${i + j}`,
+        latitude: p.lat,
+        longitude: p.lon,
+        vertices: markerSquareVertices(p.lat, p.lon),
+      }));
+      return this.bulkFetch<StatiqMarkersResponse>(
         BULK_MARKERS_PATH,
         'markers-bulk',
         BULK_MARKER_UPSTREAM_PATH,
@@ -1057,27 +1204,21 @@ export class StatiqClient {
         (item, onReject) => ownDataValue(item, 'outcome') === 'confirmed-empty'
           ? emptyMarkersFromBulk()
           : markerResponseFromBulkData(ownDataValue(item, 'data'), onReject),
-      );
-      let stopCause: 'throttled' | 'auth' | undefined;
-      for (let j = 0; j < items.length; j++) {
-        const item = items[j] as BulkItemResult<StatiqMarkersResponse>;
-        results.push(item);
-        try { onItem?.(item, i + j); } catch { /* progress evidence never alters policy */ }
-        if (item.outcome === 'unknown' &&
-            (item.reason === 'upstream_auth' || item.reason === 'upstream_throttled')) {
-          stopCause = item.reason === 'upstream_auth' ? 'auth' : 'throttled';
+      ).then((round) => {
+        // Markers batches are always answered whole (<= 12 squares).
+        if (round.offset !== 0 || round.cursor !== null || round.items.length !== squares.length) {
+          throw new StatiqProvenanceError(BULK_MARKERS_PATH, 'envelope_requested_items');
         }
-      }
-      // Per-item upstream auth/throttle stops ALL later dispatches.
-      if (stopCause) {
-        this.runBudget?.stop(stopCause);
-        throw new StatiqRunFatalError(stopCause, 0, BULK_MARKERS_PATH, 'per-item upstream fatal');
-      }
-    }
-    return results;
+        return round.items;
+      });
+    }, BULK_MARKERS_PATH, onItem);
   }
 
-  /** Fetch details for every unique station in ordered bulk batches. */
+  /** Fetch details for every unique station as cursor series: each request
+   *  carries up to BULK_DETAILS_SERIES stations and the worker answers one
+   *  verified round at a time (with a continuation cursor). Rounds run
+   *  sequentially, so `onItem` fires in input order as each round lands and
+   *  the first auth/throttle item stops every later round. */
   async detailsBulk(
     stationIds: readonly number[],
     signal?: AbortSignal,
@@ -1085,59 +1226,80 @@ export class StatiqClient {
     onItem?: (result: BulkItemResult<StationDetailsWithMeta>, index: number) => void,
   ): Promise<BulkItemResult<StationDetailsWithMeta>[]> {
     const results: BulkItemResult<StationDetailsWithMeta>[] = [];
-    for (let i = 0; i < stationIds.length; i += BULK_DETAILS_CHUNK) {
-      const slice = stationIds.slice(i, i + BULK_DETAILS_CHUNK);
-      const stations = slice.map((id, j) => ({ key: `d${i + j}`, stationId: id }));
-      const reserved = Math.min(slice.length,
-        (this.runBudget?.maxAttempts ?? 0) - (this.runBudget?.attemptsMade ?? 0));
-      if (reserved < 1) {
-        throw new UpstreamRunStoppedError('budget-exhausted',
-          this.runBudget?.attemptsMade ?? 0, this.runBudget?.maxAttempts ?? 0);
+    const build = (
+      item: Record<string, unknown>,
+      onReject: (reason: BulkProvenanceReason) => void,
+    ): StationDetailsWithMeta | null => {
+      const station = ownDataValue(ownDataValue(item, 'data'), 'station');
+      const stationDetail = stationDetailFromBulk(station, onReject);
+      if (!stationDetail) return null;
+      if (stationDetail.stationId !== ownDataValue(item, 'stationId')) {
+        onReject('item_detail_identity');
+        return null;
       }
-      const timing = this.bulkBatchTiming();
-      if (!timing) throw new StatiqAbortError('insufficient remaining deadline for a safe bulk batch');
-      const items = await this.bulkFetch<StationDetailsWithMeta>(
-        BULK_DETAILS_PATH,
-        'details-bulk',
-        BULK_DETAIL_UPSTREAM_PATH,
-        { stations, budget: { maxUpstreamAttempts: reserved }, deadlineMs: timing.workerMs },
-        reserved,
-        stations.map((s, j) => ({ key: s.key, stationId: slice[j]! })),
-        0,
-        timing.transportMs,
-        signal,
-        context,
-        (item, onReject) => {
-          const station = ownDataValue(ownDataValue(item, 'data'), 'station');
-          const stationDetail = stationDetailFromBulk(station, onReject);
-          if (!stationDetail) return null;
-          if (stationDetail.stationId !== ownDataValue(item, 'stationId')) {
-            onReject('item_detail_identity');
-            return null;
-          }
-          const fetchedAt = ownDataValue(ownDataValue(item, 'upstream') as Record<string, unknown>, 'fetchedAt');
-          return {
-            response: { ok: true, live: true, retained: false,
-              source: 'Statiq station detail (live)', station: stationDetail },
-            fetchedAt: new Date(fetchedAt as string),
-          };
-        },
-      );
-      let stopCause: 'throttled' | 'auth' | undefined;
-      for (let j = 0; j < items.length; j++) {
-        const item = items[j] as BulkItemResult<StationDetailsWithMeta>;
-        results.push(item);
-        // Incremental detail progress: ingest as each batch resolves so a
-        // later batch failure cannot erase earlier verified candidates.
-        try { onItem?.(item, i + j); } catch { /* progress evidence only */ }
-        if (item.outcome === 'unknown' &&
-            (item.reason === 'upstream_auth' || item.reason === 'upstream_throttled')) {
-          stopCause = item.reason === 'upstream_auth' ? 'auth' : 'throttled';
+      const fetchedAt = ownDataValue(ownDataValue(item, 'upstream') as Record<string, unknown>, 'fetchedAt');
+      return {
+        response: { ok: true, live: true, retained: false,
+          source: 'Statiq station detail (live)', station: stationDetail },
+        fetchedAt: new Date(fetchedAt as string),
+      };
+    };
+    for (let seriesStart = 0; seriesStart < stationIds.length; seriesStart += BULK_DETAILS_SERIES) {
+      const slice = stationIds.slice(seriesStart, seriesStart + BULK_DETAILS_SERIES);
+      const stations = slice.map((id, j) => ({ key: `d${seriesStart + j}`, stationId: id }));
+      const echoes = stations.map((s, j) => ({ key: s.key, stationId: slice[j]! }));
+      let next = 0;
+      let cursor: string | null = null;
+      while (next < stations.length) {
+        if (signal?.aborted) throw new StatiqAbortError();
+        const budget = this.runBudget;
+        const reserved = Math.min(stations.length - next,
+          (budget?.maxAttempts ?? 0) - (budget?.attemptsMade ?? 0));
+        if (reserved < 1) {
+          throw new UpstreamRunStoppedError('budget-exhausted',
+            budget?.attemptsMade ?? 0, budget?.maxAttempts ?? 0);
         }
-      }
-      if (stopCause) {
-        this.runBudget?.stop(stopCause);
-        throw new StatiqRunFatalError(stopCause, 0, BULK_DETAILS_PATH, 'per-item upstream fatal');
+        const timing = this.bulkBatchTiming();
+        if (!timing) throw new StatiqAbortError('insufficient remaining deadline for a safe bulk batch');
+        const round: BulkRound<StationDetailsWithMeta> = await this.bulkFetch<StationDetailsWithMeta>(
+          BULK_DETAILS_PATH,
+          'details-bulk',
+          BULK_DETAIL_UPSTREAM_PATH,
+          { stations, ...(cursor ? { cursor } : {}),
+            budget: { maxUpstreamAttempts: reserved }, deadlineMs: timing.workerMs },
+          reserved,
+          echoes,
+          0,
+          timing.transportMs,
+          signal,
+          context,
+          build,
+        );
+        // Rounds must tile the list exactly: contiguous, non-empty, and the
+        // cursor present iff positions remain. Anything else fails closed.
+        const end = next + round.items.length;
+        if (round.offset !== next || round.items.length < 1 || end > stations.length ||
+            (round.cursor === null) !== (end === stations.length)) {
+          const err = new StatiqProvenanceError(BULK_DETAILS_PATH, 'envelope_requested_items');
+          this.bulkFailureLatch = err;
+          throw err;
+        }
+        let stopCause: 'throttled' | 'auth' | undefined;
+        for (let j = 0; j < round.items.length; j++) {
+          const item = round.items[j] as BulkItemResult<StationDetailsWithMeta>;
+          results.push(item);
+          try { onItem?.(item, seriesStart + next + j); } catch { /* progress evidence never alters policy */ }
+          if (item.outcome === 'unknown' &&
+              (item.reason === 'upstream_auth' || item.reason === 'upstream_throttled')) {
+            stopCause ??= item.reason === 'upstream_auth' ? 'auth' : 'throttled';
+          }
+        }
+        if (stopCause) {
+          this.runBudget?.stop(stopCause);
+          throw new StatiqRunFatalError(stopCause, 0, BULK_DETAILS_PATH, 'per-item upstream fatal');
+        }
+        next = end;
+        cursor = round.cursor;
       }
     }
     return results;
@@ -1343,7 +1505,7 @@ export class StatiqClient {
       }
       // A bulk batch owns the wire while active; no concurrent legacy
       // dispatch may start (no reservation has been made yet here).
-      if (this.bulkInFlight) throw new StatiqAbortError('legacy dispatch refused while a bulk batch is active');
+      if (this.bulkActive > 0) throw new StatiqAbortError('legacy dispatch refused while a bulk batch is active');
       if (this.bulkFailureLatch) throw this.bulkFailureLatch;
       // 2) Atomic reserve immediately before fetch, with NO await between a
       // successful reserve and the dispatch (reservation-race invariant):

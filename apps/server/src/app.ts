@@ -38,6 +38,8 @@ import {
   DEFAULT_PLAN_OPTIONS,
   type PlanOptions,
   type PlanRunBudget,
+  type PlanSearchMode,
+  planTripDetailed,
   type ResolvedVehicle,
   type PlaceRef,
   type TripPlan,
@@ -55,6 +57,7 @@ import { SingleRunSlot } from './run-slot.js';
 import { SELECTIVE_TOOL_BUDGETS,
   type SelectiveCoverageProfile, type ToolAdmissionAggregate } from './selective-tools.js';
 import { AiProviderError, chatCompletion } from './ai-provider.js';
+import { publicProviderList, readRequestAi, type AiConfig } from './ai-byok.js';
 import { parseTripIntent, parseTripIntentRequest,
   TripIntentError, type TripIntentCall } from './trip-intent.js';
 import type { AiToolCall } from './ai-provider.js';
@@ -118,6 +121,8 @@ export interface AppDeps {
   checkedIdHistory?: CheckedIdHistoryStore;
   /** AI planning config: all three set = enabled. Off by default. */
   ai?: { baseUrl: string; apiKey: string; model: string };
+  /** Injectable provider transport (tests capture the outgoing request). */
+  aiFetch?: typeof fetch;
   /** Injectable for tests; defaults to the real provider call. */
   aiCall?: (messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>, signal?: AbortSignal) => Promise<string>;
   /** Injectable tool-call transport for isolated tests; production uses the
@@ -143,10 +148,19 @@ export interface AppDeps {
   launchId?: string;
   /** Exact browser origins allowed to mutate/consume providers locally. */
   allowedWebOrigins?: readonly string[];
+  /**
+   * Hosted (serverless) deployment. Requests are short-lived and instances
+   * are not shared, so: process-local jobs are refused (the client plans
+   * synchronously), saved trips live on the user's device instead of the
+   * server disk, and the request's own host is accepted as same-origin.
+   */
+  hosted?: boolean;
 }
 
 /** Server-side bounds for a planning request. */
-export const SERVER_RUN_BUDGET = { deadlineMs: 4 * 60_000, maxUpstreamCalls: 200 };
+/** 800 = one full 700-station details series plus corridor marker samples
+ *  (worker details-bulk accepts 1..700 per request, live 23 Nov 2026). */
+export const SERVER_RUN_BUDGET = { deadlineMs: 4 * 60_000, maxUpstreamCalls: 800 };
 
 const PLANNING_CODE_TO_STATUS: Record<string, number> = {
   not_determined: 422,
@@ -292,11 +306,57 @@ interface LivePlanParams {
   targetSoc: number | undefined;
   resolved: ResolvedVehicle;
   customRequest: string | undefined;
+  /** Per-run AI config (a device key from the request). Lives only in this
+   *  in-memory params object for the run; never persisted or reported. */
+  ai?: AiConfig;
+  /** 'ai' = selective AI run (default); 'planner' = rules-only long job. */
+  engine?: 'ai' | 'planner';
+  searchMode?: PlanSearchMode;
 }
 
 interface AiPlanEnvelope {
   plan: TripPlan;
   ai: { applied: boolean; notes?: string; reason?: string };
+}
+
+/**
+ * Rules-only long job: the deterministic planner under the job's own
+ * budget/signal with live progress. Used for THOROUGH searches that check
+ * every corridor candidate, which cannot fit the sync deadline on long
+ * highways. Never reaches an AI provider.
+ */
+async function runLivePlannerJob(
+  deps: AppDeps,
+  statiqRetries: number | undefined,
+  params: LivePlanParams,
+  controls: PlanJobControls,
+): Promise<AiPlanEnvelope> {
+  const statiq = deps.createStatiq({ retries: statiqRetries, deadlineMs: controls.budget.deadlineMs });
+  const providerFailures = createProviderFailureCollector();
+  const options: PlanOptions = {
+    runBudget: controls.budget,
+    via: params.via,
+    searchMode: params.searchMode ?? 'thorough',
+    ...(params.maxChargerKw === undefined ? {} : { maxChargerKw: params.maxChargerKw }),
+    ...(params.startSocPct === undefined ? {} : { startSocPct: params.startSocPct }),
+    ...(params.reservePct === undefined ? {} : { reservePct: params.reservePct }),
+    ...(params.targetSoc === undefined ? {} : { targetSoc: params.targetSoc }),
+  };
+  try {
+    const { plan } = await planTripDetailed(
+      { router: deps.router, statiq, vehicle: params.resolved.config, resolvedVehicle: params.resolved,
+        failureCollector: providerFailures },
+      params.origin, params.destination, options,
+      { signal: controls.signal, onProgress: controls.onProgress },
+    );
+    if (controls.signal?.aborted) throw new Error('aborted');
+    await recordPlanCounter(deps.counters, plan);
+    completeRun(deps, 'ok', safeUpstreamCalls(statiq), providerFailures.snapshot());
+    return { plan, ai: { applied: false, reason: 'Rules-only thorough search: every corridor charger was checked live.' } };
+  } catch (err) {
+    completeRun(deps, auditOutcomeFor(err), safeUpstreamCalls(statiq), providerFailures.snapshot());
+    throw err;
+  }
 }
 
 /**
@@ -363,7 +423,8 @@ async function runLiveAiPlan(
   };
   try {
     const run = await runSelective({
-      ai: deps.ai!, router: deps.router, statiq,
+      ai: { ...(params.ai ?? deps.ai!), ...(deps.aiFetch ? { fetchImpl: deps.aiFetch } : {}) },
+      router: deps.router, statiq,
       aiToolCall: deps.aiToolCall,
       origin: params.origin, destination: params.destination, via: params.via,
       resolved: params.resolved, planOptions,
@@ -443,12 +504,19 @@ async function runLiveAiPlan(
 
 /** Long jobs get a finite continuous budget that can cover a full corridor;
  *  the 4-minute sync default is deliberately not reused or reset per poll. */
-const JOB_RUN_BUDGET: PlanRunBudget = { deadlineMs: 30 * 60_000, maxUpstreamCalls: 600 };
+const JOB_RUN_BUDGET: PlanRunBudget = { deadlineMs: 30 * 60_000, maxUpstreamCalls: 1500 };
 const JOB_MAX_ACTIVE = 1;
 const JOB_MAX_RETAINED = 20;
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
   const allowedWebOrigins = new Set(deps.allowedWebOrigins ?? DEFAULT_ALLOWED_WEB_ORIGINS);
+  // Hosted: the page and the API share one https host, so the browser's
+  // Origin must equal exactly https://<the Host this request arrived on>.
+  const hostedSameOrigin = (c: Context, origin: string): boolean => {
+    if (!deps.hosted) return false;
+    const host = c.req.header('x-forwarded-host') ?? c.req.header('host');
+    return typeof host === 'string' && host.length > 0 && origin === `https://${host}`;
+  };
 
   const browserGate = (requireJson: boolean) => async (c: Context, next: Next) => {
     // Fetch Metadata can identify a browser subresource even when no-cors
@@ -459,7 +527,7 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: 'browser origin is not allowed', code: 'origin_denied' }, 403);
     }
     const origin = c.req.header('origin');
-    if (origin !== undefined && !allowedWebOrigins.has(origin)) {
+    if (origin !== undefined && !allowedWebOrigins.has(origin) && !hostedSameOrigin(c, origin)) {
       return c.json({ error: 'browser origin is not allowed', code: 'origin_denied' }, 403);
     }
     if (requireJson && c.req.method === 'POST') {
@@ -484,7 +552,9 @@ export function createApp(deps: AppDeps): Hono {
 
   const runSlot = new SingleRunSlot();
   const jobs = new PlanJobRegistry<LivePlanParams>(
-    (controls, params) => runLiveAiPlan(deps, statiqRetries, params, controls),
+    (controls, params) => params.engine === 'planner'
+      ? runLivePlannerJob(deps, statiqRetries, params, controls)
+      : runLiveAiPlan(deps, statiqRetries, params, controls),
     {
       maxActive: JOB_MAX_ACTIVE,
       budget: JOB_RUN_BUDGET,
@@ -530,6 +600,11 @@ export function createApp(deps: AppDeps): Hono {
       chargersSeen: counters?.chargersSeen ?? null,
       counterAvailable: counters !== null,
       ai: Boolean(deps.ai),
+      // Bring-your-own-key: live servers accept a per-request device key.
+      aiByok: !deps.mock,
+      // Hosted: no background jobs and no server-side trip storage.
+      hosted: deps.hosted === true,
+      aiProviders: publicProviderList(),
       // INSTANCE PROVENANCE: the launcher-generated launch id echoed back so
       // a launcher can prove this health answer came from its OWN child (a
       // random UUID per launch - sanitized, never a credential)
@@ -604,9 +679,14 @@ export function createApp(deps: AppDeps): Hono {
         503 as never,
       );
     }
-    if (!deps.ai) {
+    const parseAi = readRequestAi((name) => c.req.header(name), deps.ai);
+    if (parseAi.ok === false) {
+      return c.json({ error: parseAi.error, code: 'bad_ai_config' }, 400);
+    }
+    const parseConfig = parseAi.ai;
+    if (!parseConfig) {
       return c.json(
-        { error: 'AI text parsing is disabled on this server (no AI provider configured).',
+        { error: 'AI text parsing needs an AI key: add your own key in AI settings (it stays on your device).',
           code: 'ai_disabled' },
         503 as never,
       );
@@ -621,7 +701,8 @@ export function createApp(deps: AppDeps): Hono {
       }
       const call: TripIntentCall = deps.aiCall
         ? (messages, callSignal) => deps.aiCall!(messages, callSignal)
-        : (messages, callSignal) => chatCompletion(deps.ai!, messages, callSignal)
+        : (messages, callSignal) => chatCompletion(
+          { ...parseConfig, ...(deps.aiFetch ? { fetchImpl: deps.aiFetch } : {}) }, messages, callSignal)
           .then((reply) => reply.content);
       const intent = await parseTripIntent(request.text, call, signal);
       if (signal.aborted) {
@@ -664,6 +745,7 @@ export function createApp(deps: AppDeps): Hono {
       maxChargerKw?: unknown;
       reservePct?: unknown;
       targetSoc?: unknown;
+      searchMode?: unknown;
     };
     const providerFailures = createProviderFailureCollector();
     const origin = coordRef(b.origin);
@@ -694,6 +776,10 @@ export function createApp(deps: AppDeps): Hono {
     const reserveTarget = readReserveTarget(b.reservePct, b.targetSoc);
     if (!reserveTarget.ok) {
       return c.json({ error: 'reservePct/targetSoc out of range or conflicting', code: 'bad_request' }, 400);
+    }
+    const searchMode = readSearchMode(b.searchMode);
+    if (!searchMode.ok) {
+      return c.json({ error: "searchMode must be 'smart' or 'thorough'", code: 'bad_request' }, 400);
     }
 
     // Vehicle selection (real-world range separation, never invented) -
@@ -726,6 +812,7 @@ export function createApp(deps: AppDeps): Hono {
       startSocPct: startSoc.value,
       via: via.value,
       runBudget,
+      searchMode: searchMode.value,
       ...(maxCharger.value === undefined ? {} : { maxChargerKw: maxCharger.value }),
       ...(reserveTarget.reservePct === undefined ? {} : { reservePct: reserveTarget.reservePct }),
       ...(reserveTarget.targetSoc === undefined ? {} : { targetSoc: reserveTarget.targetSoc }),
@@ -817,9 +904,13 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     // AI planning is OFF unless AI_BASE_URL + AI_API_KEY + AI_MODEL are set.
-    if (!deps.ai) {
+    const planAi = readRequestAi((name) => c.req.header(name), deps.ai);
+    if (planAi.ok === false) {
+      return c.json({ error: planAi.error, code: 'bad_ai_config' }, 400);
+    }
+    if (!planAi.ai) {
       return c.json(
-        { error: 'AI planning is disabled on this server (no AI provider configured).', code: 'ai_disabled' },
+        { error: 'AI planning needs an AI key: add your own key in AI settings (it stays on your device).', code: 'ai_disabled' },
         503 as never,
       );
     }
@@ -846,6 +937,7 @@ export function createApp(deps: AppDeps): Hono {
           targetSoc: reserveTarget.targetSoc,
           resolved,
           customRequest,
+          ai: planAi.ai,
         },
         { budget: runBudget },
       );
@@ -870,11 +962,21 @@ export function createApp(deps: AppDeps): Hono {
       request?: string;
       reservePct?: unknown;
       targetSoc?: unknown;
+      engine?: unknown;
+      searchMode?: unknown;
     };
     const origin = coordRef(b.origin);
     const destination = coordRef(b.destination);
     if (!origin || !destination) {
       return c.json({ error: 'origin and destination each need label, lat and lon', code: 'bad_request' }, 400);
+    }
+    if (b.engine !== undefined && b.engine !== 'ai' && b.engine !== 'planner') {
+      return c.json({ error: "engine must be 'ai' or 'planner'", code: 'bad_request' }, 400);
+    }
+    const engine: 'ai' | 'planner' = b.engine === 'planner' ? 'planner' : 'ai';
+    const jobSearch = b.searchMode === undefined ? { ok: true as const, value: 'thorough' as const } : readSearchMode(b.searchMode);
+    if (!jobSearch.ok) {
+      return c.json({ error: "searchMode must be 'smart' or 'thorough'", code: 'bad_request' }, 400);
     }
     const via = readVia(b.via);
     if (!via.ok) {
@@ -895,8 +997,20 @@ export function createApp(deps: AppDeps): Hono {
     if (deps.mock) {
       return c.json({ error: 'Long-running jobs require live planning; mock mode is synchronous.', code: 'unsupported_mock_jobs' }, 422);
     }
-    if (!deps.ai) {
-      return c.json({ error: 'AI planning is disabled on this server (no AI provider configured).', code: 'ai_disabled' }, 503 as never);
+    if (deps.hosted) {
+      return c.json({ error: 'Background jobs are unavailable on the hosted server; plans run in one request.', code: 'unsupported_hosted_jobs' }, 422);
+    }
+    // Rules-only jobs never touch an AI provider, so a key header is ignored.
+    let jobAi: AiConfig | undefined;
+    if (engine === 'ai') {
+      const resolvedAi = readRequestAi((name) => c.req.header(name), deps.ai);
+      if (resolvedAi.ok === false) {
+        return c.json({ error: resolvedAi.error, code: 'bad_ai_config' }, 400);
+      }
+      if (!resolvedAi.ai) {
+        return c.json({ error: 'AI planning needs an AI key: add your own key in AI settings (it stays on your device).', code: 'ai_disabled' }, 503 as never);
+      }
+      jobAi = resolvedAi.ai;
     }
     let resolved: ResolvedVehicle;
     try { resolved = resolveVehicle(b.vehicle); } catch (err) { throw err; }
@@ -906,7 +1020,8 @@ export function createApp(deps: AppDeps): Hono {
       origin, destination, via: via.value,
       maxChargerKw: maxCharger.value, startSocPct: startSoc.value,
       reservePct: reserveTarget.reservePct, targetSoc: reserveTarget.targetSoc,
-      resolved, customRequest,
+      resolved, customRequest, engine, searchMode: jobSearch.value,
+      ...(jobAi ? { ai: jobAi } : {}),
     });
     if (!started.ok) {
       return c.json({ error: 'The server is at its active job limit.', code: 'job_capacity' }, 503 as never);
@@ -929,6 +1044,16 @@ export function createApp(deps: AppDeps): Hono {
     return jobs.cancel(c.req.param('id'), c.req.header('x-job-capability'))
       ? c.json({ cancelled: true })
       : c.json({ error: 'Job not active or not owned', code: 'job_not_active' }, 409);
+  });
+
+  // Hosted: saved trips are kept on the user's device, never server disk.
+  app.use('/api/trips', async (c, next) => {
+    if (deps.hosted) return c.json({ error: 'Saved trips are stored on this device for the hosted app.', code: 'unsupported_hosted_trips' }, 404);
+    await next();
+  });
+  app.use('/api/trips/:id', async (c, next) => {
+    if (deps.hosted) return c.json({ error: 'Saved trips are stored on this device for the hosted app.', code: 'unsupported_hosted_trips' }, 404);
+    await next();
   });
 
   app.get('/api/trips', async (c) => {
@@ -1164,6 +1289,14 @@ function readVia(value: unknown): { ok: true; value: PlaceRef[] } | { ok: false 
   return { ok: true, value: places };
 }
 
+type SearchModeRead = { ok: true; value: PlanSearchMode } | { ok: false };
+
+/** Absent = smart (bounded, fast); explicit 'thorough' checks every candidate. */
+function readSearchMode(v: unknown): SearchModeRead {
+  if (v === undefined) return { ok: true, value: 'smart' };
+  return v === 'smart' || v === 'thorough' ? { ok: true, value: v } : { ok: false };
+}
+
 type MaxChargerRead = { ok: true; value: number | undefined } | { ok: false };
 
 function readMaxChargerKw(v: unknown): MaxChargerRead {
@@ -1374,6 +1507,6 @@ function mockStationView(stationId: number, name: string, chainageKm: number) {
 function mockStation(id: number) {
   return {
     ...mockStationView(id, 'Statiq Mock Point', 120),
-    ccs2: { total: 2, usable: 2, free: 1, occupied: 1, uncertain: 0, faulted: 0, offline: 0, policyExcluded: 0, maxKw: 60, pricePerKwh: 22, hasContradiction: false, isUsable: true },
+    ccs2: { total: 2, usable: 2, free: 1, occupied: 1, uncertain: 0, faulted: 0, offline: 0, faultNoted: 0, maxKw: 60, pricePerKwh: 22, hasContradiction: false, isUsable: true },
   };
 }

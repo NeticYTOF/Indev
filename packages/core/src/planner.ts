@@ -20,7 +20,7 @@ import { hasFreshProvenance } from './provenance.js';
  */
 import { cumulativeKm } from './geo.js';
 import { scanCorridor, type CorridorCandidate } from './corridor.js';
-import { certifyCappedCharger, classifyPlug, connectorSlug, summarizeCcs2, type Ccs2Summary } from './plugs.js';
+import { certifyCappedCharger, classifyPlug, connectorSlug, faultNoteWarning, reliesOnFaultNotedPlugs, summarizeCcs2, type Ccs2Summary } from './plugs.js';
 import { detectBrand } from './brands.js';
 import { pMap } from './utils.js';
 import { chargeTimeMin, kwhForSocDelta, socAfterDriving,
@@ -107,7 +107,8 @@ export type NotDeterminedCause =
   | 'sample-throttled' // a corridor sample saw a 429 (fail-closed scan)
   | 'scan-coverage' // too many failed samples: coverage incomplete
   | 'candidate-holes' // per-station lookups failed: impossibility claims unsafe
-  | 'route-leg'; // final selected sequence failed actual road certification
+  | 'route-leg' // final selected sequence failed actual road certification
+  | 'network'; // a provider (routing or chargers) was unreachable mid-run
 
 export class PlanningError extends Error {
   /**
@@ -145,7 +146,7 @@ function legKmBetween(prev: Cursor, chainageKm: number, detourKm: number): numbe
 
 export const DEFAULT_RUN_BUDGET: PlanRunBudget = {
   deadlineMs: 5 * 60_000,
-  maxUpstreamCalls: 220,
+  maxUpstreamCalls: 800,
 };
 
 /** Validate and snapshot via places before any provider or routing work. */
@@ -333,6 +334,14 @@ export async function planTripDetailed(
       outcome = notDeterminedFromStop(runBudget, stats);
     } else if (isAbortLike(err)) {
       outcome = notDeterminedDeadline(runBudget, stats);
+    } else if (isTransportFailure(err)) {
+      outcome = new PlanningError(
+        `Plan not determined: ${err instanceof RouterError ? 'the routing service' : 'a provider'}` +
+          ` was unreachable mid-run (${safeErrorText(err)}).${coverageEvidence(stats, runBudget)}` +
+          ' Nothing here is verified and no trip was saved - this is not a verdict on the route. Retry shortly.',
+        'not_determined',
+        'network',
+      );
     }
   }
   if (outcome instanceof PlanningError && outcome.code === 'not_determined' &&
@@ -348,6 +357,28 @@ export async function planTripDetailed(
   // If the run is still in flight anywhere (exception paths), cancel it.
   deadlineController.abort();
   }
+}
+
+/**
+ * Plain transport failures (DNS, reset, refused, OSRM HTTP 5xx) - never
+ * input validation. They become an honest not_determined instead of an
+ * opaque internal error.
+ */
+function isTransportFailure(err: unknown): boolean {
+  if (err instanceof RouterError) {
+    return err.code === 'Network' || /^HTTP 5\d\d$/.test(err.code);
+  }
+  if (!(err instanceof Error)) return false;
+  if (err.name === 'TypeError' && /fetch failed|network|terminated|socket/i.test(err.message)) return true;
+  return /ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|UND_ERR/.test(
+    `${err.message} ${(err as { cause?: { code?: string } }).cause?.code ?? ''}`);
+}
+
+/** Short, credential-free description of a transport error. */
+function safeErrorText(err: unknown): string {
+  if (err instanceof RouterError) return err.code === 'Network' ? 'network error' : err.code;
+  const code = (err as { cause?: { code?: unknown } })?.cause?.code;
+  return typeof code === 'string' && /^[A-Z_]{3,32}$/.test(code) ? code : 'network error';
 }
 
 /** Progress markers so a failed run can report honest coverage evidence. */
@@ -818,14 +849,15 @@ async function planCore(
    *  lookup, ingested incrementally as each batch resolves. A later fatal /
    *  unknown transport therefore CANNOT erase earlier verified detail work:
    *  processed/detailed counters stay truthful for the retained progress. */
-  const fetchAllBulk = async (): Promise<void> => {
+  const fetchBulkFor = async (pool: readonly CorridorCandidate[]): Promise<void> => {
+    if (pool.length === 0) return;
     const processed = new Set<number>();
     const ingestBulkItem = (
       item: import('./statiq.js').BulkItemResult<import('./statiq.js').StationDetailsWithMeta> | undefined,
       index: number,
     ): void => {
       if (processed.has(index)) return;
-      const c = corridor.candidates[index];
+      const c = pool[index];
       if (!c) return;
       processed.add(index);
       const seq: { value: number | null } = { value: null };
@@ -850,7 +882,7 @@ async function planCore(
     let returned: readonly import('./statiq.js').BulkItemResult<import('./statiq.js').StationDetailsWithMeta>[] = [];
     try {
       returned = await deps.statiq.detailsBulk(
-        corridor.candidates.map((c) => c.stationId), hooks.signal,
+        pool.map((c) => c.stationId), hooks.signal,
         { endpointClass: 'stations/details', phase: 'details' }, ingestBulkItem);
     } catch (err) {
       // Retain every callback-ingested item; remaining candidates are NOT
@@ -862,9 +894,73 @@ async function planCore(
     // Dual coverage: doubles without a callback still return a complete list.
     // The Set prevents any double-ingest for clients that did call back.
     for (let i = 0; i < returned.length; i++) ingestBulkItem(returned[i], i);
-    for (let i = 0; i < corridor.candidates.length; i++) {
+    for (let i = 0; i < pool.length; i++) {
       if (!processed.has(i)) ingestBulkItem(undefined, i);
     }
+  };
+  const fetchAllBulk = (): Promise<void> => fetchBulkFor(corridor.candidates);
+
+  /** Lookup bookkeeping for SMART search: a candidate is requested once. */
+  const requested = new Set<number>();
+  const fetchSome = async (pool: readonly CorridorCandidate[]): Promise<void> => {
+    const todo = pool.filter((c) => !requested.has(c.stationId));
+    if (todo.length === 0) return;
+    for (const c of todo) requested.add(c.stationId);
+    if (bulkDetails) await fetchBulkFor(todo);
+    else await pMap(todo, CANDIDATE_FETCH_CONCURRENCY, fetchCandidate);
+  };
+  const SMART_BATCH = 4;
+  const SMART_CLUSTER_EXTRA = 4;
+  /**
+   * SMART next-stop search. Candidate geometry alone decides which hops are
+   * physically reachable (chainage, detour and SoC; no details needed), so
+   * only those are looked up - primary detour band first, farthest first,
+   * in small batches - and the search stops at the first usable one plus a
+   * small brand-cluster check. The final choice is still made by the same
+   * chooseNextStop rules over FRESHLY checked stations only; unchecked
+   * stations are never used. Returning null means every reachable
+   * candidate in the window was looked up and none was usable.
+   */
+  const chooseNextSmart = async (cursor: Cursor): Promise<ChosenStop | null> => {
+    const depart = effectiveDeparture(cursor, opts);
+    const reach = corridor.candidates
+      .map((c) => ({ c, legKm: legKmBetween(cursor, c.chainageKm, c.offRouteKm) }))
+      .filter(({ c, legKm }) => c.chainageKm > cursor.chainageKm + 1 && legKm > 1 &&
+        legFeasible(legKm, depart, opts, vehicle))
+      .sort((a, b) => b.legKm - a.legKm || a.c.stationId - b.c.stationId);
+    const isUsable = (id: number): boolean => detailCache.get(id)?.summary.isUsable === true;
+    const tiers = [
+      reach.filter((x) => x.c.offRouteKm <= opts.primaryDetourKm),
+      reach.filter((x) => x.c.offRouteKm > opts.primaryDetourKm),
+    ];
+    for (const tier of tiers) {
+      for (;;) {
+        let found: { c: CorridorCandidate; legKm: number } | null = null;
+        const batch: CorridorCandidate[] = [];
+        for (const x of tier) {
+          if (!requested.has(x.c.stationId)) {
+            batch.push(x.c);
+            if (batch.length >= SMART_BATCH) break;
+            continue;
+          }
+          if (batch.length === 0 && isUsable(x.c.stationId)) { found = x; break; }
+        }
+        if (found) {
+          // Brand tie-break parity: look at a few unchecked neighbours inside
+          // the same chainage cluster before the final rule-based choice.
+          const anchor = found;
+          await fetchSome(tier
+            .filter((x) => !requested.has(x.c.stationId) && anchor.legKm - x.legKm <= opts.brandClusterKm)
+            .slice(0, SMART_CLUSTER_EXTRA)
+            .map((x) => x.c));
+          const usableNow = [...detailCache.values()].filter((r) => r.summary.isUsable);
+          return chooseNextStop(usableNow, cursor, opts, vehicle, warnings);
+        }
+        if (batch.length === 0) break;
+        await fetchSome(batch);
+      }
+    }
+    return null;
   };
 
   // The WHOLE unique pool, both detour bands. Bulk-capable clients use one
@@ -872,9 +968,12 @@ async function planCore(
   // lookups through pMap(4). Either way every candidate is checked, with no
   // pruning by brand, power or rank and the same route geometry.
   const CANDIDATE_FETCH_CONCURRENCY = 4;
+  const smart = opts.searchMode === 'smart';
   hooks.stats.detailsStartedAt = Date.now();
   reportProgress();
-  if (bulkDetails) {
+  if (smart) {
+    // Lookups happen lazily inside the selection loop below.
+  } else if (bulkDetails) {
     await fetchAllBulk();
   } else {
     await pMap(corridor.candidates, CANDIDATE_FETCH_CONCURRENCY, fetchCandidate);
@@ -894,7 +993,7 @@ async function planCore(
   let guard = 0;
 
   const destLegKm = Math.max(0, totalKm - cursor.chainageKm);
-  if (usable.length === 0 && !legFeasible(destLegKm, cursor.socPct, opts, vehicle)) {
+  if (!smart && usable.length === 0 && !legFeasible(destLegKm, cursor.socPct, opts, vehicle)) {
     // IMPOSSIBILITY CLAIMS NEED COMPLETE KNOWLEDGE: any UNKNOWN candidate
     // (lookup failed / empty response) could have been the usable one, so
     // 'no usable station' cannot be certified over holes.
@@ -926,7 +1025,9 @@ async function planCore(
         'infeasible',
       );
     }
-    let next = chooseNextStop(usable, cursor, opts, vehicle, warnings);
+    let next = smart
+      ? await chooseNextSmart(cursor)
+      : chooseNextStop(usable, cursor, opts, vehicle, warnings);
     if (!next) {
       // IMPOSSIBILITY CLAIMS NEED COMPLETE KNOWLEDGE of the window being
       // claimed: an UNKNOWN candidate inside (cursor, cursor+maxLeg] could
@@ -1005,6 +1106,11 @@ async function planCore(
     stops,
     totals,
     stationsSeen: corridor.stationsSeen,
+    search: {
+      mode: smart ? 'smart' : 'thorough',
+      candidatesFound: corridor.candidates.length,
+      candidatesChecked: hooks.stats.candidatesProcessed,
+    },
     warnings,
     // AI flow only: candidate summary WITHOUT occupancy (usable plugs are
     // offered; the AI is never told which are occupied).
@@ -1230,6 +1336,9 @@ export function finalize(
     const rawCost = pricePerKwh != null ? Math.round(chargeKwh * pricePerKwh) : null;
     const estimatedCost = rawCost != null && Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : null;
     if (rawCost != null && estimatedCost == null) warnings.push(`Charging cost at "${cur.cand.view.name}" is unknown because its numeric estimate is outside the supported range.`);
+    if (reliesOnFaultNotedPlugs(cur.cand.view.chargers, cur.cand.selectedCharger?.chargerId)) {
+      warnings.push(faultNoteWarning(cur.cand.view.name));
+    }
 
     etaMin += routed?.durationMin ?? legTimeMin(legKm, route);
     stops.push({
@@ -1341,12 +1450,12 @@ export function toStationView(
       pricePerKwh: ch.pricePerKwh ?? null,
       lastUsedOn: ch.lastUsedOn ?? null,
       plugs: (ch.connectors ?? []).map((p) => {
-        const { health, planningHealth, contradiction, policyExclusion } = classifyPlug(p);
+        const { health, planningHealth, contradiction, faultNote } = classifyPlug(p);
         return {
           connectorId: p.connectorId,
           type: p.type,
           health,
-          planningHealth, contradiction, policyExclusion,
+          planningHealth, contradiction, ...(faultNote ? { faultNote } : {}),
         };
       }),
     })),

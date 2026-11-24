@@ -1,13 +1,20 @@
 import { serve } from '@hono/node-server';
-import { mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { CheckedIdHistoryStore, CountersStore, OsrmRouter, PhotonGeocoder, TripsStore } from '@indeev/core';
 import { aiEnabled, loadEnv } from './env.js';
 import { createApp, SERVER_RUN_BUDGET } from './app.js';
 import { buildStatiqFactory } from './statiq-factory.js';
 import type { UpstreamAuditEntry } from '@indeev/core';
 
-const root = process.cwd();
+// Repo root, independent of the launch directory: `npm run dev` runs this
+// file with cwd = apps/server, so process.cwd() would miss the root .env and
+// the data dir. INDEV_ROOT stays an explicit override for launchers/tests.
+const root = process.env.INDEV_ROOT ||
+  (existsSync(join(process.cwd(), '.env')) || existsSync(join(process.cwd(), 'packages'))
+    ? process.cwd()
+    : resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'));
 const env = loadEnv(root);
 
 if (!env.mock && !env.statiqToken) {

@@ -56,13 +56,14 @@ describe('selective hydration fails closed on malformed evidence', () => {
 });
 
 describe('selective hydration planning policy', () => {
-  it('reports an explicit policy reason when only available-status connectors carry positive fault notes', () => {
+  it('certifies a station whose only plugs are available with a positive fault note', () => {
     const chargers = [{ ...validCharger,
       connectors: [{ ...validConnector, note: 'Faulted' }] }];
     const result = hydrateSelective(candidate as never,
       response(stationWith(chargers)), new Date(), 100);
-    expect(result.candidate).toBeNull();
-    expect(result.reasons).toContain('policy_fault_note');
+    expect(result.candidate).not.toBeNull();
+    expect(result.reasons).toEqual([]);
+    expect(result.candidate?.summary.faultNoted).toBe(1);
   });
 
   it('keeps a healthy sibling certified and occupied working connectors usable', () => {

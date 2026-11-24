@@ -1,0 +1,114 @@
+/* fx/alive — feedback that the app is working (AMOLED, calm). */
+
+/* ============ activity rail ============ */
+.fxl-rail {
+  position: fixed; left: 0; top: 0; z-index: 60; height: 2px; width: var(--panel-w, 440px);
+  overflow: hidden; pointer-events: none;
+  opacity: 0; transition: opacity 240ms ease;
+}
+@media (max-width: 720px) { .fxl-rail { width: 100%; } }
+.fxl-rail.is-on { opacity: 1; }
+.fxl-rail i {
+  position: absolute; top: 0; bottom: 0; left: 0; width: 38%;
+  background: linear-gradient(90deg, transparent, var(--cap) 60%, #fff3c4);
+  box-shadow: 0 0 10px rgba(255, 199, 44, .7);
+  transform: translateX(-100%);
+}
+.fxl-rail.is-on i { animation: fxl-rail 1.15s cubic-bezier(.45, 0, .25, 1) infinite; }
+.fxl-rail.is-done i { animation: fxl-rail-done 420ms ease-out forwards; }
+@keyframes fxl-rail { from { transform: translateX(-100%); } to { transform: translateX(270%); } }
+@keyframes fxl-rail-done { from { left: 0; width: 38%; } to { left: 0; width: 100%; transform: none; opacity: 0; } }
+
+/* ============ search pulse ============ */
+.search-box { position: relative; }
+.search-box.fxl-searching::after {
+  content: ''; position: absolute; left: 14px; right: 14px; bottom: 6px; height: 2px; border-radius: 2px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, var(--cap), transparent) no-repeat;
+  background-size: 40% 100%;
+  animation: fxl-scan 900ms ease-in-out infinite alternate;
+  opacity: .9;
+}
+@keyframes fxl-scan { from { background-position: 0% 0; } to { background-position: 100% 0; } }
+.suggestions.fxl-landed { animation: fxl-land 320ms var(--spring-soft, ease) both; }
+@keyframes fxl-land { from { opacity: .4; transform: translateY(-4px) scale(.99); } }
+
+/* ============ map wake-up ============ */
+.fxl-map {
+  position: absolute; inset: 0; z-index: 2; pointer-events: none;
+  display: grid; place-items: center; align-content: center; gap: 18px;
+  background: #000;
+  transition: opacity 600ms ease;
+}
+@media (min-width: 721px) { .fxl-map { left: var(--panel-w, 440px); } }
+.fxl-map.is-leaving { opacity: 0; }
+.fxl-radar { position: relative; width: 120px; height: 120px; }
+.fxl-radar i {
+  position: absolute; inset: 0; border-radius: 50%; border: 1px solid rgba(255, 199, 44, .35);
+  animation: fxl-ring 2.4s ease-out infinite;
+}
+.fxl-radar i:nth-child(2) { animation-delay: .8s; } .fxl-radar i:nth-child(3) { animation-delay: 1.6s; }
+.fxl-radar b {
+  position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; margin: -5px; border-radius: 50%;
+  background: var(--cap); box-shadow: 0 0 16px rgba(255, 199, 44, .8);
+}
+@keyframes fxl-ring { from { transform: scale(.15); opacity: 1; } to { transform: scale(1); opacity: 0; } }
+.fxl-map-note { margin: 0; text-align: center; font-size: 13px; letter-spacing: .02em; color: #8a8a85; }
+.fxl-map-note span { display: block; }
+.fxl-map-line::after { content: ''; display: inline-block; width: 1.2em; text-align: left; animation: fxl-dots 1.4s steps(4) infinite; }
+@keyframes fxl-dots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } }
+.fxl-map-slow { max-height: 0; opacity: 0; overflow: hidden; margin-top: 0; color: #6a6a66; transition: max-height 400ms ease, opacity 400ms ease, margin-top 400ms ease; }
+.fxl-map.is-slow .fxl-map-slow { max-height: 3em; opacity: 1; margin-top: 6px; }
+
+/* ============ skeleton rows ============ */
+.fxl-skel { display: grid; gap: 10px; margin-bottom: 10px; pointer-events: none; }
+.fxl-skel-row {
+  display: flex; align-items: center; gap: 12px; padding: 14px; border-radius: 16px;
+  box-shadow: inset 0 0 0 1px #141414;
+  animation: fxl-skel-in 360ms ease calc(var(--i) * 70ms) backwards;
+}
+.fxl-skel-row i { width: 34px; height: 34px; border-radius: 10px; flex: none; }
+.fxl-skel-row span { display: grid; gap: 8px; flex: 1; }
+.fxl-skel-row b { display: block; height: 9px; border-radius: 5px; }
+.fxl-skel-row b:first-child { width: 70%; } .fxl-skel-row b:last-child { width: 42%; }
+.fxl-skel-row i, .fxl-skel-row b {
+  background: linear-gradient(90deg, #0e0e0e 0%, #1c1c1c 50%, #0e0e0e 100%);
+  background-size: 200% 100%;
+  animation: fxl-shimmer 1.3s linear infinite;
+}
+@keyframes fxl-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@keyframes fxl-skel-in { from { opacity: 0; transform: translateY(6px); } }
+
+/* ============ connection pill ============ */
+.fxl-net {
+  position: fixed; left: 50%; bottom: calc(18px + var(--safe-b, 0px)); z-index: 70;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px; border-radius: 999px; background: #0a0a0a;
+  box-shadow: inset 0 0 0 1px #2a2a2a, 0 12px 30px #000;
+  font-size: 12.5px; color: #d6d6d0; pointer-events: none;
+  transform: translate(-50%, 140%); opacity: 0;
+  transition: transform 520ms var(--spring, ease), opacity 300ms ease;
+}
+.fxl-net.is-on { transform: translate(-50%, 0); opacity: 1; }
+.fxl-net i { width: 7px; height: 7px; border-radius: 50%; background: #ff7a59; animation: fxl-blink 1.2s ease-in-out infinite; }
+.fxl-net.is-back i { background: #4ade80; animation: none; }
+.fxl-net.is-back span { font-size: 0; }
+.fxl-net.is-back span::after { content: attr(data-back); font-size: 12.5px; }
+@keyframes fxl-blink { 50% { opacity: .25; } }
+
+/* ============ press feedback ============ */
+.fxl-took { animation: fxl-took 620ms ease-out; }
+@keyframes fxl-took {
+  0% { box-shadow: 0 0 0 0 rgba(255, 199, 44, .55); }
+  100% { box-shadow: 0 0 0 10px rgba(255, 199, 44, 0); }
+}
+
+/* ============ reduced motion / print ============ */
+@media (prefers-reduced-motion: reduce) {
+  .fxl-rail.is-on i { animation: none; transform: none; width: 100%; opacity: .6; }
+  .search-box.fxl-searching::after { animation: none; background-size: 100% 100%; opacity: .5; }
+  .fxl-radar i, .fxl-skel-row, .fxl-skel-row i, .fxl-skel-row b, .fxl-net i, .fxl-map-line::after { animation: none !important; }
+}
+html.reduce-motion .fxl-rail.is-on i { animation: none; transform: none; width: 100%; opacity: .6; }
+html.reduce-motion .fxl-radar i, html.reduce-motion .fxl-skel-row i, html.reduce-motion .fxl-skel-row b { animation: none !important; }
+@media print { .fxl-rail, .fxl-map, .fxl-net, .fxl-skel { display: none !important; } }

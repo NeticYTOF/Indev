@@ -36,7 +36,9 @@ Still unknown:
 
 A recent HTTP response is not proof of recent hardware telemetry. Do not label the fault harmless or certify the connector from its display color. Conflicting evidence remains uncertain.
 
-Owner policy (22 November 2026, 04:28 IST): when an `available` connector carries a positive fault message, the planner records `positive_fault_with_available_status` and treats the plug as faulted for planning only. This is an explicit planning choice for the 5209/7519 conflict class, not proof of a physical fault, a station blacklist, or permission to discard healthy sibling connectors. Raw status, note, provenance and contradiction evidence are preserved; occupied working connectors remain usable under the existing rule.
+Owner policy (23 November 2026, supersedes 22 November): when an `available` connector carries a positive fault message and availability is not explicitly false, **status wins for planning**: the plug is planned as usable, its observed health stays `uncertain`, and it carries `faultNote: positive_fault_with_available_status`. Every chosen stop whose usable plugs all carry that note gets a visible plan warning and an "Available, but fault reported" chip. Reason: a live probe of the Delhi–Ahmedabad corridor found 32 of 58 sampled connectors returning `available` / `true` / `Faulted`. Excluding them made a drivable 978 km route report "infeasible"; with this policy it plans with 4 warned stops.
+
+Previous owner policy (22 November 2026, 04:28 IST, superseded): when an `available` connector carries a positive fault message, the planner records `positive_fault_with_available_status` and treats the plug as faulted for planning only. This is an explicit planning choice for the 5209/7519 conflict class, not proof of a physical fault, a station blacklist, or permission to discard healthy sibling connectors. Raw status, note, provenance and contradiction evidence are preserved; occupied working connectors remain usable under the existing rule.
 
 Sources:
 

@@ -215,7 +215,7 @@ describe('get_station handler (AI-safe)', () => {
                   // one occupied-but-working plug and one free plug
                   { displayId: 1, connectorId: 11, type: 'CCS-2', status: 'charging', available: false, note: 'Charging' },
                   { displayId: 2, connectorId: 12, type: 'CCS-2', status: 'available', available: true, note: null },
-                  // one contradictory plug: positive status vs fault text -> uncertain
+                  // available status vs fault note: observed uncertain, planned as usable (warned)
                   { displayId: 3, connectorId: 13, type: 'CCS-2', status: 'available', available: true, note: 'Faulted' },
                 ],
               },
@@ -229,8 +229,10 @@ describe('get_station handler (AI-safe)', () => {
     const deps = await makeDeps({ createStatiq: () => statiq });
 
     const { station, summary } = await getStationHandler(deps, 1790);
-    expect(station.ccs2Usable).toBe(2); // occupied counts as usable
+    expect(station.ccs2Usable).toBe(3); // occupied and fault-noted available count as usable
     expect(station.ccs2Uncertain).toBe(1);
+    expect(station.ccs2FaultNoted).toBe(1);
+    expect(summary).toContain('1 usable plug(s) also carry a fault note');
     expect(station.reliability).toBeNull();
     expect(station.fetchedAt).toBe('2026-11-19T12:00:00.000Z');
     // NEVER occupancy: no free/occupied/charging vocabulary anywhere
@@ -345,15 +347,27 @@ it('MCP refresh maps real-client nonfresh evidence to no-verdict, not absent sta
 describe('MCP ordered stopovers', () => {
   type Place = { label: string; lat: number; lon: number };
   type RouteCall = { origin: Place; destination: Place; via: readonly Place[] };
+  // Stopovers must sit ON the certified road geometry and in forward order
+  // (route-legs certification), so fixture places lie along the Delhi ->
+  // Jaipur line at fixed fractions instead of all sharing one coordinate.
+  const START = { lat: 28.6, lon: 77.2 };
+  const END = { lat: 26.9, lon: 75.8 };
+  const FRACTION: Record<string, number> = {
+    Delhi: 0, Jaipur: 1, Nagpur: 0.1, A: 0.2, Indore: 0.25, Ahmedabad: 0.4, Surat: 0.55, B: 0.6, Vapi: 0.7,
+  };
+  function coordsFor(query: string): { lat: number; lon: number } {
+    const f = FRACTION[query];
+    if (f === undefined) throw new Error(`fixture has no position for ${query}`);
+    return { lat: START.lat + (END.lat - START.lat) * f, lon: START.lon + (END.lon - START.lon) * f };
+  }
+  function place(query: string): Place {
+    return { label: `${query}, India`, ...coordsFor(query) };
+  }
   function hit(query: string): Record<string, unknown> {
-    return { name: query, label: `${query}, India`, lat: 28.6, lon: 77.2, city: null, state: null, country: 'India' };
+    return { name: query, ...place(query), city: null, state: null, country: 'India' };
   }
   function routeResult(): RouteResult {
-    return {
-      distanceKm: 300,
-      durationMin: 300,
-      geometry: [{ lat: 28.6, lon: 77.2 }, { lat: 26.9, lon: 75.8 }],
-    };
+    return { distanceKm: 300, durationMin: 300, geometry: [START, END] };
   }
 
   const malformed = [
@@ -406,9 +420,9 @@ describe('MCP ordered stopovers', () => {
     expect(searchQueries).toEqual(['Delhi', 'Jaipur', ...queries]);
     expect(providerCalls).toBe(1);
     expect(routeCalls).toHaveLength(1);
-    expect(routeCalls[0]?.origin).toEqual({ label: 'Delhi, India', lat: 28.6, lon: 77.2 });
-    expect(routeCalls[0]?.destination).toEqual({ label: 'Jaipur, India', lat: 28.6, lon: 77.2 });
-    const expected = queries.map(query => ({ label: `${query}, India`, lat: 28.6, lon: 77.2 }));
+    expect(routeCalls[0]?.origin).toEqual(place('Delhi'));
+    expect(routeCalls[0]?.destination).toEqual(place('Jaipur'));
+    const expected = queries.map(place);
     expect(routeCalls[0]?.via).toEqual(expected);
     expect(result.plan.via).toEqual(expected);
     expect(result.plan.geometry).toEqual(routeResult().geometry);
@@ -468,9 +482,12 @@ describe('MCP ordered stopovers', () => {
 
   it('saves exact plain stopovers in results, structured output and the shared store', async () => {
     const queries = ['Nagpur', 'Indore', 'Ahmedabad', 'Surat', 'Vapi'];
-    const deps = await makeDeps({ createStatiq: () => liveStatiqFake() });
+    const deps = await makeDeps({
+      createStatiq: () => liveStatiqFake(),
+      geocoder: { search: async (q: string) => [hit(q)] } as unknown as PhotonGeocoder,
+    });
     const result = await planTripHandler(deps, { origin: 'Delhi', destination: 'Jaipur', via: queries, save: 'Via save' });
-    const expected = queries.map(query => ({ label: `${query}, India`, lat: 28.6, lon: 77.2 }));
+    const expected = queries.map(place);
     expect(result.plan.via).toEqual(expected);
     const structured = planToStructured(result.plan) as { via?: unknown };
     expect(structured.via).toEqual(expected);

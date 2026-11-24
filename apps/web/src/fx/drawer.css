@@ -1,0 +1,121 @@
+/* fx/drawer — saved trips, suggestions, error box, nudge, disclosures (AMOLED). */
+
+/* ============ empty garage scene ============ */
+.fxd-garage {
+  position: relative; height: 150px; margin: 6px 0 4px; border-radius: 18px; overflow: hidden;
+  background: #000; box-shadow: inset 0 0 0 1px #151515;
+  pointer-events: none;
+  animation: fxd-pop 620ms var(--spring-soft) both;
+}
+@keyframes fxd-pop { from { opacity: 0; transform: translateY(10px) scale(.97); } }
+.fxd-moon {
+  position: absolute; right: 26px; top: 18px; width: 22px; height: 22px; border-radius: 50%;
+  box-shadow: -6px 4px 0 0 #f5f5f2; transform: rotate(-20deg);
+  filter: drop-shadow(0 0 8px rgba(245, 245, 242, .45));
+}
+.fxd-star {
+  position: absolute; width: 2px; height: 2px; border-radius: 50%; background: #fff;
+  left: calc(8% + var(--i) * 9.5%); top: calc(10% + (var(--i) * 13 % 4) * 9%);
+  animation: fxd-tw calc(1.8s + var(--i) * .2s) ease-in-out calc(var(--i) * -.4s) infinite;
+}
+.fxd-star:nth-child(odd) { top: 14%; } .fxd-star:nth-child(3n) { top: 30%; } .fxd-star:nth-child(4n) { top: 22%; }
+@keyframes fxd-tw { 0%, 100% { opacity: .15; } 50% { opacity: .9; } }
+
+.fxd-shed { position: absolute; left: 22px; bottom: 22px; width: 120px; height: 74px; }
+.fxd-roof {
+  position: absolute; left: -8px; right: -8px; top: -18px; height: 22px;
+  background: #111; clip-path: polygon(8% 100%, 50% 0, 92% 100%);
+  border-bottom: 3px solid var(--cap);
+}
+.fxd-door {
+  position: absolute; inset: 4px 10px 0; border-radius: 4px 4px 0 0; overflow: hidden;
+  background: #080808; box-shadow: inset 0 0 0 1px #1d1d1d;
+  display: grid; grid-template-rows: repeat(4, 1fr); gap: 3px; padding: 4px;
+}
+.fxd-door span { background: #141414; border-radius: 2px; animation: fxd-door 5s ease-in-out infinite; transform-origin: top; }
+.fxd-door span:nth-child(2) { animation-delay: .08s; } .fxd-door span:nth-child(3) { animation-delay: .16s; } .fxd-door span:nth-child(4) { animation-delay: .24s; }
+@keyframes fxd-door { 0%, 60%, 100% { transform: none; } 75%, 88% { transform: translateY(-120%); opacity: .2; } }
+.fxd-sign {
+  position: absolute; right: -18px; top: -6px; width: 18px; height: 18px; border-radius: 4px;
+  display: grid; place-items: center; font: 800 11px/1 var(--display, inherit); color: #000; background: var(--cap);
+  box-shadow: 0 0 12px rgba(255, 199, 44, .6);
+  animation: fxd-flicker 4s steps(1) infinite;
+}
+@keyframes fxd-flicker { 0%, 100% { opacity: 1; } 92% { opacity: .3; } 94% { opacity: 1; } 96% { opacity: .4; } }
+
+.fxd-bot { position: absolute; left: 170px; bottom: 22px; width: 40px; height: 52px; animation: fxd-breathe 3.2s ease-in-out infinite; transform-origin: bottom; }
+.fxd-cap { position: absolute; inset: 0 0 auto; height: 22px; border-radius: 20px 20px 0 0; background: var(--cap); }
+.fxd-face { position: absolute; inset: 20px 0 0; border-radius: 0 0 8px 8px; background: #f5f5f2; }
+.fxd-face i { position: absolute; top: 9px; width: 8px; height: 2.5px; border-radius: 2px; background: #000; }
+.fxd-face i:first-child { left: 8px; } .fxd-face i:nth-child(2) { right: 8px; }
+.fxd-face b { position: absolute; left: 50%; top: 18px; width: 8px; height: 3px; margin-left: -4px; border-radius: 0 0 4px 4px; background: #000; }
+.fxd-zz { position: absolute; left: 34px; top: -6px; font: 700 11px/1 var(--display, inherit); color: var(--cap); }
+.fxd-zz span { position: absolute; opacity: 0; animation: fxd-z 2.7s ease-out infinite; }
+.fxd-zz span:nth-child(2) { animation-delay: .9s; font-size: 13px; } .fxd-zz span:nth-child(3) { animation-delay: 1.8s; font-size: 15px; }
+@keyframes fxd-breathe { 50% { transform: scaleY(.96) translateY(1px); } }
+@keyframes fxd-z { 0% { opacity: 0; transform: translate(0, 0); } 20% { opacity: 1; } 100% { opacity: 0; transform: translate(16px, -30px) rotate(12deg); } }
+
+.fxd-ground { position: absolute; left: 0; right: 0; bottom: 12px; height: 10px; border-top: 1px solid #1d1d1d; overflow: hidden; }
+.fxd-ground i {
+  position: absolute; left: 0; right: 0; top: 4px; height: 2px;
+  background: repeating-linear-gradient(90deg, var(--cap) 0 16px, transparent 16px 30px); opacity: .5;
+}
+
+/* ============ trip rows ============ */
+.trip-row {
+  animation: fxd-row 520ms var(--spring-soft) calc(120ms + var(--fxd-i, 0) * 60ms) backwards;
+  transition: transform 300ms var(--spring), border-color 200ms ease, box-shadow 300ms ease;
+}
+@keyframes fxd-row { from { opacity: 0; transform: translateX(18px); } }
+@media (hover: hover) and (pointer: fine) {
+  .trip-row:hover { transform: translateY(-2px); box-shadow: 0 12px 30px -16px rgba(255, 199, 44, .5); }
+}
+
+/* ============ drawer controls ============ */
+.trip-search, .trip-sort {
+  transition: border-color 220ms ease, box-shadow 320ms var(--spring-soft), background-color 220ms ease;
+}
+.trip-search:focus-visible, .trip-sort:focus-visible {
+  box-shadow: 0 0 0 3px rgba(255, 199, 44, .18), 0 0 22px -6px rgba(255, 199, 44, .5);
+}
+
+/* ============ suggestions: staggered, sliding highlight ============ */
+.suggestions { box-shadow: 0 22px 60px -18px rgba(0, 0, 0, 1), 0 0 0 1px rgba(255, 199, 44, .07); }
+.suggestion-item { position: relative; }
+.suggestion-item::after {
+  content: ''; position: absolute; left: 0; top: 50%; width: 3px; height: 0; margin-top: 0; border-radius: 3px;
+  background: var(--cap); box-shadow: 0 0 10px rgba(255, 199, 44, .7);
+  transition: height 260ms var(--spring), margin-top 260ms var(--spring);
+}
+.suggestion-item.active::after, .suggestion-item:hover::after { height: 20px; margin-top: -10px; }
+.suggestion-item.empty::after { display: none; }
+
+/* ============ error box: shake-in + pulsing edge ============ */
+.error-box:not(.hidden) {
+  animation: fxd-shake 520ms cubic-bezier(.36, .07, .19, .97) both, fxd-alarm 2.4s ease-in-out 600ms 3;
+}
+@keyframes fxd-shake {
+  0% { opacity: 0; transform: translateY(-6px); }
+  20% { opacity: 1; transform: translateX(-6px); } 40% { transform: translateX(5px); }
+  60% { transform: translateX(-3px); } 80% { transform: translateX(2px); } 100% { transform: none; }
+}
+@keyframes fxd-alarm {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 92, 92, 0); }
+  50% { box-shadow: 0 0 0 4px rgba(255, 92, 92, .12), 0 0 24px -4px rgba(255, 92, 92, .45); }
+}
+
+/* ============ station evidence disclosure ============ */
+.station-evidence > summary { transition: color 200ms ease, padding-left 260ms var(--spring); }
+.station-evidence[open] > summary { color: var(--cap); }
+.station-evidence[open] > :not(summary) { animation: fxd-open 420ms var(--spring-soft) both; }
+@keyframes fxd-open { from { opacity: 0; transform: translateY(-8px); clip-path: inset(0 0 100% 0); } to { clip-path: inset(0 0 0 0); } }
+
+/* ============ reduced motion ============ */
+@media (prefers-reduced-motion: reduce) {
+  .fxd-garage, .fxd-garage *, .trip-row, .error-box:not(.hidden),
+  .station-evidence[open] > :not(summary) { animation: none !important; }
+  .suggestion-item::after, .trip-row { transition: none !important; }
+}
+html.reduce-motion .fxd-garage, html.reduce-motion .fxd-garage *, html.reduce-motion .trip-row,
+html.reduce-motion .error-box,
+html.reduce-motion .station-evidence[open] > :not(summary) { animation: none !important; }

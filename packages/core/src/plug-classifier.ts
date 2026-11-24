@@ -7,14 +7,20 @@ import type { PlugHealth } from './types.js';
 
 export interface PlugClassification {
   health: PlugHealth;
-  /** Planning-only eligibility state; may be policy-faulted while observed health stays uncertain. */
+  /** Planning-only eligibility state; may differ from observed health under an explicit policy. */
   planningHealth: PlugHealth;
   /** status and fault/availability signals disagree */
   contradiction: boolean;
   /** Nominally usable status has present nonboolean availability evidence. */
   invalidAvailability?: true;
-  /** Planning policy only: positive fault text on available status excludes the plug. Not hardware proof. */
-  policyExclusion?: 'positive_fault_with_available_status';
+  /**
+   * Status says available but the note carries positive fault text. Owner
+   * policy (23 Nov 2026): status wins for planning (the plug stays usable),
+   * and every chosen stop with such a plug carries a visible warning. Live
+   * Statiq data returns this pairing on most corridor plugs, so excluding it
+   * made drivable routes look infeasible. Not proof either way.
+   */
+  faultNote?: 'positive_fault_with_available_status';
 }
 
 export interface ClassifiableConnector {
@@ -54,7 +60,10 @@ export function connectorSlug(type: string): string {
  */
 export function classifyPlugValues(c: ClassifiableConnector): PlugClassification {
   const core = classifyPlugCore(c);
-  return { ...core, planningHealth: core.policyExclusion ? 'faulted' : core.health };
+  // Status wins for planning unless availability explicitly says no.
+  const planningHealth: PlugHealth = core.faultNote && (c.available === true || c.available == null)
+    ? 'working-free' : core.health;
+  return { ...core, planningHealth };
 }
 type CoreClassification = Omit<PlugClassification, 'planningHealth'>;
 function classifyPlugCore(c: ClassifiableConnector): CoreClassification {
@@ -71,7 +80,7 @@ function classifyPlugCore(c: ClassifiableConnector): CoreClassification {
   if (faultInNote && positiveStatus) return {
     health: 'uncertain', contradiction: true,
     ...(status === 'available'
-      ? { policyExclusion: 'positive_fault_with_available_status' as const } : {}),
+      ? { faultNote: 'positive_fault_with_available_status' as const } : {}),
   };
   if (faultInStatus) return { health: 'faulted', contradiction: false };
   if (faultInNote) return { health: 'faulted', contradiction: false };

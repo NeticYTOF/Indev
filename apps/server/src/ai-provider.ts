@@ -59,6 +59,15 @@ function rejectTruncated(finishReason: unknown): void {
     throw new AiProviderError('AI response truncated before completion.', 'output_limit');
   }
 }
+/** Status-only provider failure text: never includes the response body or key. */
+export function providerStatusMessage(status: number): string {
+  if (status === 401 || status === 403) {
+    return `AI provider rejected the API key (HTTP ${status}). Check the key in AI settings.`;
+  }
+  if (status === 429) return 'AI provider rate-limited this request (HTTP 429). Try again later.';
+  return `AI provider returned ${status}`;
+}
+
 export type AiFailureReason = 'provider' | 'cancelled' | 'headers_timeout' | 'body_timeout' | 'output_limit';
 
 export class AiProviderError extends Error {
@@ -154,7 +163,7 @@ export async function chatCompletion(
       }),
       watch.promise,
     ]);
-    if (!res.ok) throw new AiProviderError(`AI provider returned ${res.status}`);
+    if (!res.ok) throw new AiProviderError(providerStatusMessage(res.status));
     phase.value = 'body';
     const body = await Promise.race([res.json(), watch.promise]) as {
       choices?: Array<{ message?: { content?: string }; finish_reason?: unknown }>;
@@ -208,7 +217,7 @@ export async function chatCompletionWithTools(
     if (watch.callerAborted() || watch.timedOut()) {
       throw new AiProviderError('AI request ended before completion.', 'cancelled');
     }
-    if (!res.ok) throw new AiProviderError(`AI provider returned ${res.status}`);
+    if (!res.ok) throw new AiProviderError(providerStatusMessage(res.status));
     phase.value = 'body';
     const body: unknown = await Promise.race([res.json(), watch.promise]);
     if (watch.callerAborted() || watch.timedOut()) {

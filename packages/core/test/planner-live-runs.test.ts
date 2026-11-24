@@ -361,7 +361,7 @@ describe('planner runs over a real budgeted client (wire transport)', () => {
     expect(err.message).toContain('route samples covered 60/60');
     expect(err.message).toContain('candidates processed 3/8');
     expect(err.message).toContain('asked to wait 30s');
-    expect(err.message).toContain(`after ${expectedMarkerCalls(700) + 4} of 220`);
+    expect(err.message).toContain(`after ${expectedMarkerCalls(700) + 4} of 800`);
   });
 
   it('attempt-cap exhaustion refuses the next dispatch before any traffic', async () => {

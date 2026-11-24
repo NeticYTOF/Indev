@@ -32,16 +32,16 @@ describe('private connector evidence', () => {
     expect(JSON.stringify(evidence)).not.toContain('SENTINEL_CLEAN');
   });
 
-  it('records available-status fault policy exclusions without raw note text', () => {
+  it('records available-status fault notes as usable without raw note text', () => {
     const evidence = buildHostStationEvidence(42, response([{
       type: 'DC', kw: 60, connectors: [plug('CCS-2', 'available', true, 'SENTINEL_FAULT')],
-    }]), ['policy_fault_note'], false, 60);
-    expect(evidence.includedPolicyExclusionCount).toBe(1);
+    }]), [], true, 60);
+    expect(evidence.includedFaultNoteCount).toBe(1);
     expect(evidence.connectors[0]).toMatchObject({
-      health: 'uncertain', planningHealth: 'faulted', contradiction: true,
-      policyExclusion: 'positive_fault_with_available_status',
+      health: 'uncertain', planningHealth: 'working-free', contradiction: true,
+      faultNote: 'positive_fault_with_available_status',
     });
-    expect(evidence.matchedRule).toBe('policy_fault_note');
+    expect(evidence.matchedRule).toBe('certified');
     expect(JSON.stringify(evidence)).not.toContain('SENTINEL_FAULT');
   });
 

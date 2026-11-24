@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyPlug, selectedCappedCharger, summarizeCcs2 } from '../src/plugs.js';
+import { classifyPlug, reliesOnFaultNotedPlugs, selectedCappedCharger, summarizeCcs2 } from '../src/plugs.js';
 import { classifyPlugValues, connectorSlug } from '../src/plug-classifier.js';
 import type { StatiqConnector, StatiqStationDetail } from '../src/types.js';
 
@@ -124,31 +124,43 @@ describe('classifyPlug (observed Statiq vocabulary)', () => {
   });
 });
 
-describe('available-status positive fault planning policy', () => {
-  it('marks an available-status positive-fault connector as policy-excluded without changing observed health', () => {
+describe('available-status positive fault note policy (status wins, warned)', () => {
+  it('keeps observed health uncertain but plans the plug as available', () => {
     const result = classifyPlug(conn('available', true, 'Faulted'));
     expect(result).toMatchObject({
-      health: 'uncertain', planningHealth: 'faulted', contradiction: true,
-      policyExclusion: 'positive_fault_with_available_status',
+      health: 'uncertain', planningHealth: 'working-free', contradiction: true,
+      faultNote: 'positive_fault_with_available_status',
     });
   });
 
-  it('does not exclude a healthy sibling charger', () => {
+  it('counts fault-noted plugs as usable and certifies their charger', () => {
     const detail = station([{
-      type: 'DC', kw: 60, price: 20,
-      connectors: [conn('available', true, 'Faulted'), conn('available', true, null)],
+      type: 'DC', kw: 120, price: 20,
+      connectors: [conn('available', true, 'Faulted'), conn('available', true, 'Faulted')],
     }]);
     const summary = summarizeCcs2(detail);
-    expect(summary.policyExcluded).toBe(1);
-    expect(summary.usable).toBe(1);
+    expect(summary.usable).toBe(2);
+    expect(summary.faultNoted).toBe(2);
     expect(summary.isUsable).toBe(true);
-    expect(summary.maxKw).toBe(60);
-    expect(selectedCappedCharger(detail, 60)?.kw).toBe(60);
+    expect(selectedCappedCharger(detail, 120)?.kw).toBe(120);
   });
 
-  it('does not widen the policy to merely positive-status occupied or preparing plugs', () => {
-    expect(classifyPlug(conn('charging', false, 'Faulted')).policyExclusion).toBeUndefined();
-    expect(classifyPlug(conn('preparing', true, 'Faulted')).policyExclusion).toBeUndefined();
+  it('flags a stop only when every usable plug on the chosen charger is fault-noted', () => {
+    const view = (plugs: Array<{ faultNote?: 'positive_fault_with_available_status' }>) => [{
+      chargerId: 1, name: 'DC', type: 'DC', kw: 60, pricePerKwh: 20, lastUsedOn: null,
+      plugs: plugs.map((p, i) => ({ connectorId: i, type: 'CCS-2', health: 'working-free' as const,
+        planningHealth: 'working-free' as const, contradiction: false, ...p })),
+    }];
+    expect(reliesOnFaultNotedPlugs(view([{ faultNote: 'positive_fault_with_available_status' }]), 1)).toBe(true);
+    expect(reliesOnFaultNotedPlugs(view([{ faultNote: 'positive_fault_with_available_status' }, {}]), 1)).toBe(false);
+    expect(reliesOnFaultNotedPlugs(view([{}]))).toBe(false);
+  });
+
+  it('never upgrades explicit unavailability or other statuses', () => {
+    expect(classifyPlug(conn('available', false, 'Faulted')).planningHealth).toBe('uncertain');
+    expect(classifyPlug(conn('faulted', false, 'Faulted')).planningHealth).toBe('faulted');
+    expect(classifyPlug(conn('charging', false, 'Faulted')).faultNote).toBeUndefined();
+    expect(classifyPlug(conn('preparing', true, 'Faulted')).faultNote).toBeUndefined();
   });
 });
 
@@ -224,7 +236,9 @@ describe('summarizeCcs2', () => {
       ]),
     );
     expect(s.total).toBe(2);
-    expect(s.usable).toBe(1);
+    // available + fault note: observed uncertain, but status wins for planning
+    expect(s.usable).toBe(2);
+    expect(s.faultNoted).toBe(1);
     expect(s.occupied).toBe(1);
     expect(s.uncertain).toBe(1);
     expect(s.hasContradiction).toBe(true);

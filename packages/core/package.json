@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./plug-classifier": "./src/plug-classifier.ts"
+    "./plug-classifier": "./src/plug-classifier.ts",
+    "./trip-shape": "./src/trip-shape.ts"
   }
 }

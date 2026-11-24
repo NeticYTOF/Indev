@@ -7,7 +7,7 @@
  * as typed warnings, never silently upgraded to a usable charger.
  */
 import { scanCorridor, type CorridorCandidate } from './corridor.js';
-import { certifyCappedCharger, classifyPlug, connectorSlug, isPlanningUsableConnector, summarizeCcs2 } from './plugs.js';
+import { certifyCappedCharger, connectorSlug, isPlanningUsableConnector, summarizeCcs2 } from './plugs.js';
 import { toStationView } from './planner.js';
 import { hasFreshProvenance } from './provenance.js';
 import type { StatiqDetailsResponse } from './types.js';
@@ -70,7 +70,7 @@ export async function discoverSelective(
 export type HydrationReason =
   | 'invalid_cap' | 'not_fresh' | 'identity_mismatch' | 'missing_evidence' | 'schema_invalid'
   | 'no_dc_charger' | 'no_ccs2_connector' | 'no_usable_ccs2'
-  | 'unknown_power' | 'not_within_cap' | 'policy_fault_note';
+  | 'unknown_power' | 'not_within_cap';
 
 export interface Hydration {
   candidate: PlannerCandidate | null;
@@ -128,9 +128,8 @@ export function hydrateSelective(
   if (dc.length === 0) return fail(['no_dc_charger']);
   const ccs2 = dc.flatMap((ch) => ch.connectors.filter((p) => connectorSlug(p.type) === 'ccs2'));
   if (ccs2.length === 0) return fail(['no_ccs2_connector']);
-  const policyExcluded = ccs2.some((p) => classifyPlug(p).policyExclusion !== undefined);
   const usable = ccs2.filter((p) => isPlanningUsableConnector(p));
-  if (usable.length === 0) return fail([policyExcluded ? 'policy_fault_note' : 'no_usable_ccs2']);
+  if (usable.length === 0) return fail(['no_usable_ccs2']);
   const cap = maxChargerKw ?? Number.MAX_VALUE;
   const certification = certifyCappedCharger(station, cap);
   if (certification.status !== 'selected' || !certification.selected) {

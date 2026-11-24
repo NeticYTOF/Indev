@@ -27,8 +27,7 @@ export function classifyPlug(c: StatiqConnector): PlugClassification {
   });
 }
 export function isPlanningUsableConnector(c: StatiqConnector): boolean {
-  const cls = classifyPlug(c);
-  return USABLE.includes(cls.planningHealth) && cls.policyExclusion === undefined;
+  return USABLE.includes(classifyPlug(c).planningHealth);
 }
 
 /** Normalize connector type: CCS-2, CCS2, ccs-2 all -> 'ccs2'. */
@@ -49,7 +48,8 @@ export interface Ccs2Summary {
   uncertain: number;
   faulted: number;
   offline: number;
-  policyExcluded: number;
+  /** Usable plugs whose note reports a fault while status says available. */
+  faultNoted: number;
   maxKw: number | null;
   pricePerKwh: number | null;
   /** Numeric evidence is independent of connector health/availability. */
@@ -73,7 +73,7 @@ export function summarizeCcs2(station: StatiqStationDetail): Ccs2Summary {
     uncertain: 0,
     faulted: 0,
     offline: 0,
-    policyExcluded: 0,
+    faultNoted: 0,
     maxKw: null,
     pricePerKwh: null,
     hasInvalidUsablePower: false,
@@ -87,10 +87,9 @@ export function summarizeCcs2(station: StatiqStationDetail): Ccs2Summary {
     for (const c of ch.connectors ?? []) {
       if (!isCcs2Dc(ch, c)) continue;
       s.total++;
-      const { health, contradiction, invalidAvailability, policyExclusion } = classifyPlug(c);
+      const { health, planningHealth, contradiction, invalidAvailability, faultNote } = classifyPlug(c);
       if (invalidAvailability) s.hasInvalidUsableAvailability = true;
       if (contradiction) s.hasContradiction = true;
-      if (policyExclusion) s.policyExcluded += 1;
       switch (health) {
         case 'working-free':
           s.free++;
@@ -111,8 +110,9 @@ export function summarizeCcs2(station: StatiqStationDetail): Ccs2Summary {
           s.offline++;
           break;
       }
-      if (USABLE.includes(health) && policyExclusion === undefined) {
+      if (USABLE.includes(planningHealth)) {
         s.usable++;
+        if (faultNote) s.faultNoted += 1;
         if (ch.kw == null) {
           s.hasMissingUsablePower = true;
         } else if (typeof ch.kw !== 'number' || !Number.isFinite(ch.kw) || ch.kw <= 0) {
@@ -150,7 +150,7 @@ interface CertifiedChargerEvidence {
   kw: number;
   pricePerKwh: number | null;
   connectors: ReadonlyArray<{ type: string; health: PlugHealth; planningHealth: PlugHealth;
-    contradiction: boolean; policyExclusion?: PlugClassification['policyExclusion'] }>;
+    contradiction: boolean; faultNote?: PlugClassification['faultNote'] }>;
 }
 function certifyEvidence(
   chargers: readonly CertifiedChargerEvidence[],
@@ -160,8 +160,8 @@ function certifyEvidence(
   let incomplete = false;
   for (const ch of chargers) {
     const usableConnector = norm(ch.type) === 'dc' &&
-      ch.connectors.some(c => connectorSlug(c.type) === 'ccs2' && !c.contradiction &&
-        c.policyExclusion === undefined && USABLE.includes(c.planningHealth));
+      ch.connectors.some(c => connectorSlug(c.type) === 'ccs2' &&
+        (!c.contradiction || c.faultNote !== undefined) && USABLE.includes(c.planningHealth));
     if (!usableConnector) continue;
     if (typeof ch.kw !== 'number' || !Number.isFinite(ch.kw) || ch.kw <= 0) { incomplete = true; continue; }
     if (ch.kw > maxChargerKw) continue;
@@ -182,11 +182,30 @@ export function certifyCappedCharger(
     chargerId: ch.chargerId, name: ch.name, type: ch.type, kw: ch.kw, pricePerKwh: ch.pricePerKwh,
     connectors: (ch.connectors ?? []).map(c => ({
       type: c.type, health: classifyPlug(c).health, planningHealth: classifyPlug(c).planningHealth,
-      contradiction: classifyPlug(c).contradiction, policyExclusion: classifyPlug(c).policyExclusion,
+      contradiction: classifyPlug(c).contradiction, faultNote: classifyPlug(c).faultNote,
     })),
   }));
   return certifyEvidence(evidence, maxChargerKw);
 }
+/**
+ * True when every usable CCS2 DC plug on the chosen charger (or, with no
+ * chosen charger, on the whole station) is usable only because status
+ * says available while the note reports a fault. Such stops are planned
+ * but must carry a visible warning.
+ */
+export function reliesOnFaultNotedPlugs(chargers: readonly ChargerView[], chargerId?: number): boolean {
+  const pool = chargerId === undefined ? chargers : chargers.filter((ch) => ch.chargerId === chargerId);
+  const usable = pool.filter((ch) => norm(ch.type) === 'dc').flatMap((ch) => ch.plugs)
+    .filter((p) => connectorSlug(p.type) === 'ccs2' && USABLE.includes(p.planningHealth));
+  return usable.length > 0 && usable.every((p) => p.faultNote !== undefined);
+}
+
+/** Visible stop warning for {@link reliesOnFaultNotedPlugs}. */
+export function faultNoteWarning(stationName: string): string {
+  return `Statiq shows the plugs at "${stationName}" as available but also reports a fault. ` +
+    'The plan trusts the available status; keep a backup charger in mind.';
+}
+
 export function certifyCappedViewChargers(
   chargers: readonly ChargerView[],
   maxChargerKw: number,
@@ -194,6 +213,6 @@ export function certifyCappedViewChargers(
   return certifyEvidence(chargers.map(ch => ({
     chargerId: ch.chargerId, name: ch.name, type: ch.type, kw: ch.kw, pricePerKwh: ch.pricePerKwh,
     connectors: ch.plugs.map(p => ({ type: p.type, health: p.health, planningHealth: p.planningHealth,
-      contradiction: p.contradiction, policyExclusion: p.policyExclusion })),
+      contradiction: p.contradiction, faultNote: p.faultNote })),
   })), maxChargerKw);
 }

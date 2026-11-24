@@ -1,0 +1,15 @@
+# Never upload secrets, local state, or local build/test artifacts.
+.env
+.env.*
+!.env.example
+data/
+TEMP/
+node_modules/
+**/node_modules/
+**/dist/
+.vercel/
+test-results/
+playwright-report/
+.tmp-*
+scripts/probe-out.json
+scripts/probe-vocab-out.json

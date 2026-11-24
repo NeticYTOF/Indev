@@ -105,6 +105,21 @@ function envelope(endpoint: 'markers-bulk' | 'details-bulk', items: any[], opts:
   };
 }
 
+/** Live round-mode worker: <= 40 items per round (capped by the request
+ *  budget), opaque cursor = next offset, continuation null when done. */
+function roundResponse(body: any) {
+  const all = (body.stations ?? []) as StationEcho[];
+  const offset = body.cursor ? Number(atob(body.cursor)) : 0;
+  const size = Math.min(40, body.budget.maxUpstreamAttempts, all.length - offset);
+  const page = detailsResponse({ stations: all.slice(offset, offset + size) }) as any;
+  const end = offset + size;
+  return { ...page, requestedItems: all.length, round: { offset, size },
+    continuation: end < all.length
+      ? { cursor: btoa(String(end)), offset: end, remainingCount: all.length - end, totalItems: all.length }
+      : null,
+    unprocessedCount: 0 };
+}
+
 function markersResponse(body: any, specs: MarkerSpec[] = [], opts: Parameters<typeof envelope>[2] = {}) {
   const squares = (body.squares ?? []) as SquareEcho[];
   return envelope('markers-bulk', squares.map((sq, i) => markerItem(sq, specs[i])), opts);
@@ -322,15 +337,105 @@ describe('strict bulk marker transport', () => {
 });
 
 describe('bulk details + corridor adoption', () => {
-  it('chunks ordered ids at two and rejects malformed charger power/tariff closed', async () => {
+  it('accepts the live worker string status "500" for one failed item, keeping the rest', async () => {
+    // Shape captured live (23 Nov 2026): the upgraded worker emits failed
+    // upstream statuses as decimal strings in both the item and histogram.
+    const { client, budget } = bulkClient({ maxAttempts: 4, calls: [],
+      respond: (call) => {
+        const response = detailsResponse(call.body) as any;
+        const bad = response.items[1];
+        Object.assign(bad, { outcome: 'unknown', reason: 'upstream_error', data: null,
+          upstream: { attempts: 1, statuses: ['500'], fetchedAt: LATER },
+          provenance: { sourceUrlPath: '/station/v1/details', httpStatus: 500,
+            contentType: 'application/json', cacheControl: null } });
+        response.ok = false;
+        response.completedItems = response.items.length - 1;
+        response.upstreamByStatus = { '200': response.items.length - 1, '500': 1 };
+        return { body: JSON.stringify(response) };
+      } });
+    const results = await client.detailsBulk([11, 12, 13]);
+    expect(results.map((r) => r.outcome)).toEqual(['ok', 'unknown', 'ok']);
+    expect(results[1]?.upstream.statuses).toEqual([500]);
+    expect(budget.completedAttempts).toBe(3);
+  });
+
+  it.each(['0500', ' 500', '5e2', '600', '-1', '500.0'])('rejects non-canonical status string %j closed', async (status) => {
+    const { client } = bulkClient({ maxAttempts: 2, calls: [],
+      respond: (call) => {
+        const response = detailsResponse(call.body) as any;
+        Object.assign(response.items[0], { outcome: 'unknown', reason: 'upstream_error', data: null,
+          upstream: { attempts: 1, statuses: [status], fetchedAt: LATER } });
+        response.ok = false; response.completedItems = 0;
+        response.upstreamByStatus = { [status]: 1 };
+        return { body: JSON.stringify(response) };
+      } });
+    await expect(client.detailsBulk([11])).rejects.toBeTruthy();
+  });
+
+  it('sends one 700-station series, follows cursor rounds in order, and splits at 700', async () => {
     const calls: any[] = [];
-    const { client } = bulkClient({ maxAttempts: 4, calls,
-      respond: (call) => ({ body: JSON.stringify(detailsResponse(call.body)) }) });
-    const results = await client.detailsBulk([2862, 1790, 42]);
-    expect(calls).toHaveLength(2); // 2 then 1
-    expect((calls[0]?.body.stations as StationEcho[]).map((s) => s.stationId)).toEqual([2862, 1790]);
-    expect(results.map((r) => r.response?.response.station?.stationId)).toEqual([2862, 1790, 42]);
-    expect(results[0]?.response?.fetchedAt.toISOString()).toBe(LATER);
+    const ids = Array.from({ length: 705 }, (_, i) => 1000 + i);
+    const seen: number[] = [];
+    const { client, budget } = bulkClient({ maxAttempts: 800, calls,
+      respond: (call) => ({ body: JSON.stringify(roundResponse(call.body)) }) });
+    const results = await client.detailsBulk(ids, undefined, undefined, (_r, index) => seen.push(index));
+    // 700 -> 18 rounds of <= 40; then a fresh 5-station series.
+    expect(calls).toHaveLength(19);
+    expect(calls[0]?.body.stations).toHaveLength(700);
+    expect(calls[0]?.body.cursor).toBeUndefined();
+    expect(calls[1]?.body.cursor).toBe(btoa('40'));
+    expect(calls[1]?.body.stations).toEqual(calls[0]?.body.stations); // same list every round
+    expect((calls[18]?.body.stations as StationEcho[]).map((s) => s.stationId)).toEqual(ids.slice(700));
+    expect(calls[18]?.body.stations[0].key).toBe('d700');
+    expect(results.map((r) => r.response?.response.station?.stationId)).toEqual(ids);
+    expect(seen).toEqual(ids.map((_, i) => i));
+    expect(budget.completedAttempts).toBe(705);
+    expect(budget.reservedButUnknown).toBe(0);
+  });
+
+  it.each([
+    ['skipped offset', (e: any) => { e.round.offset = 1; }],
+    ['continuation offset mismatch', (e: any) => { e.continuation.offset += 1; }],
+    ['remainingCount mismatch', (e: any) => { e.continuation.remainingCount -= 1; }],
+    ['missing cursor while positions remain', (e: any) => { e.continuation = null; }],
+    ['round size disagrees with items', (e: any) => { e.round.size += 1; }],
+  ])('fails a details series closed on %s', async (_label, mutate) => {
+    const calls: any[] = [];
+    const ids = Array.from({ length: 60 }, (_, i) => 1 + i);
+    const { client, budget } = bulkClient({ maxAttempts: 100, calls,
+      respond: (call) => {
+        const response = roundResponse(call.body);
+        if (!call.body.cursor) mutate(response);
+        return { body: JSON.stringify(response) };
+      } });
+    await expect(client.detailsBulk(ids)).rejects.toBeTruthy();
+    expect(calls).toHaveLength(1); // never follows a bad round
+    expect(budget.completedAttempts).toBe(0);
+    await expect(client.detailsBulk([1])).rejects.toBeTruthy(); // latched
+    expect(calls).toHaveLength(1);
+  });
+
+  it('a throttled item in a round stops the series before the next round', async () => {
+    const calls: any[] = [];
+    const ids = Array.from({ length: 90 }, (_, i) => 1 + i);
+    const { client } = bulkClient({ maxAttempts: 200, calls,
+      respond: (call) => {
+        const response = roundResponse(call.body) as any;
+        const bad = response.items[3];
+        Object.assign(bad, { outcome: 'unknown', reason: 'upstream_throttled', data: null,
+          upstream: { attempts: 1, statuses: [429], fetchedAt: LATER },
+          provenance: { sourceUrlPath: '/station/v1/details', httpStatus: 429,
+            contentType: 'application/json', cacheControl: null } });
+        response.ok = false;
+        response.completedItems -= 1;
+        response.upstreamByStatus = { '200': response.items.length - 1, '429': 1 };
+        return { body: JSON.stringify(response) };
+      } });
+    await expect(client.detailsBulk(ids)).rejects.toMatchObject({ name: 'StatiqRunFatalError' });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('rejects malformed charger power/tariff closed', async () => {
 
     for (const [kw, price] of [['bad', 20], [60, 'bad'], [undefined, 20]] as [unknown, unknown][]) {
       const strictCalls: any[] = [];

@@ -20,6 +20,8 @@ import { formatReviewCount, formatDuration, formatEta, formatInr, lastUsedLabel,
 import { safeHttpUrl, stationDirectionsUrl, routeDirectionsLinks } from './safe-url.js';
 import { renderDecisionExplanation, type DecisionConstraints } from './decision-explanation.js';
 import { renderWarningGroupsMarkup } from './warning-presentation.js';
+import { formatLegKm, tripLegs, type LegInfo } from './leg-distance.js';
+import { renderChargerList } from './stop-sheet.js';
 
 export function renderPlanPanel(
   panel: HTMLElement,
@@ -80,6 +82,21 @@ export function renderPlanPanel(
     </div>
   `);
   results.appendChild(head);
+  // Search coverage (live plans): how much of the corridor this run checked.
+  const search = (raw as { search?: unknown }).search;
+  if (search && typeof search === 'object' && !Array.isArray(search)) {
+    const sr = search as { mode?: unknown; candidatesFound?: unknown; candidatesChecked?: unknown };
+    const found = safeNumber(sr.candidatesFound);
+    const checked = safeNumber(sr.candidatesChecked);
+    if ((sr.mode === 'smart' || sr.mode === 'thorough') && found != null && checked != null) {
+      const chip = el('<p class="search-coverage"></p>');
+      chip.dataset.mode = sr.mode;
+      chip.textContent = sr.mode === 'smart'
+        ? `Smart search · ${Math.round(checked)} of ${Math.round(found)} corridor chargers checked live`
+        : `Thorough search · ${checked >= found ? 'all ' : ''}${Math.round(checked)}${checked >= found ? '' : ` of ${Math.round(found)}`} corridor chargers checked live`;
+      head.appendChild(chip);
+    }
+  }
 
   // ---- hero trip strip ----
   const strip = el(`
@@ -133,8 +150,14 @@ export function renderPlanPanel(
   if (stopsKnown && stops.length === 0) {
     stopsWrap.appendChild(el('<div class="no-stops">No charging stops needed — the destination is within your charge.</div>'));
   }
+  const legs = tripLegs({
+    originLabel: record(raw.origin)?.label, destinationLabel: record(raw.destination)?.label,
+    stops, totalDistanceKm: totals.distanceKm,
+  });
   stops.forEach((stop, i) => {
-    stopsWrap.appendChild(renderStopCard(stop, i));
+    stopsWrap.appendChild(renderStopCard(stop, i, legs[i] ?? null));
+    const next = legs[i + 1];
+    if (next) stopsWrap.appendChild(legConnector(next, i === stops.length - 1));
   });
   results.appendChild(stopsWrap);
   if (Array.isArray(raw.candidates)) {
@@ -279,7 +302,22 @@ function safeTariff(value: unknown): string {
   return number != null ? escapeHtml(formatTariff(number)) : 'Tariff unknown';
 }
 
-function renderStopCard(stop: unknown, index: number): HTMLElement {
+/** Real-text distance between two consecutive points of the trip. */
+function legConnector(leg: LegInfo, final: boolean): HTMLElement {
+  const km = leg.km == null ? 'Distance Unknown' : formatLegKm(leg.km);
+  return el(`
+    <div class="leg-connector${final ? ' is-final' : ''}" data-leg-to="${leg.toIndex}">
+      <span class="leg-connector-line" aria-hidden="true"></span>
+      <span class="leg-connector-text">${final ? 'Final leg · ' : ''}<strong>${escapeHtml(km)}</strong> to ${escapeHtml(leg.toLabel)}</span>
+    </div>`);
+}
+
+function legFromText(leg: LegInfo | null): string {
+  if (!leg || leg.km == null) return 'Distance from previous stop Unknown';
+  return `${formatLegKm(leg.km)} from ${leg.fromLabel}`;
+}
+
+function renderStopCard(stop: unknown, index: number, legIn: LegInfo | null = null): HTMLElement {
   const planned = record(stop);
   const s = record(planned?.station) ?? {};
   const inventoryKnown = Array.isArray(s.chargers);
@@ -317,6 +355,7 @@ function renderStopCard(stop: unknown, index: number): HTMLElement {
           </div>
           <span class="stop-tariff">${safeTariff(planned?.pricePerKwh)}</span>
         </div>
+        <div class="stop-leg" data-stop-leg>${escapeHtml(legFromText(legIn))}</div>
         <div class="stop-body">
           <div class="soc-row">
             ${socBar('Arrive', safeSoc(planned?.arriveSocPct))}
@@ -342,6 +381,10 @@ function renderStopCard(stop: unknown, index: number): HTMLElement {
           </div>
           ${uncertaintyChips(s, inventoryKnown)}
           ${s.synthetic === true ? '<div class="synthetic-flag">Synthetic station (mock data)</div>' : ''}
+          <div class="stop-chargers">
+            <span class="stop-chargers-title">Chargers here</span>
+            ${renderChargerList(s, typeof selectedId === 'number' && Number.isSafeInteger(selectedId) ? selectedId : null, { compact: true })}
+          </div>
           ${renderStationEvidencePanel({
             plannedStation: s,
             plannedFacts: {
@@ -358,6 +401,7 @@ function renderStopCard(stop: unknown, index: number): HTMLElement {
         </div>
       </div>
       <div class="stop-foot">
+        <button type="button" class="btn btn-compact" data-stop-details="${index}">Charger details</button>
         ${directionsUrl ? `<a class="btn btn-compact btn-ghost" href="${escapeHtml(directionsUrl)}" target="_blank" rel="noreferrer">Directions</a>` : '<span class="hint">Directions unavailable</span>'}
         ${stationPageUrl ? `<a class="btn btn-compact btn-ghost" href="${escapeHtml(stationPageUrl)}" target="_blank" rel="noreferrer">Station page</a>` : ''}
         <button type="button" class="btn btn-compact btn-ghost" data-refresh="${stationId != null ? escapeHtml(String(stationId)) : ''}"${stationId == null ? ' disabled aria-label="Revalidate unavailable — station id Unknown"' : ''}>Revalidate</button>
@@ -401,7 +445,14 @@ function uncertaintyChips(station: unknown, inventoryKnown = true): string {
     return c != null && Array.isArray(c.plugs) ? c.plugs as unknown[] : [];
   };
   const plugsKnown = chargers.every((charger) => Array.isArray(record(charger)?.plugs));
-  const anyContradiction = chargers.some((ch) => plugsOf(ch).some((p) => record(p)?.contradiction === true));
+  const faultNoted = chargers.some((ch) => plugsOf(ch).some((p) =>
+    record(p)?.faultNote === 'positive_fault_with_available_status'));
+  // Status wins for planning, but the conflicting fault note is always shown.
+  if (faultNoted) {
+    chips.push('<span class="chip chip-warn" title="Statiq shows these plugs as available but also reports a fault. The plan trusts the available status.">Available, but fault reported</span>');
+  }
+  const anyContradiction = chargers.some((ch) => plugsOf(ch).some((p) =>
+    record(p)?.contradiction === true && record(p)?.faultNote === undefined));
   if (anyContradiction) chips.push('<span class="chip chip-uncertain">Status uncertain</span>');
   const faulted = chargers.some((ch) => plugsOf(ch).some((p) => record(p)?.health === 'faulted'));
   if (faulted) chips.push('<span class="chip chip-bad">Some plugs faulted</span>');

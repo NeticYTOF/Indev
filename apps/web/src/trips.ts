@@ -9,6 +9,8 @@ import type { SavedTrip } from '@indeev/core';
 import { api } from './api.js';
 import { el, escapeHtml } from './planner.js';
 import { clearTrip, drawTrip } from './map.js';
+import { formatLegKm, tripLegs } from './leg-distance.js';
+import { stopDetailsMapOptions, wireStopDetailButtons, type StopDetailsTrip } from './stop-details.js';
 import {
   downloadJourneyBriefing,
   journeySourceFromSavedTrip,
@@ -571,15 +573,25 @@ function openSavedTrip(
   loadSavedRoute: LoadSavedRoute,
 ): void {
   const mapTrip = savedMapTrip(trip);
+  const savedRaw = record(trip) ?? {};
+  const detailsTrip: StopDetailsTrip | null = Array.isArray(savedRaw.stations) ? {
+    source: 'saved',
+    stops: savedRaw.stations as unknown[],
+    originLabel: record(savedRaw.origin)?.label,
+    destinationLabel: record(savedRaw.destination)?.label,
+    totalDistanceKm: record(savedRaw.totals)?.distanceKm,
+    cards: () => document.querySelector('.saved-stops'),
+    cardSelector: '.saved-stop',
+  } : null;
   if (mapTrip) {
-    drawTrip(map, mapTrip);
+    drawTrip(map, mapTrip, detailsTrip ? stopDetailsMapOptions(map, detailsTrip) : {});
   } else if (map && typeof (map as unknown as Record<string, unknown>).getSource === 'function') {
     // Never leave an earlier live plan drawn under a saved-trip summary, and
     // never draw a filtered or reconstructed version of this saved route.
     clearTrip(map);
   }
   const panel = document.getElementById('planner-panel') as HTMLElement;
-  renderSavedSummary(panel, trip, loadSavedRoute, mapTrip == null);
+  renderSavedSummary(panel, trip, loadSavedRoute, mapTrip == null, detailsTrip ? { map, trip: detailsTrip } : null);
   if (window.innerWidth <= 720) {
     panel.classList.add('open');
     document.getElementById('sheet-open')?.setAttribute('aria-expanded', 'true');
@@ -598,6 +610,7 @@ function renderSavedSummary(
   trip: SavedTrip,
   loadSavedRoute: LoadSavedRoute,
   mapOmitted: boolean,
+  details: { map: maplibregl.Map; trip: StopDetailsTrip } | null = null,
 ): void {
   let results = panel.querySelector<HTMLElement>('.plan-results');
   if (!results) {
@@ -608,6 +621,11 @@ function renderSavedSummary(
   // it programmatically focusable so openSavedTrip can land focus on it.
   results.setAttribute('tabindex', '-1');
   const raw = record(trip) ?? {};
+  const savedLegs = tripLegs({
+    originLabel: record(raw.origin)?.label, destinationLabel: record(raw.destination)?.label,
+    stops: Array.isArray(raw.stations) ? raw.stations as unknown[] : [],
+    totalDistanceKm: record(raw.totals)?.distanceKm,
+  });
   const stationsKnown = Array.isArray(raw.stations);
   const stations = stationsKnown ? raw.stations as unknown[] : [];
   const countText = stationsKnown ? String(stations.length) : 'Unknown';
@@ -662,6 +680,8 @@ function renderSavedSummary(
         .map((station, i) => {
           const s = record(station) ?? {};
           const stationId = safeStationId(s.stationId);
+          const legIn = savedLegs[i];
+          const legNext = savedLegs[i + 1];
           return `
         <article class="stop-card timeline saved-stop" data-station-id="${stationId != null ? escapeHtml(String(stationId)) : 'Unknown'}">
           <div class="stop-rail" aria-hidden="true">
@@ -673,6 +693,8 @@ function renderSavedSummary(
               <div class="stop-title"><span class="stop-name">${safeText(s.name, 'Unknown station')}</span></div>
               <button type="button" class="btn btn-compact btn-ghost" data-revalidate${stationId == null ? ' disabled aria-label="Fetch unavailable — station id Unknown"' : ''}>Fetch current details</button>
             </div>
+            <div class="stop-leg" data-stop-leg>${legIn?.km != null ? `${escapeHtml(formatLegKm(legIn.km))} from ${safeText(legIn.fromLabel)}` : 'Distance from previous stop Unknown'}</div>
+            <button type="button" class="btn btn-compact saved-stop-details" data-saved-stop-details>Charger details</button>
             <div class="stop-body">
               ${renderStationEvidencePanel({
                 savedStation: s,
@@ -686,11 +708,16 @@ function renderSavedSummary(
               })}
             </div>
           </div>
-        </article>`;
+        </article>${legNext ? `
+        <div class="leg-connector${i === stations.length - 1 ? ' is-final' : ''}" data-leg-to="${legNext.toIndex}">
+          <span class="leg-connector-line" aria-hidden="true"></span>
+          <span class="leg-connector-text">${i === stations.length - 1 ? 'Final leg · ' : ''}<strong>${escapeHtml(legNext.km == null ? 'Distance Unknown' : formatLegKm(legNext.km))}</strong> to ${safeText(legNext.toLabel)}</span>
+        </div>` : ''}`;
         })
         .join('')}
     </div>
   `;
+  if (details) wireStopDetailButtons(details.map, details.trip, '.saved-stop [data-saved-stop-details]');
 
   results.querySelector('[data-return-saved]')?.addEventListener('click', () => {
     if (loadSavedRoute(buildReturnRouteDraft(trip))) {

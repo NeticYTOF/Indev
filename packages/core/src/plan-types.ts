@@ -17,10 +17,10 @@ export interface PlugView {
   type: string;
   health: PlugHealth;
   contradiction: boolean;
-  /** Planning-only state; policy exclusions may be faulted while observed health is uncertain. */
+  /** Planning-only state; may differ from observed health under an explicit policy. */
   planningHealth: PlugHealth;
-  /** Host planning policy marker; not a hardware-health claim. */
-  policyExclusion?: 'positive_fault_with_available_status';
+  /** Available status with a positive fault note: usable, but always warned. */
+  faultNote?: 'positive_fault_with_available_status';
 }
 
 export interface ChargerView {
@@ -184,6 +184,8 @@ export interface TripPlan {
   /** Unique stations examined live during this planning run. */
   stationsSeen: number;
   warnings: string[];
+  /** Search coverage for this run (absent on older/saved plans). */
+  search?: PlanSearchSummary;
   /** Present when planned with includeCandidates (AI-safe, no occupancy). */
   candidates?: PlanCandidate[];
 }
@@ -267,6 +269,27 @@ export interface PlanOptions {
   brandClusterKm?: number;
   /** Average driving speed for ETA math, km/h. */
   avgSpeedKmh?: number;
+  /**
+   * Candidate detail strategy.
+   * - 'thorough' (default): every corridor candidate gets a fresh detail
+   *   lookup before selection (exhaustive; slow on long highways).
+   * - 'smart': candidates are detailed lazily, farthest-reachable first,
+   *   only inside the window the next hop can actually use. Every chosen
+   *   stop is still freshly checked; unchecked candidates are never used
+   *   and never counted as evidence either way.
+   */
+  searchMode?: PlanSearchMode;
+}
+
+export type PlanSearchMode = 'smart' | 'thorough';
+
+/** How much of the discovered corridor this plan actually checked. */
+export interface PlanSearchSummary {
+  mode: PlanSearchMode;
+  /** Unique CCS2-candidate stations discovered along the corridor. */
+  candidatesFound: number;
+  /** Candidates that received a fresh detail lookup in this run. */
+  candidatesChecked: number;
 }
 
 export type ResolvedPlanOptions =
@@ -288,9 +311,10 @@ export const DEFAULT_PLAN_OPTIONS: ResolvedPlanOptions = {
   avgSpeedKmh: 62,
   runBudget: {
     deadlineMs: 5 * 60_000,
-    maxUpstreamCalls: 220,
+    maxUpstreamCalls: 800,
   },
   includeCandidates: false,
+  searchMode: 'thorough',
 };
 /*
  * Only battery size (75 kWh) and the 300 km safe running range are

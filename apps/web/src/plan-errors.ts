@@ -77,6 +77,12 @@ const CAUSE_GUIDANCE: Record<string, PlanFailureGuidance> = Object.assign(
         'Too many corridor samples could not be read, so charging coverage along the route is unknown. This is not a verdict that the route is impossible.',
       toast: 'Plan not determined — charger coverage incomplete. See details.',
     },
+    network: {
+      title: 'Provider unreachable',
+      detail:
+        'The routing service or charger API dropped the connection mid-run, so the plan stopped without a verdict. This is usually transient - retry in a moment.',
+      toast: 'Plan not determined — a provider was unreachable. Retry in a moment.',
+    },
     'candidate-holes': {
       title: 'Candidate chargers unreadable',
       detail:

@@ -6,7 +6,7 @@
  */
 import * as maplibregl from 'maplibre-gl';
 import type { GeocodeHit, VehicleCatalogEntry } from '@indeev/core';
-import { api, ApiError, type PlanRequest, type PlanJobStart, type PlanJobStatus } from './api.js';
+import { api, ApiError, type PlanRequest, type AiPlanRequest, type PlanJobStart, type PlanJobStatus } from './api.js';
 import type { TripPlan } from '@indeev/core';
 import { clearTrip, drawTrip } from './map.js';
 import { stationDirectionsUrl } from './safe-url.js';
@@ -18,6 +18,8 @@ import { GeocodeSession } from './geocode-session.js';
 import { savedRouteDraftReady, type SavedRouteDraft } from './saved-route.js';
 import { renderVehiclePhoto } from './vehicle-photo.js';
 import type { DecisionConstraints } from './decision-explanation.js';
+import { aiSettingsMarkup, wireAiSettings } from './ai-settings.js';
+import { closeStopSheet, stopDetailsMapOptions, wireStopDetailButtons, type StopDetailsTrip } from './stop-details.js';
 
 export interface PlannerController {
   /** Copy a saved route into the composer for manual review; no network calls. */
@@ -106,6 +108,8 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     destination.hit = tmp;
     originField.input.value = origin.hit?.label ?? '';
     destField.input.value = destination.hit?.label ?? '';
+    originField.syncPicked(origin.hit != null);
+    destField.syncPicked(destination.hit != null);
   });
 
   const errorBox = el(`<div class="error-box hidden" role="alert"></div>`);
@@ -122,14 +126,21 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
   // Mode provenance: the pending label must reflect the server mode from
   // /api/health - never assume live.
   let serverIsMock: boolean | null = null;
+  // Hosted (serverless) servers have no background jobs: every run is one request.
+  let serverHosted = false;
   void api
     .health()
     .then((h) => {
       serverIsMock = h.mock;
+      serverHosted = h.hosted === true;
       offline.classList.add('hidden');
-      if (h.ai) {
+      aiSettings.applyHealth(h);
+      aiServerKey = h.ai === true;
+      if (h.ai || h.aiByok) {
         aiBox.classList.remove('hidden');
       }
+      // Thorough search needs a live corridor; synthetic mode has nothing to check.
+      thoroughButton.classList.toggle('hidden', h.mock);
     })
     .catch(() => {
       offline.classList.remove('hidden');
@@ -270,6 +281,16 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     </button>
   `) as HTMLButtonElement;
   actions.appendChild(planButton);
+  // Thorough search: the same rules planner as a background job that checks
+  // EVERY corridor charger live, with real progress and cancel.
+  const thoroughButton = el(`
+    <button type="button" class="btn btn-ghost planner-thorough hidden" data-thorough-plan
+      title="Check every charger on the corridor (slower, runs in the background)">Thorough search</button>
+  `) as HTMLButtonElement;
+  actions.appendChild(thoroughButton);
+  thoroughButton.addEventListener('click', () => {
+    form.dispatchEvent(new CustomEvent('ai-plan', { detail: { engine: 'planner' } }));
+  });
   form.appendChild(actions);
   const planLabel = planButton.querySelector('.go-label') as HTMLElement;
   const planSpinner = planButton.querySelector('.spinner') as HTMLElement;
@@ -339,8 +360,14 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
   // AI planning (hidden unless the server has an AI provider configured).
   const aiBox = el(`
     <div class="ai-box hidden">
-      <label for="ai-request" class="search-label">AI planning — custom requests (optional)</label>
-      <textarea id="ai-request" rows="2" placeholder="e.g. Prefer stops with cafes, avoid single-plug stations"></textarea>
+      <div class="ai-box-head">
+        <span class="ai-spark" aria-hidden="true"></span>
+        <span class="ai-box-title">AI planning</span>
+      </div>
+      <label for="ai-request" class="search-label">Custom instructions for the AI (optional)</label>
+      <textarea id="ai-request" rows="3" maxlength="2000" placeholder="e.g. Prefer stops with cafes and clean washrooms, avoid single-plug stations, I like 30-minute breaks"></textarea>
+      <p class="hint ai-instructions-hint" data-ai-instructions-saved>Saved on this device and sent with each AI plan.</p>
+      ${aiSettingsMarkup()}
       <label for="ai-max-charger-kw" class="search-label">Maximum charger power (kW, optional)</label>
       <input id="ai-max-charger-kw" data-ai-max-charger-kw type="number" min="1" step="1" inputmode="numeric" placeholder="No limit" aria-describedby="ai-cap-hint" />
       <p class="hint" id="ai-cap-hint">Blank means no cap. A value is an enforced hard ceiling: only certified chargers at or below it are eligible.</p>
@@ -349,6 +376,8 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     </div>
   `);
   form.appendChild(aiBox);
+  const aiSettings = wireAiSettings(aiBox);
+  let aiServerKey = false;
   aiBox.querySelector('[data-ai-plan]')?.addEventListener('click', () => {
     form.dispatchEvent(new CustomEvent('ai-plan'));
   });
@@ -365,6 +394,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
   let planInFlight = false;
   const setActionsBusy = (busy: boolean): void => {
     planButton.disabled = busy;
+    thoroughButton.disabled = busy;
     const aiBtn = aiBox.querySelector<HTMLButtonElement>('[data-ai-plan]');
     if (aiBtn) aiBtn.disabled = busy;
   };
@@ -420,12 +450,20 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     }
     return typeof fields.candidateInventoryComplete === 'boolean';
   };
+  let jobEngine: 'ai' | 'planner' = 'ai';
+  let jobSearchMode: 'smart' | 'thorough' = 'thorough';
   const jobProgressText = (status: PlanJobStatus, cancelling = false): string => {
     if (cancelling) return 'Cancellation requested — waiting for the server to confirm a terminal state.';
     const p = status.progress;
     if (!p) return 'Job accepted. Corridor discovery is starting; the charger inventory is not yet known.';
     if (!p.candidateInventoryComplete) {
       return `Scanning route samples: ${p.samplesCompleted} of ${p.samplesPlanned} responded. Charger inventory is still unknown; remaining counts are minimums only.`;
+    }
+    if (jobEngine === 'planner' && jobSearchMode === 'smart') {
+      return `Smart search: ${p.candidatesPlanned} corridor chargers found; ${p.candidatesProcessed} checked live so far — only the ones each hop can actually use.`;
+    }
+    if (jobEngine === 'planner') {
+      return `Thorough search: ${p.candidatesProcessed} of ${p.candidatesPlanned} corridor chargers checked live (${p.candidatesDetailed} with full detail).`;
     }
     return `AI-selective mode: corridor discovery found ${p.candidatesPlanned} unique chargers. ${p.candidatesProcessed} were checked by tool request; remaining work is unknown until the model finishes.`;
   };
@@ -490,14 +528,17 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     return true;
   };
 
-  form.addEventListener('ai-plan', async () => {
+  form.addEventListener('ai-plan', async (event: Event) => {
     if (refusePendingSavedVehicle()) return;
+    const detail = (event as CustomEvent<{ engine?: string; searchMode?: string } | null>).detail;
+    const engine: 'ai' | 'planner' = detail?.engine === 'planner' ? 'planner' : 'ai';
+    const searchMode: 'smart' | 'thorough' = detail?.searchMode === 'smart' ? 'smart' : 'thorough';
     if (!origin.hit || !destination.hit) {
       showError(errorBox, 'Pick both a starting point and a destination from the suggestions first.');
       return;
     }
     const aiRequestEl = document.getElementById('ai-request') as HTMLTextAreaElement | null;
-    const customRequest = aiRequestEl?.value.trim() || undefined;
+    const customRequest = engine === 'ai' ? aiRequestEl?.value.trim() || undefined : undefined;
     const capRaw = aiBox.querySelector<HTMLInputElement>('[data-ai-max-charger-kw]')?.value.trim() || '';
     let maxChargerKw: number | undefined;
     if (capRaw) {
@@ -513,15 +554,25 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
       showError(errorBox, vehicleResult.reason);
       return;
     }
+    // AI runs need a key: the server's own, or one saved on this device.
+    if (engine === 'ai' && !aiServerKey && !gate.inFlight() && !(await aiSettings.hasDeviceKey())) {
+      showError(errorBox, 'Add your AI API key in AI settings first — it stays on this device.');
+      aiSettings.revealKeyField();
+      return;
+    }
     // One planning run at a time - a second run while one is in flight
     // would double the upstream request window and orphan the shared
     // busy readout. Buttons are already disabled; this is the fail-closed
     // backstop for any submit that fires anyway.
     if (!gate.tryBegin()) return;
+    jobEngine = engine;
+    jobSearchMode = searchMode;
     planInFlight = true;
     setFormBusy(true);
     setActionsBusy(true);
-    const aiButton = aiBox.querySelector('[data-ai-plan]') as HTMLButtonElement | null;
+    const aiButton = engine === 'planner'
+      ? (searchMode === 'smart' ? planButton : thoroughButton)
+      : aiBox.querySelector('[data-ai-plan]') as HTMLButtonElement | null;
     hideError(errorBox);
     startBusy();
     jobCancelButton.classList.remove('hidden');
@@ -569,7 +620,11 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
         }
         const { plan, ai } = status.result as { plan: TripPlan; ai: { applied: boolean; notes?: string; reason?: string } };
         onPlanAvailable(plan, map, errorBox, { maxChargerKw });
-        if (ai.applied) {
+        if (engine === 'planner' && searchMode === 'smart') {
+          toast('Route planned — every chosen stop was checked live.');
+        } else if (engine === 'planner') {
+          toast('Thorough search complete — every corridor charger was checked live.');
+        } else if (ai.applied) {
           toast(ai.notes ? `AI plan applied: ${ai.notes}` : 'AI plan applied.');
         } else if (ai.reason) {
           toast(`Computed plan shown — ${ai.reason}`, 'warn', 6000);
@@ -651,6 +706,25 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
       recancelButton.addEventListener('click', onRecancel);
     };
     try {
+      // Decrypted just-in-time for this one request; only AI runs send it.
+      const aiAuth = engine === 'ai' ? await aiSettings.readAuth() : undefined;
+      if (serverHosted) {
+        // One synchronous request: no job id, so nothing to cancel or recover.
+        jobCancelButton.classList.add('hidden');
+        busyProgress.textContent = 'Planning in one request — this can take a few minutes on a long corridor.';
+        const syncRequest: AiPlanRequest = {
+          origin: { label: origin.hit.label, lat: origin.hit.lat, lon: origin.hit.lon },
+          destination: { label: destination.hit.label, lat: destination.hit.lat, lon: destination.hit.lon },
+          startSocPct: startSoc,
+          ...(vehicleResult.kind === 'ok' ? { vehicle: vehicleResult.vehicle } : {}),
+          ...(maxChargerKw === undefined ? {} : { maxChargerKw }),
+        };
+        const envelope = engine === 'planner'
+          ? { plan: (await api.plan({ ...syncRequest, searchMode })).plan, ai: { applied: false } }
+          : await api.aiPlan({ ...syncRequest, ...(customRequest ? { request: customRequest } : {}) }, aiAuth);
+        settleTerminal({ jobId: 'sync', state: 'succeeded', startedAt: 0, finishedAt: 0, progress: null, result: envelope });
+        return;
+      }
       const rawStart: unknown = await api.startPlanJob({
         origin: { label: origin.hit.label, lat: origin.hit.lat, lon: origin.hit.lon },
         destination: { label: destination.hit.label, lat: destination.hit.lat, lon: destination.hit.lon },
@@ -658,7 +732,8 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
         ...(vehicleResult.kind === 'ok' ? { vehicle: vehicleResult.vehicle } : {}),
         ...(customRequest ? { request: customRequest } : {}),
         ...(maxChargerKw === undefined ? {} : { maxChargerKw }),
-      });
+        ...(engine === 'planner' ? { engine: 'planner' as const, searchMode } : {}),
+      }, aiAuth);
       if (!startShapeOk(rawStart)) {
         throw new ApiError('The job start response was malformed.', 'malformed_job', 200);
       }
@@ -709,7 +784,8 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
       } else if (lost) {
         showError(errorBox, 'This run is no longer available — the server restarted or the job expired. Nothing is retried automatically; start a new run.');
       } else {
-        showPlanningError(errorBox, err, 'AI planning failed.');
+        showPlanningError(errorBox, err, engine !== 'planner' ? 'AI planning failed.'
+          : searchMode === 'smart' ? 'Planning failed.' : 'Thorough search failed.');
       }
       if (!uncertain) focusOnSettle = aiButton;
     } finally {
@@ -735,6 +811,13 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     if (refusePendingSavedVehicle()) return;
     if (!origin.hit || !destination.hit) {
       showError(errorBox, 'Pick both a starting point and a destination from the suggestions.');
+      return;
+    }
+    // LIVE plans run as a background job: a long highway corridor can take
+    // longer than one HTTP request may stay open, and the job gives real
+    // progress plus cancel. Synthetic (mock) plans stay instant and sync.
+    if (serverIsMock === false && !serverHosted) {
+      form.dispatchEvent(new CustomEvent('ai-plan', { detail: { engine: 'planner', searchMode: 'smart' } }));
       return;
     }
     const vehicleResult = readVehicleSelection(vehicleRow);
@@ -850,13 +933,23 @@ function drawablePlan(value: unknown): DrawablePlan | null {
 
 export function onPlanAvailable(plan: TripPlan, map: maplibregl.Map, errorBox?: HTMLElement, constraints?: DecisionConstraints): void {
   const raw = planRecord(plan);
+  closeStopSheet({ restoreFocus: false });
   if (!raw) {
     clearTrip(map);
     document.getElementById('planner-panel')?.querySelector('.plan-results')?.remove();
     throw new Error('The route response was malformed. Please try again.');
   }
   const drawable = drawablePlan(raw);
-  if (drawable) drawTrip(map, drawable);
+  const detailsTrip: StopDetailsTrip | null = Array.isArray(raw.stops) ? {
+    source: 'plan',
+    stops: raw.stops as unknown[],
+    originLabel: planRecord(raw.origin)?.label,
+    destinationLabel: planRecord(raw.destination)?.label,
+    totalDistanceKm: planRecord(raw.totals)?.distanceKm,
+    cards: () => document.querySelector('#planner-panel .plan-results .stops'),
+    cardSelector: '.stop-card',
+  } : null;
+  if (drawable) drawTrip(map, drawable, detailsTrip ? stopDetailsMapOptions(map, detailsTrip) : {});
   else clearTrip(map);
   const panel = document.getElementById('planner-panel') as HTMLElement;
   panel.querySelector<HTMLElement>('.saved-route-review')?.classList.add('hidden');
@@ -866,6 +959,7 @@ export function onPlanAvailable(plan: TripPlan, map: maplibregl.Map, errorBox?: 
     warnings: drawable ? warnings : [...warnings, 'Map route unavailable — the route facts are shown, but drawing was refused because geometry or stop coordinates were missing or invalid.'],
   } as TripPlan;
   renderPlanPanel(panel, map, displayPlan, constraints);
+  if (detailsTrip) wireStopDetailButtons(map, detailsTrip, '.stop-card [data-stop-details]');
   if (!drawable && errorBox) showError(errorBox, 'Map route unavailable — route facts are still shown; geometry or a stop coordinate was invalid.');
   if (window.innerWidth <= 720) {
     panel.classList.add('open');
@@ -1009,6 +1103,8 @@ function makeSearchField(
   input: HTMLInputElement;
   invalidateSuggestions: () => void;
   setSavedPlace: (place: { label: string; lat: number; lon: number }) => void;
+  /** Swap moves a resolved place between fields without an input event. */
+  syncPicked: (isPicked: boolean) => void;
 } {
   const letter = field === 'origin' ? 'A' : 'B';
   const popupId = `place-options-${field}`;
@@ -1020,10 +1116,46 @@ function makeSearchField(
         <input id="${popupId}-input" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${popupId}" placeholder="${placeholder}" aria-label="${labelText}" />
         <div id="${popupId}" class="suggestions hidden" role="listbox" aria-label="${labelText} suggestions"></div>
       </div>
+      <div class="place-nudge hidden" data-place-nudge></div>
     </div>
   `);
   const input = wrap.querySelector('input') as HTMLInputElement;
   const list = wrap.querySelector('.suggestions') as HTMLElement;
+  const nudge = wrap.querySelector('[data-place-nudge]') as HTMLElement;
+  // Latest suggestions for the CURRENT text; a nudge may offer the top one,
+  // but nothing is ever picked without an explicit tap.
+  let lastHits: GeocodeHit[] = [];
+  let picked = false;
+  const hideNudge = (): void => { nudge.classList.add('hidden'); nudge.replaceChildren(); wrap.classList.remove('is-unresolved'); };
+  const pickHit = (h: GeocodeHit): void => {
+    session.invalidate();
+    input.value = h.label;
+    picked = true;
+    onPicked(h);
+    hideList();
+    hideNudge();
+    input.dispatchEvent(new Event('picked'));
+  };
+  const offerNudge = (): void => {
+    const top = lastHits[0];
+    if (picked || !top || input.value.trim().length < 2) { hideNudge(); return; }
+    wrap.classList.add('is-unresolved');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'place-nudge-use';
+    button.innerHTML = '<span class="place-nudge-dot" aria-hidden="true"></span>';
+    button.appendChild(document.createTextNode('Use '));
+    const strong = document.createElement('strong');
+    strong.textContent = top.label;
+    button.appendChild(strong);
+    button.appendChild(document.createTextNode('?'));
+    button.addEventListener('click', () => { pickHit(top); input.focus({ preventScroll: true }); });
+    const note = document.createElement('span');
+    note.className = 'place-nudge-note';
+    note.textContent = 'Not picked yet';
+    nudge.replaceChildren(note, button);
+    nudge.classList.remove('hidden');
+  };
   const optionId = (index: number): string => `${popupId}-option-${index}`;
   const showList = (): void => { list.classList.remove('hidden'); input.setAttribute('aria-expanded', 'true'); };
   const hideList = (): void => { list.classList.add('hidden'); input.setAttribute('aria-expanded', 'false'); clearActive(); };
@@ -1064,6 +1196,9 @@ function makeSearchField(
 
   input.addEventListener('input', () => {
     onPicked(null);
+    picked = false;
+    lastHits = [];
+    hideNudge();
     invalidateSuggestions(); // old query choices and responses are stale
     const q = input.value.trim();
     if (q.length < 2) {
@@ -1082,6 +1217,7 @@ function makeSearchField(
         if (!session.isCurrent(token) || document.activeElement !== input) return;
         clearActive();
         list.innerHTML = '';
+        lastHits = hits;
         if (hits.length === 0) {
           list.innerHTML = `<div class="suggestion-item empty">No places found — try the nearest town.</div>`;
           showList();
@@ -1096,15 +1232,9 @@ function makeSearchField(
           seen.add(key);
           const index = seen.size - 1;
           const item = el(`<button type="button" id="${optionId(index)}" class="suggestion-item" role="option" aria-selected="false">${escapeHtml(h.label)}</button>`);
-          item.addEventListener('click', () => {
-            // The session is complete: pending stragglers must not reopen
-            // the list over the finished selection.
-            session.invalidate();
-            input.value = h.label;
-            onPicked(h);
-            hideList();
-            input.dispatchEvent(new Event('picked'));
-          });
+          // The session is complete on pick: pending stragglers must not
+          // reopen the list over the finished selection.
+          item.addEventListener('click', () => pickHit(h));
           item.addEventListener('mousemove', () => setActive(index));
           list.appendChild(item);
         }
@@ -1145,10 +1275,11 @@ function makeSearchField(
     // Allow suggestion clicks to register, but do not let an old blur
     // hide choices after the user has already returned to this field.
     setTimeout(() => {
-      if (document.activeElement !== input) hideList();
+      if (document.activeElement !== input) { hideList(); offerNudge(); }
     }, 180);
   });
   input.addEventListener('focus', () => {
+    hideNudge();
     if (list.children.length > 0) showList();
   });
 
@@ -1170,10 +1301,18 @@ function makeSearchField(
     invalidateSuggestions();
     input.value = place.label;
     onPicked({ ...place, name: place.label, city: null, state: null, country: null });
+    picked = true;
+    hideNudge();
     input.dispatchEvent(new Event('picked'));
   };
 
-  return { wrap, input, invalidateSuggestions, setSavedPlace };
+  const syncPicked = (isPicked: boolean): void => {
+    picked = isPicked;
+    lastHits = [];
+    hideNudge();
+  };
+
+  return { wrap, input, invalidateSuggestions, setSavedPlace, syncPicked };
 }
 
 function showError(box: HTMLElement, message: string): void {

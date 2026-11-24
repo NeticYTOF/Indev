@@ -11,6 +11,15 @@ import './styles.css';
 import './delight.css';
 import { installMotion } from './motion.js';
 import { installDelight } from './delight.js';
+import { installPlanningFx } from './fx/planning.js';
+import { installResultsFx } from './fx/results.js';
+import { installAmbientFx } from './fx/ambient.js';
+import { installDrawerFx } from './fx/drawer.js';
+import { installAliveFx } from './fx/alive.js';
+import './ai-settings.css';
+import './stop-sheet.css';
+// Calm layer is imported last so its overrides win the cascade.
+import './fx/calm.css';
 import { api, type HealthInfo } from './api.js';
 import { createMap } from './map.js';
 import { renderPlanner } from './planner.js';
@@ -42,6 +51,11 @@ const planner = document.getElementById('planner-panel') as HTMLElement;
 const plannerController = renderPlanner(planner, map);
 // Decorative mascot + motion layer; reads the rendered DOM, never owns it.
 installDelight();
+installPlanningFx();
+installResultsFx();
+installAmbientFx();
+installDrawerFx();
+installAliveFx(map);
 
 const mobileViewport = window.matchMedia('(max-width: 720px)');
 const isMobile = (): boolean => mobileViewport.matches;

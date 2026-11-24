@@ -1,0 +1,121 @@
+/* fx/ambient — map atmosphere, panel seam, chrome sheen, toasts, mobile sheet. */
+
+/* ============ map atmosphere (over the canvas, under UI) ============ */
+.fxa-atmos { position: absolute; inset: 0; z-index: 1; pointer-events: none; overflow: hidden; }
+@media (min-width: 721px) { .fxa-atmos { left: var(--panel-w); } }
+.fxa-vignette {
+  position: absolute; inset: 0;
+  background: radial-gradient(120% 90% at 55% 45%, transparent 55%, rgba(0, 0, 0, .75) 100%);
+}
+.fxa-streaks { position: absolute; inset: 0; opacity: .55; }
+html.is-planning .fxa-streaks { opacity: 1; }
+.fxa-streak {
+  position: absolute; left: 0; top: var(--y); width: 180px; height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 199, 44, .0) 20%, rgba(255, 199, 44, .65) 85%, #fff3c4);
+  border-radius: 1px;
+  transform: translateX(-220px);
+  animation: fxa-streak var(--d) linear calc(var(--i) * -1.3s) infinite;
+  opacity: .5;
+}
+.fxa-streak:nth-child(even) {
+  background: linear-gradient(270deg, transparent, rgba(255, 90, 70, .0) 20%, rgba(255, 90, 70, .55) 85%, #ffd0c4);
+  animation-direction: reverse;
+}
+html.is-planning .fxa-streak { animation-duration: calc(var(--d) * .35); opacity: .9; }
+@keyframes fxa-streak { from { transform: translateX(-220px); } to { transform: translateX(calc(100vw + 40px)); } }
+.fxa-grain {
+  position: absolute; inset: -50%;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E");
+  opacity: .045;
+  animation: fxa-grain 1.2s steps(6) infinite;
+}
+@keyframes fxa-grain {
+  0% { transform: translate(0, 0); } 20% { transform: translate(-3%, 2%); } 40% { transform: translate(2%, -3%); }
+  60% { transform: translate(-2%, -1%); } 80% { transform: translate(3%, 3%); } 100% { transform: translate(0, 0); }
+}
+
+/* ============ panel/map seam ============ */
+.fxa-seam { display: none; }
+@media (min-width: 721px) {
+  .fxa-seam {
+    display: block; position: absolute; top: 0; bottom: 0; left: calc(var(--panel-w) - 1px); width: 1px;
+    z-index: 21; pointer-events: none;
+    background: linear-gradient(transparent, rgba(255, 199, 44, .18) 20%, rgba(255, 199, 44, .18) 80%, transparent);
+  }
+  .fxa-seam i {
+    position: absolute; left: -1px; width: 3px; height: 120px; top: -120px; border-radius: 3px;
+    background: linear-gradient(transparent, #fff3c4, var(--cap), transparent);
+    box-shadow: 0 0 16px 3px rgba(255, 199, 44, .55);
+    animation: fxa-seam 6s cubic-bezier(.6, 0, .4, 1) 2s infinite;
+  }
+  html.is-planning .fxa-seam i { animation-duration: 1.4s; }
+  /* scroll position marker: a small sign that rides the seam */
+  .fxa-seam b {
+    position: absolute; left: -3px; width: 7px; height: 26px; border-radius: 4px;
+    top: calc(var(--fxa-p, 0) * (100% - 26px));
+    background: var(--cap);
+    box-shadow: 0 0 12px rgba(255, 199, 44, .7);
+    transition: top 120ms linear;
+    opacity: .85;
+  }
+}
+@keyframes fxa-seam { from { top: -120px; } to { top: 100%; } }
+
+/* ============ chrome sheen on top chips ============ */
+.fxa-chrome { position: relative; overflow: hidden; isolation: isolate; }
+.fxa-chrome::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: -1;
+  background: linear-gradient(110deg, transparent 35%, rgba(255, 255, 255, .14) 50%, transparent 65%);
+  background-size: 250% 100%;
+  animation: fxa-sheen 7s ease-in-out 3s infinite;
+}
+@keyframes fxa-sheen { 0%, 75% { background-position: 150% 0; } 100% { background-position: -150% 0; } }
+#health-badge.live .dot { animation: fxa-live 1.6s ease-in-out infinite; }
+@keyframes fxa-live { 0%, 100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, .6); } 50% { box-shadow: 0 0 0 6px rgba(74, 222, 128, 0); } }
+
+/* ============ toasts: springy slide + glow edge ============ */
+.toast {
+  animation: fxa-toast-in 560ms var(--spring) both;
+  box-shadow: 0 18px 50px -12px rgba(0, 0, 0, .95), 0 0 0 1px rgba(255, 199, 44, .08), 0 0 30px -10px var(--tone);
+}
+@keyframes fxa-toast-in {
+  0% { opacity: 0; transform: translateY(18px) scale(.9) rotate(-1.5deg); filter: blur(4px); }
+  60% { opacity: 1; filter: none; }
+  100% { transform: none; }
+}
+
+/* ============ panel scroll lane (thin custom scrollbar) ============ */
+.panel::-webkit-scrollbar { width: 8px; }
+.panel::-webkit-scrollbar-track { background: transparent; }
+.panel::-webkit-scrollbar-thumb {
+  background: repeating-linear-gradient(to bottom, #2a2a2a 0 10px, transparent 10px 16px);
+  border-radius: 8px;
+}
+.panel:hover::-webkit-scrollbar-thumb { background: repeating-linear-gradient(to bottom, var(--cap) 0 10px, transparent 10px 16px); }
+
+/* ============ mobile sheet: springier open + grabber glow ============ */
+@media (max-width: 720px) {
+  .panel { transition: transform 620ms cubic-bezier(.2, 1.15, .3, 1), visibility 0s 620ms; }
+  .panel.open { transition: transform 620ms cubic-bezier(.2, 1.15, .3, 1); box-shadow: 0 -24px 60px rgba(0, 0, 0, .95), 0 -1px 0 rgba(255, 199, 44, .25); }
+  .sheet-fab:not(.hidden) {
+    animation: rise 380ms var(--ease) backwards, fxa-fab 3s ease-in-out 1s infinite;
+  }
+  @keyframes fxa-fab {
+    0%, 100% { box-shadow: 0 10px 30px rgba(0, 0, 0, .8), 0 0 0 0 rgba(255, 199, 44, .45); }
+    50% { box-shadow: 0 10px 30px rgba(0, 0, 0, .8), 0 0 0 10px rgba(255, 199, 44, 0); }
+  }
+}
+
+/* ============ reduced motion ============ */
+@media (prefers-reduced-motion: reduce) {
+  .fxa-streaks, .fxa-grain, .fxa-seam i { display: none; }
+  .fxa-chrome::after, #health-badge.live .dot, .toast, .sheet-fab:not(.hidden) { animation: none !important; }
+  .fxa-seam b { transition: none; }
+}
+html.reduce-motion .fxa-streaks, html.reduce-motion .fxa-grain, html.reduce-motion .fxa-seam i { display: none; }
+html.reduce-motion .fxa-chrome::after, html.reduce-motion .toast, html.reduce-motion .sheet-fab { animation: none !important; }
+
+/* ============ print: no atmosphere (it can overflow the printed page) ============ */
+@media print {
+  .fxa-atmos, .fxa-seam { display: none !important; }
+}

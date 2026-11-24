@@ -33,7 +33,7 @@ import {
   type VehicleSelection,
 } from '@indeev/core';
 
-const MCP_RUN_BUDGET: PlanRunBudget = { deadlineMs: 4 * 60_000, maxUpstreamCalls: 200 };
+const MCP_RUN_BUDGET: PlanRunBudget = { deadlineMs: 4 * 60_000, maxUpstreamCalls: 800 };
 
 export interface McpToolDeps {
   createStatiq: () => StatiqClient;
@@ -259,6 +259,8 @@ export interface StationViewMcp {
   ccs2Usable: number;
   /** Honesty counters: unusable and uncertain plugs stay visible. */
   ccs2Uncertain: number;
+  /** Usable plugs whose note reports a fault while status says available. */
+  ccs2FaultNoted: number;
   ccs2Faulted: number;
   ccs2Offline: number;
   maxKw: number | null;
@@ -312,6 +314,7 @@ export async function getStationHandler(
     // AI-safe: usable plugs WITHOUT occupancy (free vs occupied is never told)
     ccs2Usable: summary.usable,
     ccs2Uncertain: summary.uncertain,
+    ccs2FaultNoted: summary.faultNoted,
     ccs2Faulted: summary.faulted,
     ccs2Offline: summary.offline,
     maxKw: summary.maxKw,
@@ -323,6 +326,7 @@ export async function getStationHandler(
   const summaryText =
     `${station.name}${station.city ? ` (${station.city})` : ''}: ${station.ccs2Usable} usable CCS2 DC plug(s)` +
     (station.ccs2Uncertain > 0 ? `, ${station.ccs2Uncertain} status-uncertain` : '') +
+    (station.ccs2FaultNoted > 0 ? ` (${station.ccs2FaultNoted} usable plug(s) also carry a fault note)` : '') +
     (station.ccs2Faulted > 0 ? `, ${station.ccs2Faulted} faulted` : '') +
     `, max ${station.maxKw ?? '?'} kW, tariff ${station.pricePerKwh != null ? `Rs. ${station.pricePerKwh}/kWh` : 'unknown'}` +
     `, rating ${station.rating ?? 'n/a'} (${station.reviewCount ?? 0} reviews)` +
