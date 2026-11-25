@@ -211,13 +211,13 @@ export function renderStopSheetMarkup(entry: StopSheetEntry): string {
     `</div>` +
     `<footer class="ss-actions">` +
     `<div class="ss-nav">` +
-    `<button type="button" class="btn btn-compact btn-ghost" data-ss-prev aria-label="Previous stop"${entry.index === 0 ? ' disabled' : ''}>‹</button>` +
-    `<button type="button" class="btn btn-compact btn-ghost" data-ss-next aria-label="Next stop"${entry.index >= entry.total - 1 ? ' disabled' : ''}>›</button>` +
+    `<button type="button" class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" data-ss-prev aria-label="Previous stop"${entry.index === 0 ? ' disabled' : ''}>‹</button>` +
+    `<button type="button" class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" data-ss-next aria-label="Next stop"${entry.index >= entry.total - 1 ? ' disabled' : ''}>›</button>` +
     `</div>` +
-    `${directions ? `<a class="btn btn-compact" href="${escapeHtml(directions)}" target="_blank" rel="noreferrer">Directions</a>` : ''}` +
-    `${page ? `<a class="btn btn-compact btn-ghost" href="${escapeHtml(page)}" target="_blank" rel="noreferrer">Station page</a>` : ''}` +
-    `<button type="button" class="btn btn-compact btn-ghost" data-ss-fetch${stationId == null ? ' disabled aria-label="Fetch live status unavailable — station id Unknown"' : ''}>Fetch live status</button>` +
-    `<button type="button" class="btn btn-compact btn-ghost" data-ss-show>Show in list</button>` +
+    `${directions ? `<a class="btn btn-compact" data-variant="secondary" data-size="sm" href="${escapeHtml(directions)}" target="_blank" rel="noreferrer">Directions</a>` : ''}` +
+    `${page ? `<a class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" href="${escapeHtml(page)}" target="_blank" rel="noreferrer">Station page</a>` : ''}` +
+    `<button type="button" class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" data-ss-fetch${stationId == null ? ' disabled aria-label="Fetch live status unavailable — station id Unknown"' : ''}>Fetch live status</button>` +
+    `<button type="button" class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" data-ss-show>Show in list</button>` +
     `</footer>`;
 }
 

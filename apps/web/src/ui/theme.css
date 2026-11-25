@@ -1,0 +1,161 @@
+/* ============================================================
+   IndEV UI kit: Basecoat (shadcn/ui components, no React) compiled by
+   Tailwind v4, themed for true AMOLED black.
+
+   - Only Tailwind's theme layer is loaded. Its preflight reset and
+     utility scanning stay off, so the app's own layout CSS is untouched.
+   - Basecoat lives in @layer components. App CSS is unlayered and loads
+     after this file, so any app rule that targets the same element wins.
+     Component looks (buttons, inputs, selects, badges, kbd, tooltips)
+     therefore come from here, and the app CSS only lays things out.
+   - Solid colours only: no gradients anywhere.
+   ============================================================ */
+
+@layer theme, base, components, utilities;
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'basecoat-css/base/base.css';
+/* Only the components the app renders; the rest of the kit is left out. */
+@import 'basecoat-css/components/button.css';
+@import 'basecoat-css/components/input.css';
+@import 'basecoat-css/components/native-select.css';
+@import 'basecoat-css/components/textarea.css';
+@import 'basecoat-css/components/kbd.css';
+@import 'basecoat-css/components/badge.css';
+@import 'basecoat-css/components/progress.css';
+@import 'basecoat-css/components/skeleton.css';
+@import 'basecoat-css/components/tooltip.css';
+/* The vega look, cut to the same components by basecoat-subset.ts. */
+@import './generated/basecoat-vega.css';
+
+/* shadcn tokens -> AMOLED. `html.dark` outranks Basecoat's `.dark`. */
+html.dark {
+  --radius: 0.75rem;
+  --background: #000000;
+  --foreground: #f5f5f2;
+  --card: #0a0a0a;
+  --card-foreground: #f5f5f2;
+  --popover: #0a0a0a;
+  --popover-foreground: #f5f5f2;
+  /* primary is the milestone-cap yellow: the one accent */
+  --primary: #ffc72c;
+  --primary-foreground: #000000;
+  --secondary: #141414;
+  --secondary-foreground: #f5f5f2;
+  --muted: #141414;
+  --muted-foreground: #8d8d87;
+  --accent: #1a1a1a;
+  --accent-foreground: #f5f5f2;
+  --destructive: #ff5c5c;
+  --border: #222222;
+  --input: #2a2a2a;
+  --ring: #ffc72c;
+  --chart-1: #ffc72c;
+  --chart-2: #f5f5f2;
+  --chart-3: #4ade80;
+  --chart-4: #ff9f43;
+  --chart-5: #ff5c5c;
+  color-scheme: dark;
+}
+
+@layer components {
+  /* Buttons: Basecoat variants, retuned for black. No sheen, no glare:
+     a colour change on hover, a 1px press, a ring on focus. */
+  .btn {
+    cursor: pointer;
+    font-family: inherit;
+    line-height: 1.25;
+    transition:
+      background-color 160ms ease,
+      border-color 160ms ease,
+      color 160ms ease,
+      transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  .btn:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+  .btn[data-variant='outline'] {
+    background: transparent;
+    border-color: var(--input);
+    box-shadow: none;
+  }
+  .btn[data-variant='outline']:hover:not(:disabled) {
+    background: #111111;
+    border-color: #3b3b3b;
+  }
+  .btn[data-variant='secondary']:hover:not(:disabled) {
+    background: #1c1c1c;
+  }
+  .btn:not([data-variant]):hover:not(:disabled),
+  .btn[data-variant='primary']:hover:not(:disabled) {
+    background: #ffd35e;
+  }
+  .btn[data-variant='destructive'] {
+    background: transparent;
+  }
+  .btn[data-variant='destructive']:hover:not(:disabled) {
+    background: rgba(255, 92, 92, 0.12);
+  }
+  .btn[data-size='sm'] {
+    font-size: 12.5px;
+  }
+  .btn[data-size='lg'] {
+    height: 3rem;
+    padding-inline: 1.25rem;
+    font-size: 15px;
+    font-weight: 600;
+    border-radius: 0.875rem;
+  }
+  /* a link-styled button keeps its text colour even when it is an <a> */
+  a.btn {
+    text-decoration: none;
+  }
+  .btn:disabled,
+  .btn[aria-disabled='true'] {
+    cursor: not-allowed;
+  }
+
+  /* Form controls use the shadcn input look; `.input`/`.select`/`.textarea`
+     are added in markup. Sizes are a touch larger than the default because
+     the planner is a touch-first form. */
+  .input,
+  select.select,
+  .textarea {
+    width: 100%;
+    font: inherit;
+    color: var(--foreground);
+    background-color: #0a0a0a;
+    border-color: var(--input);
+  }
+  .input:not([type='range']),
+  select.select {
+    height: 2.75rem;
+    font-size: 14px;
+    padding-inline: 0.875rem;
+  }
+  select.select {
+    padding-inline-end: 2.25rem;
+  }
+  .input:hover:not(:focus):not(:disabled),
+  select.select:hover:not(:focus):not(:disabled),
+  .textarea:hover:not(:focus):not(:disabled) {
+    border-color: #3b3b3b;
+  }
+  .input:focus-visible,
+  select.select:focus-visible,
+  .textarea:focus-visible {
+    background-color: #000;
+  }
+  select.select option {
+    background: #0a0a0a;
+    color: var(--foreground);
+  }
+
+  /* Basecoat's toast stack is not used (the app has a single live toast),
+     so its `.toast` absolute positioning must not leak onto the app's toast. */
+  #toast-root .toast {
+    position: relative;
+    inset: auto;
+    transform: none;
+    height: auto;
+  }
+}

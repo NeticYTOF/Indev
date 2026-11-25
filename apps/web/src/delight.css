@@ -61,7 +61,6 @@
 @keyframes rb-fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 @keyframes wheel { to { transform: rotate(360deg); } }
 @keyframes car-bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-1.5px); } }
-@keyframes go-shine { 0% { transform: translateX(-120%) skewX(-20deg); } 60%, 100% { transform: translateX(320%) skewX(-20deg); } }
 @keyframes road-dash { to { background-position: 40px 0; } }
 @keyframes jelly { 0% { transform: scale(1, 1); } 30% { transform: scale(1.18, .84); } 45% { transform: scale(.88, 1.12); } 60% { transform: scale(1.06, .95); } 75% { transform: scale(.98, 1.02); } 100% { transform: scale(1, 1); } }
 @keyframes swap-a { 0% { transform: none; } 50% { transform: translateY(46px) scale(.96); } 100% { transform: none; } }
@@ -97,11 +96,11 @@ html.delight body {
 }
 
 /* Hairline scrollbars that light up on hover */
-.panel, .drawer, .suggestions, .briefing-scroll {
+.panel, .trips-panel, .suggestions, .briefing-scroll {
   scrollbar-width: thin;
   scrollbar-color: #2a2a2a transparent;
 }
-.panel:hover, .drawer:hover { scrollbar-color: #4a4a4a transparent; }
+.panel:hover, .trips-panel:hover { scrollbar-color: #4a4a4a transparent; }
 
 /* ============================================================
    Chhotu — the mascot
@@ -306,20 +305,6 @@ html.boot-on .boot-word span { animation-timing-function: var(--spring); animati
    Map: a living night
    ============================================================ */
 
-/* A faint dot grid over the map + a cursor spotlight (no gradient
-   colours: one solid dot colour, masked by a radial mask). */
-#app::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-  background-image: radial-gradient(circle at 1px 1px, #1d1d1d 1px, transparent 1.4px);
-  background-size: 26px 26px;
-  opacity: .55;
-  -webkit-mask-image: radial-gradient(420px circle at var(--mx, 70%) var(--my, 40%), #000 0, transparent 100%);
-  mask-image: radial-gradient(420px circle at var(--mx, 70%) var(--my, 40%), #000 0, transparent 100%);
-}
 #map { z-index: 0; }
 
 html.is-planning #map .maplibregl-canvas { filter: brightness(.7) saturate(.6); transition: filter 600ms ease; }
@@ -399,7 +384,7 @@ html.is-planning #map .maplibregl-canvas { filter: brightness(.7) saturate(.6); 
    ============================================================ */
 
 .top-cluster { gap: 10px; }
-.badge {
+.status-pill {
   font-weight: 600;
   padding: 8px 14px 8px 12px;
   transition: transform 300ms var(--spring), border-color 200ms ease;
@@ -409,8 +394,7 @@ html.is-planning #map .maplibregl-canvas { filter: brightness(.7) saturate(.6); 
   font-weight: 600;
   padding: 8px 16px;
   min-height: 38px;
-  transform: translate(var(--mag-x, 0), var(--mag-y, 0));
-  transition: transform 260ms var(--spring), background-color 200ms ease, border-color 200ms ease, color 200ms ease;
+  transition: background-color 200ms ease, border-color 200ms ease, color 200ms ease;
 }
 .chip-btn svg { transition: transform 400ms var(--spring); }
 .chip-btn[aria-expanded='true'] svg { transform: translateX(3px) rotate(-6deg); }
@@ -421,52 +405,18 @@ html.is-planning #map .maplibregl-canvas { filter: brightness(.7) saturate(.6); 
 .chip-btn[aria-expanded='true'] { background: var(--cap); border-color: var(--cap); color: #000; }
 
 /* ============================================================
-   Buttons: springy, rippling, magnetic
+   Buttons: calm. The kit gives colour + press; the go button is the
+   one hero control, so only it gets a bigger shape and an arrow.
    ============================================================ */
 
-.btn, .chip-btn, .sheet-fab, .stepper-btn, .planner-swap, .suggestion-item { overflow: hidden; isolation: isolate; }
-.ripple {
-  position: absolute;
-  border-radius: 50%;
-  background: currentColor;
-  pointer-events: none;
-  z-index: -1;
-}
-.btn {
-  border-radius: 12px;
-  font-weight: 600;
-  transition: background-color 200ms ease, border-color 200ms ease, color 200ms ease, transform 320ms var(--spring);
-}
-.btn:active:not(:disabled) { transform: scale(.94); transition-duration: 80ms; }
-@media (hover: hover) and (pointer: fine) {
-  .btn-ghost:hover:not(:disabled) { transform: translateY(-2px); border-color: #4a4a4a; }
-}
-.btn-ghost { color: var(--ink); }
-
-/* The big go button: highway sign yellow, a shine sweeps across it */
 .planner-go {
-  min-height: 62px;
-  border-radius: 18px;
+  width: 100%;
+  min-height: 56px;
+  border-radius: 16px;
   font-family: var(--display);
-  font-size: 19px;
+  font-size: 18px;
   font-weight: 800;
   letter-spacing: -0.02em;
-  transform: translate(var(--mag-x, 0), var(--mag-y, 0));
-  box-shadow: 0 0 0 0 rgba(255, 199, 44, 0);
-  transition: transform 300ms var(--spring), box-shadow 300ms ease, background-color 200ms ease;
-}
-.planner-go:not(:disabled)::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 34%;
-  background: #fff6d4;
-  opacity: .5;
-  pointer-events: none;
-  animation: go-shine 3.6s var(--ease-in-out) 2s infinite;
-  z-index: -1;
 }
 .planner-go:not(:disabled)::after {
   content: '';
@@ -479,10 +429,8 @@ html.is-planning #map .maplibregl-canvas { filter: brightness(.7) saturate(.6); 
   transition: transform 300ms var(--spring);
 }
 @media (hover: hover) and (pointer: fine) {
-  .planner-go:not(:disabled):hover { box-shadow: 0 0 0 6px rgba(255, 199, 44, .18); }
-  .planner-go:not(:disabled):hover::after { transform: translateX(6px); }
+  .planner-go:not(:disabled):hover::after { transform: translateX(5px); }
 }
-.planner-go:active:not(:disabled) { transform: scale(.96); }
 /* waiting: the button becomes a tiny road with a car driving on it */
 .planner-go:disabled {
   background: #0d0d0d;
@@ -515,21 +463,6 @@ html.is-planning #map .maplibregl-canvas { filter: brightness(.7) saturate(.6); 
   background: #000;
   border-right: 1px solid #191919;
 }
-/* the panel's own cursor spotlight on its edge rail */
-.panel::after {
-  content: '';
-  position: fixed;
-  top: 0;
-  bottom: 0;
-  left: calc(var(--panel-w) - 1px);
-  width: 1px;
-  background: var(--cap);
-  pointer-events: none;
-  -webkit-mask-image: radial-gradient(180px circle at 50% var(--my, -400px), #000, transparent);
-  mask-image: radial-gradient(180px circle at 50% var(--my, -400px), #000, transparent);
-  z-index: 25;
-}
-
 .planner-form { gap: 24px; padding-top: 24px; }
 
 /* Brand: bigger, chunkier, playful */
@@ -674,20 +607,11 @@ html.is-planning .hero-lane { animation-duration: .35s; opacity: 1; }
   letter-spacing: 0;
   color: var(--ink-3);
 }
-.search-box input {
-  min-height: 56px;
-  border-radius: 16px;
+.search-box input.input {
+  height: 52px;
+  border-radius: 14px;
   font-size: 16px;
   font-weight: 600;
-  border: 1.5px solid #242424;
-  background: #0a0a0a;
-  transition: border-color 220ms ease, background-color 220ms ease, box-shadow 320ms var(--spring), transform 320ms var(--spring);
-}
-.search-box input:focus {
-  border-color: var(--cap);
-  background: #000;
-  box-shadow: 0 0 0 4px rgba(255, 199, 44, .16);
-  transform: scale(1.01);
 }
 .search-box.just-picked input { animation: picked-flash 700ms var(--ease); border-color: var(--leaf); }
 .search-box.just-picked .search-icon { animation: jelly 560ms var(--ease); }
@@ -748,7 +672,7 @@ html.is-planning .hero-lane { animation-duration: .35s; opacity: 1; }
   animation: float-up 300ms var(--ease) backwards;
   transition: background-color 120ms ease, color 120ms ease, padding-left 220ms var(--spring);
 }
-.suggestion-item:not(.empty)::before {
+.suggestion-item:not(.is-empty)::before {
   content: '';
   position: absolute;
   left: 14px;
@@ -767,7 +691,7 @@ html.is-planning .hero-lane { animation-duration: .35s; opacity: 1; }
 .suggestion-item:nth-child(4) { animation-delay: 90ms; }
 .suggestion-item:nth-child(5) { animation-delay: 120ms; }
 .suggestion-item:nth-child(n + 6) { animation-delay: 150ms; }
-.suggestion-item.empty { padding-left: 14px; font-style: normal; }
+.suggestion-item.is-empty { padding-left: 14px; font-style: normal; }
 
 /* ============================================================
    Vehicle + charge
@@ -776,13 +700,7 @@ html.is-planning .hero-lane { animation-duration: .35s; opacity: 1; }
 .vehicle-label, .field-row.soc-row > label, .search-label {
   font-family: var(--display);
 }
-.vehicle select, .vehicle-select, select[data-vehicle] {
-  border-radius: 16px !important;
-  min-height: 54px;
-  font-weight: 600;
-  transition: border-color 200ms ease, box-shadow 300ms var(--spring);
-}
-select[data-vehicle]:focus { border-color: var(--cap) !important; box-shadow: 0 0 0 4px rgba(255, 199, 44, .16); outline: none; }
+select.select[data-vehicle] { height: 50px; border-radius: 14px; font-weight: 600; }
 /* ---- Vehicle showroom: cutout car on a lit, reflective floor ---- */
 .vehicle-photo-panel { border-radius: 22px; overflow: hidden; }
 .vehicle-photo-card {
@@ -802,16 +720,12 @@ select[data-vehicle]:focus { border-color: var(--cap) !important; box-shadow: 0 
 }
 .vehicle-stage-spot {
   position: absolute; inset: -30% 10% 22%;
-  background: radial-gradient(closest-side, rgba(255, 199, 44, .16), rgba(255, 199, 44, .05) 55%, transparent 72%);
-  filter: blur(4px);
-  animation: stage-spot 5.5s ease-in-out infinite alternate;
+  display: none;
   z-index: -1;
 }
 .vehicle-stage-floor {
   position: absolute; left: -10%; right: -10%; bottom: 0; height: 38%;
-  background:
-    repeating-linear-gradient(90deg, rgba(255,255,255,.05) 0 1px, transparent 1px 34px),
-    linear-gradient(180deg, #0b0b0b, #000 85%);
+  background: repeating-linear-gradient(90deg, #141414 0 1px, #000 1px 34px);
   transform: perspective(240px) rotateX(58deg);
   transform-origin: 50% 100%;
   border-top: 1px solid #222;
@@ -820,8 +734,6 @@ select[data-vehicle]:focus { border-color: var(--cap) !important; box-shadow: 0 
 }
 .vehicle-stage-car {
   position: absolute; left: 4%; right: 4%; top: 8px; bottom: 34px;
-  transform: rotateY(calc(var(--tilt-x) * 9deg)) rotateX(calc(var(--tilt-y) * -5deg)) translateX(calc(var(--tilt-x) * 10px));
-  transition: transform 500ms var(--spring);
   animation: car-drive-in 900ms var(--spring) backwards;
 }
 .vehicle-photo-card .vehicle-photo-image,
@@ -842,9 +754,7 @@ select[data-vehicle]:focus { border-color: var(--cap) !important; box-shadow: 0 
   object-position: center top;
   transform: scaleY(-1);
   opacity: .28;
-  -webkit-mask-image: linear-gradient(0deg, transparent 72%, #000);
-  mask-image: linear-gradient(0deg, transparent 72%, #000);
-  filter: blur(1.5px);
+  display: none;
   pointer-events: none;
 }
 .vehicle-photo-card .vehicle-photo-credit { padding: 0 14px; margin-top: 4px; }
@@ -1023,12 +933,11 @@ select[data-vehicle]:focus { border-color: var(--cap) !important; box-shadow: 0 
 .rb-car svg { width: 100%; height: 100%; overflow: visible; }
 .rb-car .car-wheel { transform-box: fill-box; transform-origin: center; }
 
-/* Stat cells: tilt + shine on hover; numbers tick up */
+/* Stat cells: settle in; numbers tick up */
 .trip-strip { border-radius: 22px; border-width: 1.5px; gap: 1.5px; perspective: 800px; }
 .strip-cell {
   padding: 18px 16px 16px;
-  transform: perspective(500px) rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg));
-  transition: transform 300ms var(--spring), background-color 200ms ease;
+  transition: background-color 200ms ease;
   animation: pop-in 520ms var(--spring) backwards;
 }
 .strip-cell:nth-child(1) { animation-delay: 120ms; }
@@ -1037,24 +946,7 @@ select[data-vehicle]:focus { border-color: var(--cap) !important; box-shadow: 0 
 .strip-cell:nth-child(4) { animation-delay: 300ms; }
 .strip-cell:nth-child(5) { animation-delay: 360ms; }
 .strip-cell:nth-child(6) { animation-delay: 420ms; }
-.strip-cell::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: var(--shine-x, -40%);
-  width: 60px;
-  margin-left: -30px;
-  background: #ffffff;
-  opacity: 0;
-  transform: skewX(-18deg);
-  pointer-events: none;
-  transition: opacity 200ms ease;
-}
-@media (hover: hover) and (pointer: fine) {
-  .strip-cell:hover { background: #0b0b0b; }
-  .strip-cell:hover::after { opacity: .04; }
-}
+.strip-cell:hover { background: #0b0b0b; }
 .strip-num { font-family: var(--display); font-size: 22px; font-weight: 800; letter-spacing: -0.045em; position: relative; overflow: visible; text-overflow: clip; }
 .trip-strip .strip-cell:first-child { grid-column: 1 / -1; }
 .trip-strip .strip-cell.accent { grid-column: span 2; }
@@ -1084,8 +976,6 @@ select[data-vehicle]:focus { border-color: var(--cap) !important; box-shadow: 0 
   font-family: var(--display);
   font-weight: 800;
   font-size: 14px;
-  transform: translate(var(--mag-x, 0), var(--mag-y, 0));
-  animation: glow-pulse 2.4s ease-in-out 1.6s 3;
 }
 .plan-actions [data-save]:disabled { opacity: 1; color: var(--leaf); border-color: var(--ok-border); background: #000; }
 .plan-actions [data-save]:disabled::before {
@@ -1163,7 +1053,7 @@ select[data-vehicle]:focus { border-color: var(--cap) !important; box-shadow: 0 
    Saved trips drawer: the road diary
    ============================================================ */
 
-.drawer {
+.trips-panel {
   border-radius: 26px;
   border: 1.5px solid #242424;
   transform-origin: top right;
@@ -1171,9 +1061,9 @@ select[data-vehicle]:focus { border-color: var(--cap) !important; box-shadow: 0 
 }
 @keyframes drawer-pop { 0% { opacity: 0; } 100% { opacity: 1; } }
 @keyframes drawer-content { 0% { opacity: 0; transform: translateY(-12px); } 100% { opacity: 1; transform: none; } }
-.drawer > * { animation: drawer-content 460ms var(--spring) backwards; }
-.drawer > :nth-child(2) { animation-delay: 50ms; }
-.drawer > :nth-child(n + 3) { animation-delay: 100ms; }
+.trips-panel > * { animation: drawer-content 460ms var(--spring) backwards; }
+.trips-panel > :nth-child(2) { animation-delay: 50ms; }
+.trips-panel > :nth-child(n + 3) { animation-delay: 100ms; }
 .drawer-head { align-items: center; gap: 10px 12px; padding: 16px 18px; flex-wrap: wrap; }
 .drawer-head > div:not(.drawer-mascot):not(.drawer-head-actions) { flex: 1 1 180px; min-width: 0; }
 .drawer-head-actions { margin-left: auto; }
@@ -1186,12 +1076,9 @@ select[data-vehicle]:focus { border-color: var(--cap) !important; box-shadow: 0 
   border-width: 1.5px !important;
   animation: row-swing 520ms var(--spring-soft) backwards;
   animation-delay: calc(var(--ri, 0) * 60ms);
-  transform: perspective(600px) rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg));
-  transition: transform 300ms var(--spring), border-color 200ms ease;
+  transition: border-color 200ms ease;
 }
 .trip-name { font-family: var(--display); font-weight: 700; }
-.trip-search, .trip-sort { border-radius: 14px; border-width: 1.5px; transition: border-color 200ms ease, box-shadow 300ms var(--spring); }
-.trip-search:focus, .trip-sort:focus { border-color: var(--cap); box-shadow: 0 0 0 4px rgba(255, 199, 44, .14); outline: none; }
 
 .empty-road { padding: 18px 8px 6px; text-align: center; }
 .empty-road p { margin: 12px 0 0; font: 700 15px/1.4 var(--display); color: var(--ink-2); }
@@ -1462,7 +1349,7 @@ html.disco #app { animation: disco 3s linear infinite; }
 .shortcut-card kbd + kbd { margin-left: -4px; }
 .shortcut-card em { font-style: normal; color: var(--ink-4); font-size: 12.5px; margin-top: 4px; }
 
-html.is-offline .badge { opacity: .5; }
+html.is-offline .status-pill { opacity: .5; }
 html.is-offline .mascot-dock .ch-cap { fill: #6e6e69; }
 
 @media print { .quick-routes, .shortcut-card, .field-tick, .field-nudge { display: none !important; } }

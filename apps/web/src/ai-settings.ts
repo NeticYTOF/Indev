@@ -87,20 +87,20 @@ export function aiSettingsMarkup(): string {
         <div class="ai-settings-row">
           <div class="ai-field">
             <label for="ai-provider" class="search-label">Provider</label>
-            <select id="ai-provider" data-ai-provider></select>
+            <select class="select" id="ai-provider" data-ai-provider></select>
           </div>
           <div class="ai-field">
             <label for="ai-model" class="search-label">Model (optional)</label>
-            <input id="ai-model" data-ai-model type="text" autocomplete="off" spellcheck="false" maxlength="128" />
+            <input class="input" id="ai-model" data-ai-model type="text" autocomplete="off" spellcheck="false" maxlength="128" />
           </div>
         </div>
         <label for="ai-key" class="search-label">API key</label>
         <div class="ai-key-row">
-          <input id="ai-key" data-ai-key type="password" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="512" placeholder="Paste your key" aria-describedby="ai-key-status ai-privacy" />
-          <button type="button" class="btn btn-compact" data-ai-key-save>Save key on this device</button>
+          <input class="input" id="ai-key" data-ai-key type="password" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="512" placeholder="Paste your key" aria-describedby="ai-key-status ai-privacy" />
+          <button type="button" class="btn btn-compact" data-variant="secondary" data-size="sm" data-ai-key-save>Save key on this device</button>
         </div>
         <div class="ai-key-status" id="ai-key-status" data-ai-key-status role="status" aria-live="polite">No AI key saved on this device.</div>
-        <button type="button" class="btn btn-compact btn-ghost ai-key-remove hidden" data-ai-key-remove>Remove key</button>
+        <button type="button" class="btn btn-compact btn-ghost ai-key-remove hidden" data-variant="outline" data-size="sm" data-ai-key-remove>Remove key</button>
         <p class="hint ai-privacy" id="ai-privacy">
           Your key is encrypted and stored only in this browser. It is sent only with AI planning requests,
           through this app's server to the provider you chose, and is never saved on the server.

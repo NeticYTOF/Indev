@@ -22,6 +22,7 @@ import { renderDecisionExplanation, type DecisionConstraints } from './decision-
 import { renderWarningGroupsMarkup } from './warning-presentation.js';
 import { formatLegKm, tripLegs, type LegInfo } from './leg-distance.js';
 import { renderChargerList } from './stop-sheet.js';
+import { mountChargeChart, type ChargeChartSource } from './ui/charge-chart.js';
 
 export function renderPlanPanel(
   panel: HTMLElement,
@@ -126,20 +127,25 @@ export function renderPlanPanel(
         const to = link.endsAtDestination ? 'destination' : `charger ${link.lastStop}`;
         const range = `${from} → ${to}`;
         const prefix = link.total > 1 ? `Part ${link.part} of ${link.total}: ` : '';
-        return `<a class="btn btn-ghost" data-gmaps href="${escapeHtml(link.url)}" target="_blank" rel="noreferrer">Google Maps directions — ${escapeHtml(prefix + range)}</a>`;
+        return `<a class="btn btn-ghost" data-variant="outline" data-gmaps href="${escapeHtml(link.url)}" target="_blank" rel="noreferrer">Google Maps directions — ${escapeHtml(prefix + range)}</a>`;
       }).join('') + '</div>';
   const actions = el(`
     <div class="plan-actions">
-      <button type="button" class="btn btn-ghost" data-save>Trip is not saved yet — click to save</button>
-      <button type="button" class="btn btn-ghost" data-export>Animated export</button>
-      <button type="button" class="btn btn-ghost" data-itinerary-export>Journey itinerary (HTML)</button>
-      <button type="button" class="btn btn-ghost" data-print>Print itinerary</button>
+      <button type="button" class="btn btn-ghost" data-variant="outline" data-save>Trip is not saved yet — click to save</button>
+      <button type="button" class="btn btn-ghost" data-variant="outline" data-export>Animated export</button>
+      <button type="button" class="btn btn-ghost" data-variant="outline" data-itinerary-export>Journey itinerary (HTML)</button>
+      <button type="button" class="btn btn-ghost" data-variant="outline" data-print>Print itinerary</button>
       ${mapsMarkup}
     </div>
   `);
   results.appendChild(actions);
 
   wirePlanActions(actions as HTMLElement, raw as unknown as TripPlan);
+
+  // ---- battery chart: the planned charge along the route (fact-built) ----
+  const chart = document.createElement('section');
+  chart.setAttribute('aria-label', 'Battery along the route');
+  if (mountChargeChart(chart, raw as ChargeChartSource)) results.appendChild(chart);
 
   // ---- journey briefing: whole-trip legs, battery profile, itinerary ----
   results.appendChild(el(renderJourneyBriefingMarkup(raw as unknown as TripPlan,
@@ -196,7 +202,7 @@ function wirePlanActions(actions: HTMLElement, plan: TripPlan): void {
       if (!savedTripId) {
         btn.textContent = 'Save status unknown';
         const banner = storageWarningElement('Save could not be confirmed. Check saved trips before trying again.');
-        const controls = el(`<div class="plan-actions"><button type="button" class="btn btn-compact btn-ghost" data-check-saved>Check saved trips</button><button type="button" class="btn btn-compact btn-ghost" data-enable-save>Enable save retry</button></div>`);
+        const controls = el(`<div class="plan-actions"><button type="button" class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" data-check-saved>Check saved trips</button><button type="button" class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" data-enable-save>Enable save retry</button></div>`);
         controls.querySelector('[data-check-saved]')?.addEventListener('click', () => {
           if (!btn.isConnected) return;
           const owner = document.getElementById('trips-button');
@@ -401,10 +407,10 @@ function renderStopCard(stop: unknown, index: number, legIn: LegInfo | null = nu
         </div>
       </div>
       <div class="stop-foot">
-        <button type="button" class="btn btn-compact" data-stop-details="${index}">Charger details</button>
-        ${directionsUrl ? `<a class="btn btn-compact btn-ghost" href="${escapeHtml(directionsUrl)}" target="_blank" rel="noreferrer">Directions</a>` : '<span class="hint">Directions unavailable</span>'}
-        ${stationPageUrl ? `<a class="btn btn-compact btn-ghost" href="${escapeHtml(stationPageUrl)}" target="_blank" rel="noreferrer">Station page</a>` : ''}
-        <button type="button" class="btn btn-compact btn-ghost" data-refresh="${stationId != null ? escapeHtml(String(stationId)) : ''}"${stationId == null ? ' disabled aria-label="Revalidate unavailable — station id Unknown"' : ''}>Revalidate</button>
+        <button type="button" class="btn btn-compact" data-variant="secondary" data-size="sm" data-stop-details="${index}">Charger details</button>
+        ${directionsUrl ? `<a class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" href="${escapeHtml(directionsUrl)}" target="_blank" rel="noreferrer">Directions</a>` : '<span class="hint">Directions unavailable</span>'}
+        ${stationPageUrl ? `<a class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" href="${escapeHtml(stationPageUrl)}" target="_blank" rel="noreferrer">Station page</a>` : ''}
+        <button type="button" class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" data-refresh="${stationId != null ? escapeHtml(String(stationId)) : ''}"${stationId == null ? ' disabled aria-label="Revalidate unavailable — station id Unknown"' : ''}>Revalidate</button>
       </div>
     </article>
   `);

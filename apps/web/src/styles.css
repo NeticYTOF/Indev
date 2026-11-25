@@ -389,7 +389,7 @@ html.boot-on .boot {
   animation: rise 520ms var(--ease) calc(var(--boot) + 260ms) backwards;
 }
 
-.badge {
+.status-pill {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -404,7 +404,7 @@ html.boot-on .boot {
   animation: fade 300ms ease backwards;
 }
 
-.badge .dot {
+.status-pill .dot {
   position: relative;
   width: 7px;
   height: 7px;
@@ -413,7 +413,7 @@ html.boot-on .boot {
   flex: none;
 }
 
-.badge .dot::after {
+.status-pill .dot::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -422,12 +422,12 @@ html.boot-on .boot {
   animation: ping 2s var(--ease) infinite;
 }
 
-.badge.live {
+.status-pill.live {
   border-color: var(--ok-border);
   color: var(--ok);
 }
 
-.badge.synthetic {
+.status-pill.synthetic {
   border-color: var(--synthetic-border);
   color: var(--synthetic);
 }
@@ -496,7 +496,7 @@ html.boot-on .boot {
 }
 
 /* The saved-trips drawer opens from its button (top right). */
-.drawer {
+.trips-panel {
   position: absolute;
   top: calc(var(--cluster-offset) + 50px + var(--safe-t));
   right: var(--cluster-offset);
@@ -521,81 +521,11 @@ html.boot-on .boot {
    Buttons
    ============================================================ */
 
-.btn {
-  appearance: none;
-  position: relative;
-  border: 1px solid transparent;
-  border-radius: var(--r-sm);
-  font: inherit;
-  font-weight: 500;
-  font-size: var(--text-sm);
-  line-height: 1.3;
-  text-align: center;
-  text-decoration: none;
-  cursor: pointer;
-  color: var(--ink);
-  background: var(--surface-2);
-  transition: background-color var(--t-fast) ease, border-color var(--t-fast) ease,
-    color var(--t-fast) ease, transform var(--t-fast) var(--ease);
-  min-height: 38px;
-  padding: 8px 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-}
-
-.btn:active:not(:disabled) {
-  transform: scale(0.97);
-}
-
-.btn:focus-visible {
-  outline: 2px solid var(--cap);
-  outline-offset: 2px;
-}
-
-.btn:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
-}
-
-.btn-primary {
-  background: var(--cap);
-  color: #000;
-  font-weight: 600;
-}
-
-.btn-ghost {
-  background: transparent;
-  border-color: var(--line-2);
-  color: var(--ink-2);
-}
-
-.btn-danger-ghost {
-  background: transparent;
-  border-color: transparent;
-  color: var(--bad);
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .btn-primary:hover:not(:disabled) { background: var(--accent-strong); }
-  .btn-ghost:hover:not(:disabled) {
-    background: var(--surface-1);
-    border-color: var(--line-3);
-    color: var(--ink);
-  }
-  .btn-danger-ghost:hover:not(:disabled) {
-    background: var(--bad-soft);
-    border-color: var(--bad-border);
-  }
-}
-
-.btn-compact {
-  min-height: 30px;
-  padding: 5px 11px;
-  font-size: var(--text-xs);
-  border-radius: var(--r-xs);
-}
+/* Button looks come from the UI kit (ui/theme.css, Basecoat). The app only
+   keeps the planner-specific sizes it needs. */
+.btn { position: relative; gap: 8px; }
+.btn-compact { white-space: normal; height: auto; min-height: 32px; }
+.btn:not(.btn-compact):not(.planner-go) { white-space: normal; height: auto; min-height: 38px; }
 
 .spinner {
   width: 15px;
@@ -856,40 +786,15 @@ html.boot-on .boot {
 }
 
 .search-box input {
-  width: 100%;
-  font: inherit;
+  /* look: ui kit (.input); only the planner's larger touch size lives here */
   font-size: var(--text-md);
   font-weight: 500;
-  color: var(--ink);
-  background: var(--surface-1);
-  border: 1px solid var(--line-2);
-  border-radius: var(--r-md);
-  padding: 12px 14px;
-  min-height: 48px;
-  transition: border-color var(--t-fast) ease, background-color var(--t-fast) ease,
-    box-shadow var(--t-fast) ease;
-}
-
-.search-box input:focus {
-  outline: none;
-  background: #000;
-  border-color: var(--ink-2);
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
-}
-
-.search-box input::placeholder {
-  color: var(--ink-4);
 }
 
 .search-box input::-webkit-search-cancel-button {
   filter: invert(0.7);
 }
 
-@media (hover: hover) and (pointer: fine) {
-  .search-box input:hover:not(:focus) {
-    border-color: var(--line-3);
-  }
-}
 
 /* --- route fields: A and B on a highway --- */
 
@@ -1047,7 +952,7 @@ html.boot-on .boot {
   color: var(--ink);
 }
 
-.suggestion-item.empty {
+.suggestion-item.is-empty {
   color: var(--ink-2);
   cursor: default;
 }
@@ -1068,48 +973,7 @@ html.boot-on .boot {
   margin-bottom: -3px;
 }
 
-.vehicle select,
-.vehicle input,
-.custom-vehicle input,
-.real-world-range input {
-  width: 100%;
-  font: inherit;
-  font-size: var(--text-base);
-  font-weight: 500;
-  color: var(--ink);
-  background: var(--surface-1);
-  border: 1px solid var(--line-2);
-  border-radius: var(--r-md);
-  padding: 11px 14px;
-  min-height: 46px;
-  transition: border-color var(--t-fast) ease, background-color var(--t-fast) ease,
-    box-shadow var(--t-fast) ease;
-}
-
-.vehicle select:focus,
-.vehicle input:focus,
-.custom-vehicle input:focus,
-.real-world-range input:focus {
-  outline: none;
-  background: #000;
-  border-color: var(--ink-2);
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
-}
-
-.vehicle select {
-  appearance: none;
-  -webkit-appearance: none;
-  padding-right: 40px;
-  cursor: pointer;
-  background: var(--surface-1)
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%23B6B6B0' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E")
-    no-repeat right 15px center;
-}
-
-.vehicle select option {
-  background: #0b0b0b;
-  color: var(--ink);
-}
+.vehicle select { cursor: pointer; }
 
 .vehicle-claim {
   margin: 0;
@@ -1507,35 +1371,9 @@ html.boot-on .boot {
   gap: 10px;
 }
 
-.ai-box textarea,
-.ai-box input {
-  width: 100%;
-  font: inherit;
-  font-size: var(--text-base);
-  color: var(--ink);
-  background: #000;
-  border: 1px solid var(--line-2);
-  border-radius: var(--r-md);
-  padding: 11px 14px;
-  min-height: 46px;
-  transition: border-color var(--t-fast) ease, box-shadow var(--t-fast) ease;
-}
-
 .ai-box textarea {
-  min-height: 64px;
+  min-height: 72px;
   resize: vertical;
-}
-
-.ai-box textarea:focus,
-.ai-box input:focus {
-  outline: none;
-  border-color: var(--ink-2);
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
-}
-
-.ai-box textarea::placeholder,
-.ai-box input::placeholder {
-  color: var(--ink-4);
 }
 
 /* ============================================================
@@ -1991,7 +1829,7 @@ details.warning-group[open] > :not(summary) {
   overflow: hidden;
 }
 
-.briefing-meter.empty {
+.briefing-meter.is-empty {
   opacity: 0.45;
 }
 
@@ -2689,29 +2527,6 @@ details:not([open]) *::after {
 .trip-search,
 .trip-sort {
   min-width: 0;
-  border: 1px solid var(--line-2);
-  border-radius: var(--r-sm);
-  background: var(--surface-1);
-  color: var(--ink);
-  font: inherit;
-  padding: 9px 11px;
-  transition: border-color var(--t-fast) ease;
-}
-
-.trip-sort option {
-  background: #0b0b0b;
-  color: var(--ink);
-}
-
-.trip-search:focus,
-.trip-sort:focus {
-  border-color: var(--ink-2);
-  outline: 2px solid rgba(255, 255, 255, 0.1);
-  outline-offset: 1px;
-}
-
-.trip-search::placeholder {
-  color: var(--ink-3);
 }
 
 .trip-list-result-count {
@@ -2934,7 +2749,7 @@ details:not([open]) *::after {
     right: 10px;
     gap: 6px;
   }
-  .badge {
+  .status-pill {
     max-width: 150px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -3004,7 +2819,7 @@ details:not([open]) *::after {
     font-size: 22px;
   }
 
-  .drawer {
+  .trips-panel {
     top: calc(52px + var(--safe-t));
     left: 10px;
     right: 10px;
@@ -3047,7 +2862,7 @@ details:not([open]) *::after {
   }
 
   /* Drawer open: drop toasts below its sticky head so the title and the
-     Close control stay visible. 52px mirrors .drawer; 54px clears the head. */
+     Close control stay visible. 52px mirrors .trips-panel; 54px clears the head. */
   #trips-drawer:not(.hidden) ~ #toast-root {
     top: calc(52px + var(--safe-t) + 54px);
   }
@@ -3215,17 +3030,17 @@ body.comparing-trips .panel {
   margin: 12px 0;
 }
 
-.badge-synthetic {
+.status-pill-synthetic {
   color: var(--synthetic);
   border-color: var(--synthetic-border);
 }
 
-.badge-warn {
+.status-pill-warn {
   color: var(--warn);
   border-color: var(--warn-border);
 }
 
-.badge-soft {
+.status-pill-soft {
   color: var(--ink-2);
   border-color: var(--line-2);
 }
@@ -3411,7 +3226,7 @@ body.comparing-trips .panel {
   #map,
   .top-cluster,
   .sheet-fab,
-  .drawer,
+  .trips-panel,
   #toast-root,
   .planner,
   .plan-head,

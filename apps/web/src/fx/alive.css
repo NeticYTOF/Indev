@@ -10,8 +10,7 @@
 .fxl-rail.is-on { opacity: 1; }
 .fxl-rail i {
   position: absolute; top: 0; bottom: 0; left: 0; width: 38%;
-  background: linear-gradient(90deg, transparent, var(--cap) 60%, #fff3c4);
-  box-shadow: 0 0 10px rgba(255, 199, 44, .7);
+  background: var(--cap);
   transform: translateX(-100%);
 }
 .fxl-rail.is-on i { animation: fxl-rail 1.15s cubic-bezier(.45, 0, .25, 1) infinite; }
@@ -24,12 +23,11 @@
 .search-box.fxl-searching::after {
   content: ''; position: absolute; left: 14px; right: 14px; bottom: 6px; height: 2px; border-radius: 2px;
   pointer-events: none;
-  background: linear-gradient(90deg, transparent, var(--cap), transparent) no-repeat;
-  background-size: 40% 100%;
+  right: auto; width: 30%; background: var(--cap);
   animation: fxl-scan 900ms ease-in-out infinite alternate;
   opacity: .9;
 }
-@keyframes fxl-scan { from { background-position: 0% 0; } to { background-position: 100% 0; } }
+@keyframes fxl-scan { from { transform: translateX(0); } to { transform: translateX(calc(100cqw - 28px)); } }
 .suggestions.fxl-landed { animation: fxl-land 320ms var(--spring-soft, ease) both; }
 @keyframes fxl-land { from { opacity: .4; transform: translateY(-4px) scale(.99); } }
 
@@ -72,11 +70,10 @@
 .fxl-skel-row b { display: block; height: 9px; border-radius: 5px; }
 .fxl-skel-row b:first-child { width: 70%; } .fxl-skel-row b:last-child { width: 42%; }
 .fxl-skel-row i, .fxl-skel-row b {
-  background: linear-gradient(90deg, #0e0e0e 0%, #1c1c1c 50%, #0e0e0e 100%);
-  background-size: 200% 100%;
-  animation: fxl-shimmer 1.3s linear infinite;
+  background: #111;
+  animation: fxl-shimmer 1.3s ease-in-out infinite;
 }
-@keyframes fxl-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@keyframes fxl-shimmer { 50% { background-color: #1c1c1c; } }
 @keyframes fxl-skel-in { from { opacity: 0; transform: translateY(6px); } }
 
 /* ============ connection pill ============ */

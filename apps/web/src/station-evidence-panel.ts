@@ -222,8 +222,8 @@ function plannedEvidenceMarkup(options: EvidencePanelOptions): string {
       `${evidence?.synthetic ? '<div class="banner banner-synthetic">Synthetic planned station — fixed sample, not live charger data.</div>' : ''}` +
       `${emptySnapshot}</div>`;
   const links = options.includeLinks === false ? '' : `<div class="evidence-links">` +
-    `${directions ? `<a class="btn btn-compact btn-ghost" href="${escapeHtml(directions)}" target="_blank" rel="noreferrer">Directions</a>` : '<span class="hint">Directions unavailable</span>'}` +
-    `${external ? `<a class="btn btn-compact btn-ghost" href="${escapeHtml(external)}" target="_blank" rel="noreferrer">Station page</a>` : ''}` +
+    `${directions ? `<a class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" href="${escapeHtml(directions)}" target="_blank" rel="noreferrer">Directions</a>` : '<span class="hint">Directions unavailable</span>'}` +
+    `${external ? `<a class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" href="${escapeHtml(external)}" target="_blank" rel="noreferrer">Station page</a>` : ''}` +
     `</div>`;
   return `<section class="evidence-section" aria-label="Planned charging facts">` +
     `<h4>Planned snapshot from the trip</h4>` +

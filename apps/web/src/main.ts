@@ -7,6 +7,10 @@ import '@fontsource/geist-sans/600.css';
 import '@fontsource/geist-sans/700.css';
 import '@fontsource/doto/900.css';
 import '@fontsource-variable/bricolage-grotesque';
+import '@fontsource/geist-mono/400.css';
+import '@fontsource/geist-mono/500.css';
+// UI kit first: Basecoat (shadcn/ui components) under the app's own layout CSS.
+import './ui/theme.css';
 import './styles.css';
 import './delight.css';
 import { installMotion } from './motion.js';
@@ -18,6 +22,7 @@ import { installDrawerFx } from './fx/drawer.js';
 import { installAliveFx } from './fx/alive.js';
 import './ai-settings.css';
 import './stop-sheet.css';
+import './ui/charge-chart.css';
 // Calm layer is imported last so its overrides win the cascade.
 import './fx/calm.css';
 import { api, type HealthInfo } from './api.js';

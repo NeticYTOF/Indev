@@ -160,20 +160,12 @@ function decorateGauge(form: HTMLElement): void {
   });
 }
 
-function decorateGo(form: HTMLElement): void {
-  const go = form.querySelector('.planner-go') as HTMLElement | null;
-  if (!go || go.querySelector(':scope > .fxp-go-orbit')) return;
-  const orbit = deco('span', 'fxp-go-orbit');
-  go.appendChild(orbit);
-}
-
 export function installPlanningFx(): void {
   const boot = (): boolean => {
     const form = document.querySelector<HTMLElement>('.planner-form');
     if (!form) return false;
     decorateConnector(form);
     decorateGauge(form);
-    decorateGo(form);
 
     new MutationObserver(() => {
       if (form.getAttribute('aria-busy') === 'true') startScan();

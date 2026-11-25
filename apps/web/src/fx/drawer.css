@@ -72,12 +72,6 @@
 }
 
 /* ============ drawer controls ============ */
-.trip-search, .trip-sort {
-  transition: border-color 220ms ease, box-shadow 320ms var(--spring-soft), background-color 220ms ease;
-}
-.trip-search:focus-visible, .trip-sort:focus-visible {
-  box-shadow: 0 0 0 3px rgba(255, 199, 44, .18), 0 0 22px -6px rgba(255, 199, 44, .5);
-}
 
 /* ============ suggestions: staggered, sliding highlight ============ */
 .suggestions { box-shadow: 0 22px 60px -18px rgba(0, 0, 0, 1), 0 0 0 1px rgba(255, 199, 44, .07); }
@@ -88,7 +82,7 @@
   transition: height 260ms var(--spring), margin-top 260ms var(--spring);
 }
 .suggestion-item.active::after, .suggestion-item:hover::after { height: 20px; margin-top: -10px; }
-.suggestion-item.empty::after { display: none; }
+.suggestion-item.is-empty::after { display: none; }
 
 /* ============ error box: shake-in + pulsing edge ============ */
 .error-box:not(.hidden) {

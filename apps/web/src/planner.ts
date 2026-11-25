@@ -51,7 +51,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     </div>
   `);
   section.appendChild(sheetHeader);
-  const dismiss = el(`<button type="button" class="btn btn-ghost btn-compact sheet-dismiss" aria-label="Hide trip planner">▾</button>`);
+  const dismiss = el(`<button type="button" class="btn btn-ghost btn-compact sheet-dismiss" data-variant="outline" data-size="sm" aria-label="Hide trip planner">▾</button>`);
   sheetHeader.appendChild(dismiss);
   dismiss.addEventListener('click', () => {
     root.classList.remove('open');
@@ -275,7 +275,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
   // ---- action ----
   const actions = el(`<div class="planner-actions"></div>`);
   const planButton = el(`
-    <button type="submit" class="btn btn-primary planner-go">
+    <button type="submit" class="btn btn-primary planner-go" data-size="lg">
       <span class="spinner hidden" aria-hidden="true"></span>
       <span class="go-label">Plan route</span>
     </button>
@@ -284,7 +284,7 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
   // Thorough search: the same rules planner as a background job that checks
   // EVERY corridor charger live, with real progress and cancel.
   const thoroughButton = el(`
-    <button type="button" class="btn btn-ghost planner-thorough hidden" data-thorough-plan
+    <button type="button" class="btn btn-ghost planner-thorough hidden" data-variant="outline" data-thorough-plan
       title="Check every charger on the corridor (slower, runs in the background)">Thorough search</button>
   `) as HTMLButtonElement;
   actions.appendChild(thoroughButton);
@@ -311,12 +311,12 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
     <div class="plan-busy hidden">
       <p class="plan-busy-hint" role="status">Live charger checks use safety pacing. A long corridor can take several minutes. Nothing is cached between runs.</p>
       <p class="plan-busy-progress" role="status"></p>
-      <button type="button" class="btn btn-ghost plan-busy-cancel hidden">Cancel this run</button>
+      <button type="button" class="btn btn-ghost plan-busy-cancel hidden" data-variant="outline">Cancel this run</button>
       <div class="plan-busy-recovery hidden">
-        <button type="button" class="btn btn-ghost plan-busy-recheck">Check status</button>
-        <button type="button" class="btn btn-ghost plan-busy-recancel">Cancel run</button>
+        <button type="button" class="btn btn-ghost plan-busy-recheck" data-variant="outline">Check status</button>
+        <button type="button" class="btn btn-ghost plan-busy-recancel" data-variant="outline">Cancel run</button>
         <p class="hint">The last status was unconfirmed. No retry starts automatically.</p>
-        <button type="button" class="btn btn-ghost plan-busy-unlock hidden">Unlock controls</button>
+        <button type="button" class="btn btn-ghost plan-busy-unlock hidden" data-variant="outline">Unlock controls</button>
       </div>
       <p class="plan-busy-time"><span class="plan-busy-spinner" aria-hidden="true"></span><span class="plan-busy-elapsed" aria-hidden="true">0s elapsed</span></p>
     </div>
@@ -365,13 +365,13 @@ export function renderPlanner(root: HTMLElement, map: maplibregl.Map): PlannerCo
         <span class="ai-box-title">AI planning</span>
       </div>
       <label for="ai-request" class="search-label">Custom instructions for the AI (optional)</label>
-      <textarea id="ai-request" rows="3" maxlength="2000" placeholder="e.g. Prefer stops with cafes and clean washrooms, avoid single-plug stations, I like 30-minute breaks"></textarea>
+      <textarea class="textarea" id="ai-request" rows="3" maxlength="2000" placeholder="e.g. Prefer stops with cafes and clean washrooms, avoid single-plug stations, I like 30-minute breaks"></textarea>
       <p class="hint ai-instructions-hint" data-ai-instructions-saved>Saved on this device and sent with each AI plan.</p>
       ${aiSettingsMarkup()}
       <label for="ai-max-charger-kw" class="search-label">Maximum charger power (kW, optional)</label>
-      <input id="ai-max-charger-kw" data-ai-max-charger-kw type="number" min="1" step="1" inputmode="numeric" placeholder="No limit" aria-describedby="ai-cap-hint" />
+      <input class="input" id="ai-max-charger-kw" data-ai-max-charger-kw type="number" min="1" step="1" inputmode="numeric" placeholder="No limit" aria-describedby="ai-cap-hint" />
       <p class="hint" id="ai-cap-hint">Blank means no cap. A value is an enforced hard ceiling: only certified chargers at or below it are eligible.</p>
-      <button type="button" class="btn btn-ghost" data-ai-plan>Plan with AI</button>
+      <button type="button" class="btn btn-ghost" data-variant="outline" data-ai-plan>Plan with AI</button>
       <p class="hint">The AI picks from the same live candidates and every choice is validated against the configured leg ceiling and charge/reserve feasibility.</p>
     </div>
   `);
@@ -1027,7 +1027,7 @@ function buildVehicleSelect(vehicleRow: HTMLElement, catalog: VehicleCatalogEntr
 
   const label = el(`<label class="vehicle-label" for="vehicle-select">Vehicle</label>`);
   const select = el(`
-    <select id="vehicle-select" data-vehicle>
+    <select class="select" id="vehicle-select" data-vehicle>
       <option value="default">Tata Harrier EV (75 kWh) — default</option>
       ${catalog
         .filter((c) => c.id !== defaultId)
@@ -1072,9 +1072,9 @@ function buildVehicleSelect(vehicleRow: HTMLElement, catalog: VehicleCatalogEntr
       customWrap.classList.remove('hidden');
       customWrap.innerHTML = `
         <div class="field-row"><label for="custom-kwh">Battery size (kWh)</label>
-          <input id="custom-kwh" data-custom-kwh type="number" min="5" max="250" step="0.1" placeholder="60" /></div>
+          <input class="input" id="custom-kwh" data-custom-kwh type="number" min="5" max="250" step="0.1" placeholder="60" /></div>
         <div class="field-row"><label for="custom-range">Your real-world range (km)</label>
-          <input id="custom-range" data-real-world type="number" min="20" max="1500" step="1" placeholder="350" /></div>
+          <input class="input" id="custom-range" data-real-world type="number" min="20" max="1500" step="1" placeholder="350" /></div>
         <p class="hint">Real-world range is your input — we never derive it from manufacturer claims.</p>`;
       return;
     }
@@ -1086,7 +1086,7 @@ function buildVehicleSelect(vehicleRow: HTMLElement, catalog: VehicleCatalogEntr
     rangeWrap.innerHTML = `
       <div class="field-row">
         <label for="rw-range">Your real-world range with this car (km)</label>
-        <input id="rw-range" data-real-world type="number" min="20" max="1500" step="1" placeholder="e.g. 300" />
+        <input class="input" id="rw-range" data-real-world type="number" min="20" max="1500" step="1" placeholder="e.g. 300" />
       </div>
       <p class="hint warn-hint">Required: planning needs your real-world range. Claims cannot stand in for it.</p>`;
   });
@@ -1113,7 +1113,7 @@ function makeSearchField(
       <label class="search-label" for="${popupId}-input">${labelText}</label>
       <div class="search-box">
         <span class="search-icon" aria-hidden="true">${letter}</span>
-        <input id="${popupId}-input" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${popupId}" placeholder="${placeholder}" aria-label="${labelText}" />
+        <input class="input" id="${popupId}-input" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${popupId}" placeholder="${placeholder}" aria-label="${labelText}" />
         <div id="${popupId}" class="suggestions hidden" role="listbox" aria-label="${labelText} suggestions"></div>
       </div>
       <div class="place-nudge hidden" data-place-nudge></div>
@@ -1219,7 +1219,7 @@ function makeSearchField(
         list.innerHTML = '';
         lastHits = hits;
         if (hits.length === 0) {
-          list.innerHTML = `<div class="suggestion-item empty">No places found — try the nearest town.</div>`;
+          list.innerHTML = `<div class="suggestion-item is-empty">No places found — try the nearest town.</div>`;
           showList();
           return;
         }

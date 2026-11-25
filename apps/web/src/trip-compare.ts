@@ -323,10 +323,10 @@ function stopMarkup(stop: ComparisonStop, index: number): string {
 
 function sideMarkup(side: ComparisonSide): string {
   const badges = [
-    side.synthetic ? '<span class="badge badge-synthetic">Synthetic</span>' : '',
-    side.degraded ? '<span class="badge badge-warn">Degraded</span>' : '',
+    side.synthetic ? '<span class="status-pill status-pill-synthetic">Synthetic</span>' : '',
+    side.degraded ? '<span class="status-pill status-pill-warn">Degraded</span>' : '',
   ].join('');
-  const routeBadge = side.synthetic ? '' : `<span class="badge badge-soft">${esc(side.sourceLabel)}</span>`;
+  const routeBadge = side.synthetic ? '' : `<span class="status-pill status-pill-soft">${esc(side.sourceLabel)}</span>`;
   const itinerary = !side.stopsKnown
     ? '<p class="hint">Stored charging stop itinerary is Unknown.</p>'
     : side.stops.length === 0
@@ -348,9 +348,9 @@ function sideMarkup(side: ComparisonSide): string {
       `<div><dt>${esc(METRIC_LABELS[key])}</dt><dd>${esc(side.metrics[key].display)}</dd></div>`).join('') +
     `</dl><h4>Charging stop itinerary</h4>${itinerary}` +
     `<div class="compare-card-actions">` +
-    `<button type="button" class="btn btn-compact btn-ghost" data-compare-open="${side.slot}">Open route ${side.slot}</button>` +
-    `<button type="button" class="btn btn-compact btn-ghost" data-compare-edit="${side.slot}">Edit route ${side.slot}</button>` +
-    `<button type="button" class="btn btn-compact btn-danger-ghost" data-compare-remove="${side.slot}">Remove ${side.slot}</button>` +
+    `<button type="button" class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" data-compare-open="${side.slot}">Open route ${side.slot}</button>` +
+    `<button type="button" class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" data-compare-edit="${side.slot}">Edit route ${side.slot}</button>` +
+    `<button type="button" class="btn btn-compact btn-danger-ghost" data-variant="destructive" data-size="sm" data-compare-remove="${side.slot}">Remove ${side.slot}</button>` +
     `</div></article>`;
 }
 
@@ -374,11 +374,11 @@ export function renderTripComparisonMarkup(comparison: TripComparison): string {
     `<div class="compare-toolbar"><div><h2 id="compare-workspace-title">Saved trip comparison</h2>` +
     `<p class="hint">Read-only local comparison of two saved records. Charger status was not fetched and nothing was saved.</p></div>` +
     `<div class="compare-toolbar-actions">` +
-    `<button type="button" class="btn btn-ghost" data-compare-back>Back to saved trips</button>` +
-    `<button type="button" class="btn btn-ghost" data-compare-swap>Swap A and B</button>` +
-    `<button type="button" class="btn btn-ghost" data-compare-clear>Clear selection</button>` +
-    `<button type="button" class="btn btn-ghost" data-compare-download>Download comparison</button>` +
-    `<button type="button" class="btn btn-ghost" data-compare-print>Print comparison</button>` +
+    `<button type="button" class="btn btn-ghost" data-variant="outline" data-compare-back>Back to saved trips</button>` +
+    `<button type="button" class="btn btn-ghost" data-variant="outline" data-compare-swap>Swap A and B</button>` +
+    `<button type="button" class="btn btn-ghost" data-variant="outline" data-compare-clear>Clear selection</button>` +
+    `<button type="button" class="btn btn-ghost" data-variant="outline" data-compare-download>Download comparison</button>` +
+    `<button type="button" class="btn btn-ghost" data-variant="outline" data-compare-print>Print comparison</button>` +
     `</div></div>` +
     `<div class="compare-context"><p class="hint">Stored planned facts from saved trips, not live charger status. Units: km, minutes, kWh, INR and %; B − A uses matching facts only. No automatic best route.</p>` +
     notesMarkup(comparison.contextNotes, 'compare-notes') + `</div>` +
@@ -397,8 +397,8 @@ export function buildTripComparisonHtml(comparison: TripComparison): string {
     `.compare-toolbar h2,.compare-card h3,.compare-difference h3{color:#F4F2EE;margin:0 0 6px}` +
     `.compare-toolbar-actions,.compare-card-actions{display:flex;flex-wrap:wrap;gap:8px}button{display:none}` +
     `.hint{color:#B8B4AD;font-size:12px}.compare-badges{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}` +
-    `.badge{padding:3px 7px;border:1px solid #F4B951;color:#F4B951;font-size:11px}` +
-    `.badge-synthetic{border-color:#E99455;color:#E99455}.badge-soft,.badge-warn{border-color:#34322E;color:#B8B4AD}` +
+    `.status-pill{padding:3px 7px;border:1px solid #F4B951;color:#F4B951;font-size:11px}` +
+    `.status-pill-synthetic{border-color:#E99455;color:#E99455}.status-pill-soft,.status-pill-warn{border-color:#34322E;color:#B8B4AD}` +
     `.compare-context{border:1px solid #34322E;padding:10px 12px;margin:14px 0}` +
     `.compare-notes{color:#F4B951;font-size:12px;margin:6px 0 0;padding-left:18px}` +
     `.compare-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}` +
@@ -413,7 +413,7 @@ export function buildTripComparisonHtml(comparison: TripComparison): string {
     `.compare-table th,.compare-table td{border:1px solid #34322E;padding:7px;text-align:left;vertical-align:top}.compare-delta{color:#D87932;white-space:nowrap}` +
     `@media (max-width:900px){.compare-grid{grid-template-columns:1fr}}` +
     `@media print{body{background:#fff;color:#111;padding:0}.compare-card,.compare-difference,.compare-context{border-color:#888;background:#fff}.hint,.compare-facts dt,.compare-stop-facts{color:#444}` +
-    `.badge,.compare-delta{color:#111;border-color:#888}.compare-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}` +
+    `.status-pill,.compare-delta{color:#111;border-color:#888}.compare-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}` +
     `[data-compare-card='a']{grid-area:1/1}[data-compare-card='b']{grid-area:1/2}.compare-difference{grid-area:2/1/3/3}` +
     `.compare-toolbar{display:block!important;border:0;padding:0 0 8px}.compare-toolbar-actions,.compare-toolbar .hint,.compare-card-actions{display:none!important}.compare-toolbar h2{display:block!important;font-size:18pt}` +
     `.compare-card h4,.compare-difference h4,.compare-stop-id,.compare-notes,.compare-toolbar h2{color:#111}` +

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -32,7 +32,7 @@
 
       <!-- top-right floating cluster over the map: mode provenance + trips -->
       <div class="top-cluster">
-        <span id="health-badge" class="badge hidden" role="status"></span>
+        <span id="health-badge" class="status-pill hidden" role="status"></span>
         <button id="trips-button" class="chip-btn" type="button" aria-controls="trips-drawer" aria-expanded="false">
           <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
             <path d="M2.5 3.5h8.2c.6 0 1.1.4 1.3 1l1.4 4.2c.1.2.1.4.1.6v2.7a.7.7 0 0 1-.7.7h-.9a2 2 0 0 1-3.9 0H6a2 2 0 0 1-3.9 0H1.2a.7.7 0 0 1-.7-.7V4.2c0-.4.3-.7.7-.7Z" fill="none" stroke="currentColor" stroke-width="1.2"/>
@@ -50,7 +50,7 @@
         aria-label="Trip planner"
       ></aside>
       <button id="sheet-open" class="sheet-fab hidden" type="button" aria-label="Open trip planner" aria-expanded="false">Plan a route</button>
-      <aside id="trips-drawer" class="drawer hidden" aria-label="Saved trips"></aside>
+      <aside id="trips-drawer" class="trips-panel hidden" aria-label="Saved trips"></aside>
       <div id="toast-root" aria-live="polite"></div>
     </div>
     <script type="module" src="/src/main.ts"></script>

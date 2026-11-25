@@ -66,12 +66,8 @@ export function installDelight(): void {
   installSheetDrag();
   installShortcuts();
   installConnectivity();
-  if (!reduced()) {
-    installSpotlight();
-    installRipples();
-    installMagnets();
-    installTilt();
-  }
+  // Pointer gimmicks (spotlight, ripples, magnets, tilt) were retired in the
+  // UI-kit rework: controls answer with colour and a press, nothing more.
   greet();
 }
 
@@ -478,86 +474,9 @@ function sparkAt(gauge: HTMLElement, pct: number): void {
 /* Pointer delights                                                    */
 /* ------------------------------------------------------------------ */
 
-function installSpotlight(): void {
-  let raf = 0;
-  let x = 0;
-  let y = 0;
-  window.addEventListener('pointermove', (e) => {
-    x = e.clientX; y = e.clientY;
-    if (raf) return;
-    raf = requestAnimationFrame(() => {
-      raf = 0;
-      document.documentElement.style.setProperty('--mx', `${x}px`);
-      document.documentElement.style.setProperty('--my', `${y}px`);
-      const panel = document.getElementById('planner-panel');
-      if (panel) {
-        const r = panel.getBoundingClientRect();
-        panel.style.setProperty('--px', `${x - r.left}px`);
-        panel.style.setProperty('--py', `${y - r.top + panel.scrollTop}px`);
-      }
-    });
-  }, { passive: true });
-}
 
-/** Click ripples on every button/chip (aria-hidden span, self-removing). */
-function installRipples(): void {
-  document.addEventListener('pointerdown', (e) => {
-    const target = e.target instanceof Element ? e.target.closest<HTMLElement>('.btn, .chip-btn, .sheet-fab, .stepper-btn, .planner-swap, .suggestion-item') : null;
-    if (!target || (target as HTMLButtonElement).disabled) return;
-    const r = target.getBoundingClientRect();
-    const size = Math.max(r.width, r.height) * 2.2;
-    const ripple = document.createElement('span');
-    ripple.className = 'ripple';
-    ripple.setAttribute('aria-hidden', 'true');
-    ripple.style.width = ripple.style.height = `${size}px`;
-    ripple.style.left = `${e.clientX - r.left - size / 2}px`;
-    ripple.style.top = `${e.clientY - r.top - size / 2}px`;
-    target.appendChild(ripple);
-    const anim = ripple.animate([
-      { transform: 'scale(0)', opacity: 0.38 },
-      { transform: 'scale(1)', opacity: 0 },
-    ], { duration: 620, easing: 'cubic-bezier(.2,.7,.2,1)' });
-    anim.onfinish = () => ripple.remove();
-    anim.oncancel = () => ripple.remove();
-  });
-}
 
-/** Primary buttons lean toward the cursor a little (transform only). */
-function installMagnets(): void {
-  if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
-  document.addEventListener('pointermove', (e) => {
-    const t = e.target instanceof Element ? e.target.closest<HTMLElement>('.planner-go, .sheet-fab, .plan-actions [data-save], .chip-btn') : null;
-    document.querySelectorAll<HTMLElement>('.magnet-on').forEach((m) => {
-      if (m !== t) { m.classList.remove('magnet-on'); m.style.removeProperty('--mag-x'); m.style.removeProperty('--mag-y'); }
-    });
-    if (!t || (t as HTMLButtonElement).disabled) return;
-    const r = t.getBoundingClientRect();
-    const dx = (e.clientX - (r.left + r.width / 2)) / (r.width / 2);
-    const dy = (e.clientY - (r.top + r.height / 2)) / (r.height / 2);
-    t.classList.add('magnet-on');
-    t.style.setProperty('--mag-x', `${(dx * 4).toFixed(2)}px`);
-    t.style.setProperty('--mag-y', `${(dy * 3).toFixed(2)}px`);
-    t.style.setProperty('--glow-x', `${((dx + 1) * 50).toFixed(1)}%`);
-  }, { passive: true });
-}
 
-/** Stat cells and stop cards tilt subtly under the pointer. */
-function installTilt(): void {
-  if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
-  let current: HTMLElement | null = null;
-  document.addEventListener('pointermove', (e) => {
-    const t = e.target instanceof Element ? e.target.closest<HTMLElement>('.strip-cell, .trip-row') : null;
-    if (current && current !== t) { current.style.removeProperty('--tilt-x'); current.style.removeProperty('--tilt-y'); current.style.removeProperty('--shine-x'); }
-    current = t;
-    if (!t) return;
-    const r = t.getBoundingClientRect();
-    const px = (e.clientX - r.left) / r.width;
-    const py = (e.clientY - r.top) / r.height;
-    t.style.setProperty('--tilt-x', `${((py - 0.5) * -6).toFixed(2)}deg`);
-    t.style.setProperty('--tilt-y', `${((px - 0.5) * 8).toFixed(2)}deg`);
-    t.style.setProperty('--shine-x', `${(px * 100).toFixed(1)}%`);
-  }, { passive: true });
-}
 
 /* ------------------------------------------------------------------ */
 /* Easter eggs                                                         */

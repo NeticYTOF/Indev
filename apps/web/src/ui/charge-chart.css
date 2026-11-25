@@ -1,0 +1,142 @@
+/* Battery-along-the-route chart (Bklit-style). Solid colour only. */
+.cc {
+  position: relative;
+  border: 1px solid #1c1c1c;
+  border-radius: 18px;
+  background: #050505;
+  padding: 16px 16px 10px;
+  overflow: hidden;
+  animation: cc-in 520ms var(--ease, cubic-bezier(.2, .8, .2, 1)) both;
+}
+@keyframes cc-in { from { opacity: 0; transform: translateY(10px); } }
+
+.cc-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.cc-title {
+  margin: 0;
+  font: 700 14px/1.2 var(--display, inherit);
+  letter-spacing: -0.01em;
+  color: var(--ink, #f5f5f2);
+}
+.cc-sub { margin: 4px 0 0; font-size: 12px; color: var(--ink-3, #8d8d87); }
+
+.cc-readout {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  min-width: 128px;
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.cc-read-soc {
+  font: 600 26px/1 'Geist Mono', ui-monospace, monospace;
+  letter-spacing: -0.04em;
+  color: var(--cap, #ffc72c);
+  display: inline-flex;
+  align-items: baseline;
+}
+.cc-read-soc i { font-style: normal; font-size: 14px; margin-left: 1px; color: #a88a2a; }
+.cc-read-km { font-size: 12px; color: var(--ink-2, #c9c9c3); }
+.cc-read-where {
+  font-family: var(--sans, inherit);
+  font-size: 11.5px;
+  color: var(--ink-3, #8d8d87);
+  max-width: 220px;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+number-flow { --number-flow-char-height: 1em; }
+
+.cc-plot { position: relative; height: 200px; margin: 0 -4px; }
+.cc-plot svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  touch-action: pan-y;
+  cursor: crosshair;
+}
+
+.cc-grid line { stroke: #161616; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.cc-yaxis text, .cc-xaxis text {
+  fill: #5d5d58;
+  font: 500 10px 'Geist Mono', ui-monospace, monospace;
+}
+.cc-yaxis text { text-anchor: end; }
+.cc-xaxis text { text-anchor: middle; }
+.cc-xaxis .cc-x-end { text-anchor: end; }
+
+.cc-area {
+  fill: var(--cap, #ffc72c);
+  fill-opacity: .1;
+  animation: cc-fade 900ms ease 300ms both;
+}
+.cc-line {
+  fill: none;
+  stroke: var(--cap, #ffc72c);
+  stroke-width: 2.25;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: cc-draw 1400ms cubic-bezier(.65, 0, .35, 1) 120ms forwards;
+}
+@keyframes cc-draw { to { stroke-dashoffset: 0; } }
+@keyframes cc-fade { from { fill-opacity: 0; } }
+
+.cc-stop {
+  fill: #000;
+  stroke: var(--cap, #ffc72c);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: cc-pop 520ms var(--spring, cubic-bezier(.34, 1.56, .64, 1)) calc(900ms + var(--i, 0) * 140ms) both;
+}
+.cc-stop[data-kind='arrive'] { stroke: #8d8d87; }
+@keyframes cc-pop { from { transform: scale(0); } }
+.cc-settled .cc-line { animation: none; stroke-dashoffset: 0; }
+.cc-settled .cc-area, .cc-settled .cc-stop { animation: none; }
+
+.cc-cursor { opacity: 0; transition: opacity 160ms ease; pointer-events: none; }
+.cc-cursor.is-on { opacity: 1; }
+.cc-cursor-line {
+  stroke: #3a3a3a;
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  vector-effect: non-scaling-stroke;
+}
+.cc-cursor-dot {
+  fill: var(--cap, #ffc72c);
+  stroke: #000;
+  stroke-width: 2.5;
+  vector-effect: non-scaling-stroke;
+}
+
+@media (max-width: 720px) {
+  .cc-plot { height: 168px; }
+  .cc-read-soc { font-size: 22px; }
+  .cc-readout { min-width: 104px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc, .cc-area, .cc-stop { animation: none !important; }
+  .cc-line { animation: none !important; stroke-dashoffset: 0; }
+}
+html.reduce-motion .cc, html.reduce-motion .cc-area, html.reduce-motion .cc-stop { animation: none !important; }
+html.reduce-motion .cc-line { animation: none !important; stroke-dashoffset: 0; }
+
+@media print {
+  .cc { animation: none; border-color: #999; background: #fff; }
+  .cc-line { animation: none; stroke-dashoffset: 0; stroke: #000; }
+  .cc-area { fill: #000; fill-opacity: .08; }
+  .cc-readout, .cc-cursor { display: none; }
+}

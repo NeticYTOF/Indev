@@ -2,7 +2,6 @@
  *
  *  - Scroll-driven reveal: result blocks spring in as they enter the panel.
  *  - Route spine: an energy pulse flows down the stop timeline.
- *  - Pointer-follow glow edges on cards (CSS vars only).
  *  - Arrival-charge mini battery that fills to the real arrival %.
  *  All injected nodes are aria-hidden and pointer-transparent.
  */
@@ -80,38 +79,10 @@ function exitSigns(results: HTMLElement): void {
   });
 }
 
-function glowFollow(results: HTMLElement): void {
-  if (results.dataset.fxrGlow) return;
-  results.dataset.fxrGlow = '1';
-  let frame = 0;
-  let pending: { el: HTMLElement; x: number; y: number } | null = null;
-  results.addEventListener('pointermove', (ev) => {
-    if (ev.pointerType !== 'mouse') return;
-    const el = (ev.target as Element).closest<HTMLElement>('.stop-card, .plan-head, .trip-strip, .journey-briefing');
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    pending = { el, x: ev.clientX - r.left, y: ev.clientY - r.top };
-    if (frame) return;
-    frame = requestAnimationFrame(() => {
-      frame = 0;
-      if (!pending) return;
-      pending.el.style.setProperty('--fxr-x', `${pending.x}px`);
-      pending.el.style.setProperty('--fxr-y', `${pending.y}px`);
-      pending.el.classList.add('fxr-lit');
-    });
-  });
-  results.addEventListener('pointerout', (ev) => {
-    const el = (ev.target as Element).closest<HTMLElement>('.fxr-lit');
-    const to = ev.relatedTarget as Node | null;
-    if (el && !(to && el.contains(to))) el.classList.remove('fxr-lit');
-  });
-}
-
 function decorate(results: HTMLElement, panel: Element): void {
   arrivalBattery(results);
   spine(results);
   exitSigns(results);
-  glowFollow(results);
   const items = results.querySelectorAll<HTMLElement>(REVEAL);
   if (reduced()) { items.forEach((i) => i.classList.add('fxr-in')); return; }
   const obs = revealer(panel);

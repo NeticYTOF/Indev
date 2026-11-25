@@ -195,8 +195,8 @@ export function renderTripsDrawer(
         <p id="compare-selection-status" class="compare-selection-status" role="status" aria-live="polite">Select two trips to compare.</p>
       </div>
       <div class="drawer-head-actions">
-        <button type="button" class="btn btn-ghost btn-compact" data-compare-selected aria-describedby="compare-selection-status" disabled>Compare selected (0/2)</button>
-        <button type="button" class="btn btn-ghost btn-compact" data-close>Close</button>
+        <button type="button" class="btn btn-ghost btn-compact" data-variant="outline" data-size="sm" data-compare-selected aria-describedby="compare-selection-status" disabled>Compare selected (0/2)</button>
+        <button type="button" class="btn btn-ghost btn-compact" data-variant="outline" data-size="sm" data-close>Close</button>
       </div>
     </div>
   `);
@@ -208,29 +208,29 @@ export function renderTripsDrawer(
   const controls = el(`
     <div class="trip-list-controls">
       <label class="trip-search-label" for="trip-search">Search saved trips</label>
-      <input id="trip-search" class="trip-search" type="search" autocomplete="off" placeholder="Name, origin or destination" data-trip-search disabled>
-      <button type="button" class="btn btn-compact btn-ghost" data-trip-search-clear disabled>Clear search</button>
+      <input id="trip-search" class="input trip-search" type="search" autocomplete="off" placeholder="Name, origin or destination" data-trip-search disabled>
+      <button type="button" class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" data-trip-search-clear disabled>Clear search</button>
       <label class="trip-sort-label" for="trip-sort">Sort</label>
-      <select id="trip-sort" class="trip-sort" data-trip-sort disabled>
+      <select id="trip-sort" class="select trip-sort" data-trip-sort disabled>
         <option value="newest">Newest first</option>
         <option value="oldest">Oldest first</option>
         <option value="name">Name A–Z</option>
       </select>
       <label class="trip-sort-label" for="trip-source">Saved source</label>
-      <select id="trip-source" class="trip-sort" data-trip-source disabled>
+      <select id="trip-source" class="select trip-sort" data-trip-source disabled>
         <option value="all">All sources</option>
         <option value="live">Live</option>
         <option value="synthetic">Synthetic</option>
         <option value="unknown">Unknown</option>
       </select>
       <label class="trip-sort-label" for="trip-status">Saved plan status</label>
-      <select id="trip-status" class="trip-sort" data-trip-status disabled>
+      <select id="trip-status" class="select trip-sort" data-trip-status disabled>
         <option value="all">All statuses</option>
         <option value="ok">OK</option>
         <option value="degraded">Degraded</option>
         <option value="unknown">Unknown</option>
       </select>
-      <button type="button" class="btn btn-compact btn-ghost" data-trip-filters-clear disabled>Clear all filters</button>
+      <button type="button" class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" data-trip-filters-clear disabled>Clear all filters</button>
       <p class="trip-list-result-count" data-trip-result-count role="status" aria-live="polite"></p>
     </div>
   `);
@@ -491,11 +491,11 @@ function renderTripRow(
         </span>
       </div>
       <div class="trip-actions">
-        <button type="button" class="btn btn-compact btn-ghost" data-compare-toggle data-compare-index="${index}" aria-pressed="${selected}">${selected ? 'Remove from comparison' : 'Select to compare'}</button>
-        <button type="button" class="btn btn-compact btn-ghost" data-open>Open</button>
-        <button type="button" class="btn btn-compact btn-ghost" data-return title="Load swapped endpoints as a new return-direction plan">Return trip</button>
-        <button type="button" class="btn btn-compact btn-ghost" data-edit>Edit route</button>
-        <button type="button" class="btn btn-compact btn-danger-ghost" data-delete>Delete</button>
+        <button type="button" class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" data-compare-toggle data-compare-index="${index}" aria-pressed="${selected}">${selected ? 'Remove from comparison' : 'Select to compare'}</button>
+        <button type="button" class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" data-open>Open</button>
+        <button type="button" class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" data-return title="Load swapped endpoints as a new return-direction plan">Return trip</button>
+        <button type="button" class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" data-edit>Edit route</button>
+        <button type="button" class="btn btn-compact btn-danger-ghost" data-variant="destructive" data-size="sm" data-delete>Delete</button>
       </div>
     </div>
   `);
@@ -670,10 +670,10 @@ function renderSavedSummary(
       <div class="strip-cell"><span class="strip-num">${escapeHtml(formatDuration(safeNumber(totals.chargeTimeMin)))}</span><span class="strip-label">Charging time</span></div>
     </div>
     <div class="plan-actions saved-briefing-actions">
-      <button type="button" class="btn btn-ghost" data-return-saved>Plan return trip</button>
-      <button type="button" class="btn btn-ghost" data-edit-saved>Edit route</button>
-      <button type="button" class="btn btn-ghost" data-itinerary-export>Journey itinerary (HTML)</button>
-      <button type="button" class="btn btn-ghost" data-print>Print itinerary</button>
+      <button type="button" class="btn btn-ghost" data-variant="outline" data-return-saved>Plan return trip</button>
+      <button type="button" class="btn btn-ghost" data-variant="outline" data-edit-saved>Edit route</button>
+      <button type="button" class="btn btn-ghost" data-variant="outline" data-itinerary-export>Journey itinerary (HTML)</button>
+      <button type="button" class="btn btn-ghost" data-variant="outline" data-print>Print itinerary</button>
     </div>
     <div class="stops saved-stops">
       ${stations
@@ -691,10 +691,10 @@ function renderSavedSummary(
           <div class="stop-main">
             <div class="stop-head">
               <div class="stop-title"><span class="stop-name">${safeText(s.name, 'Unknown station')}</span></div>
-              <button type="button" class="btn btn-compact btn-ghost" data-revalidate${stationId == null ? ' disabled aria-label="Fetch unavailable — station id Unknown"' : ''}>Fetch current details</button>
+              <button type="button" class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" data-revalidate${stationId == null ? ' disabled aria-label="Fetch unavailable — station id Unknown"' : ''}>Fetch current details</button>
             </div>
             <div class="stop-leg" data-stop-leg>${legIn?.km != null ? `${escapeHtml(formatLegKm(legIn.km))} from ${safeText(legIn.fromLabel)}` : 'Distance from previous stop Unknown'}</div>
-            <button type="button" class="btn btn-compact saved-stop-details" data-saved-stop-details>Charger details</button>
+            <button type="button" class="btn btn-compact saved-stop-details" data-variant="secondary" data-size="sm" data-saved-stop-details>Charger details</button>
             <div class="stop-body">
               ${renderStationEvidencePanel({
                 savedStation: s,

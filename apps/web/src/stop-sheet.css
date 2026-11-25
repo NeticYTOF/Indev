@@ -32,7 +32,7 @@
   top: 0;
   width: 1px;
   height: 40%;
-  background: linear-gradient(180deg, transparent, var(--cap), transparent);
+  background: var(--cap);
   opacity: 0;
   animation: ss-edge 1.1s cubic-bezier(.2, .8, .2, 1) 120ms;
   pointer-events: none;

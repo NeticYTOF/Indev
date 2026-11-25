@@ -15,7 +15,7 @@ describe('station page link: upstream urls pass a scheme allowlist', () => {
     // not touch 'javascript:...' (no html-special chars), so a scheme
     // value from upstream data rendered as an executable link.
     expect(planPanelSrc).toContain('const stationPageUrl = safeHttpUrl(s.stationUrl);');
-    expect(planPanelSrc).toContain('${stationPageUrl ? `<a class="btn btn-compact btn-ghost" href="${escapeHtml(stationPageUrl)}"');
+    expect(planPanelSrc).toContain('${stationPageUrl ? `<a class="btn btn-compact btn-ghost" data-variant="outline" data-size="sm" href="${escapeHtml(stationPageUrl)}"');
     // The raw upstream value must appear in NO href anywhere.
     expect(planPanelSrc).not.toContain('href="${escapeHtml(s.stationUrl)}"');
   });

@@ -89,12 +89,12 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
     const from = page.getByRole('combobox', { name: 'From', exact: true });
     const list = page.locator('[data-field=origin] .suggestions');
     await from.fill('Town');
-    await expect(list.locator('.suggestion-item.empty')).toBeVisible();
-    await expect(list.locator('.suggestion-item.empty')).toHaveCSS('color', 'rgb(182, 182, 176)');
+    await expect(list.locator('.suggestion-item.is-empty')).toBeVisible();
+    await expect(list.locator('.suggestion-item.is-empty')).toHaveCSS('color', 'rgb(182, 182, 176)');
     await expect(list).toHaveCSS('background-color', 'rgb(11, 11, 11)');
-    await list.locator('.suggestion-item.empty').hover();
-    await expect(list.locator('.suggestion-item.empty')).toHaveCSS('color', 'rgb(182, 182, 176)');
-    await expect(list.locator('.suggestion-item.empty')).toHaveCSS('background-color', 'rgb(30, 30, 30)');
+    await list.locator('.suggestion-item.is-empty').hover();
+    await expect(list.locator('.suggestion-item.is-empty')).toHaveCSS('color', 'rgb(182, 182, 176)');
+    await expect(list.locator('.suggestion-item.is-empty')).toHaveCSS('background-color', 'rgb(30, 30, 30)');
     await expect(list.getByRole('option')).toHaveCount(0);
     await expect(from).toHaveAttribute('aria-expanded', 'true');
     for (const key of ['ArrowDown', 'ArrowUp', 'Enter']) {
